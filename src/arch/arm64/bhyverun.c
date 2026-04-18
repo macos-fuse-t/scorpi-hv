@@ -76,6 +76,7 @@
 #define GIC_REDIST_BASE	      0x2f100000
 #define GIC_REDIST_SIZE(ncpu) ((ncpu) * 2 * PAGE_SIZE_64K)
 #define GIC_MMIO_BASE	      0x32000000
+#define GIC_MSI_INTID_BASE    64
 
 void
 bhyve_init_config(void)
@@ -85,7 +86,9 @@ bhyve_init_config(void)
 	/* Set default values prior to option parsing. */
 	set_config_bool("acpi_tables", false);
 	set_config_bool("acpi_tables_in_memory", false);
+	set_config_bool("gic.msi", false);
 	set_config_value("memory.size", "256M");
+	set_config_bool("virtio_msix", true);
 }
 
 void
@@ -96,7 +99,7 @@ bhyve_usage(int code)
 	progname = getprogname();
 
 	fprintf(stderr,
-	    "Usage: %s [-CHhSW]\n"
+	    "Usage: %s [-CHhMSW]\n"
 	    "       %*s [-c [[cpus=]numcpus][,sockets=n][,cores=n][,threads=n]]\n"
 	    "       %*s [-k config_file] [-m mem] [-o var=value]\n"
 	    "       %*s [-p vcpu:hostcpu] [-r file] [-s pci] [-U uuid] vmname\n"
@@ -105,6 +108,7 @@ bhyve_usage(int code)
 	    "       -h: help\n"
 	    "       -k: key=value flat config file\n"
 	    "       -m: memory size\n"
+	    "       -M: enable experimental GIC MBI/MSI support\n"
 	    "       -o: set config 'var' to 'value'\n"
 	    "       -p: pin 'vcpu' to 'hostcpu'\n"
 	    "       -S: guest memory cannot be swapped\n"
@@ -122,7 +126,7 @@ bhyve_optparse(int argc, char **argv)
 	const char *optstr;
 	int c;
 
-	optstr = "hCWk:f:o:p:c:s:m:U:u:l:";
+	optstr = "hCMWk:f:o:p:c:s:m:U:u:l:";
 	while ((c = getopt(argc, argv, optstr)) != -1) {
 		switch (c) {
 		case 'c':
@@ -139,6 +143,9 @@ bhyve_optparse(int argc, char **argv)
 			break;
 		case 'm':
 			set_config_value("memory.size", optarg);
+			break;
+		case 'M':
+			set_config_bool("gic.msi", true);
 			break;
 		case 'o':
 			if (!bhyve_parse_config_option(optarg)) {
@@ -333,7 +340,22 @@ bhyve_init_platform(struct vmctx *ctx, struct vcpu *bsp)
 	size_t smbios_len;
 	uint64_t vars_gpa, vars_size;
 
-	vm_get_spi_interrupt_range(&spi_base, &spi_count);
+	spi_base = 0;
+	spi_count = 0;
+	if (msi_supported() &&
+	    vm_get_spi_interrupt_range(&spi_base, &spi_count) != 0) {
+		warnx("failed to get GIC SPI interrupt range");
+		spi_count = 0;
+	}
+	if (spi_count && spi_base < GIC_MSI_INTID_BASE) {
+		if (spi_base + spi_count <= GIC_MSI_INTID_BASE) {
+			warnx("GIC SPI interrupt range does not leave room for MSI");
+			spi_count = 0;
+		} else {
+			spi_count -= GIC_MSI_INTID_BASE - spi_base;
+			spi_base = GIC_MSI_INTID_BASE;
+		}
+	}
 
 	init_bootrom(ctx);
 	error = bootrom_loadrom(ctx);
@@ -355,11 +377,9 @@ bhyve_init_platform(struct vmctx *ctx, struct vcpu *bsp)
 	if (error != 0)
 		return (error);
 
-	// spi_count = MIN(spi_count, 512);
-	//  TODO: MSI doesn't work well with apple vgic. See vm_raise_msi()
 	if (!msi_supported())
 		spi_count = 0;
-	///////////////
+
 	fdt_add_gic(GIC_DIST_BASE, GIC_DIST_SIZE, GIC_REDIST_BASE,
 	    GIC_REDIST_SIZE(guest_ncpus), GIC_MMIO_BASE, spi_base, spi_count);
 	error = vm_attach_vgic(ctx, GIC_DIST_BASE, GIC_DIST_SIZE,

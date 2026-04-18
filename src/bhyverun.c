@@ -358,14 +358,13 @@ paddr_host2guest(struct vmctx *ctx, void *addr)
 int
 msix_supported(void)
 {
-	// return (get_config_bool_default("virtio_msix", true));
-	return 0;
+	return (msi_supported() && get_config_bool_default("virtio_msix", true));
 }
 
 int
 msi_supported(void)
 {
-	return 0;
+	return (get_config_bool_default("gic.msi", false));
 }
 
 struct vcpu *

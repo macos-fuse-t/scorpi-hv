@@ -45,6 +45,9 @@
 #include "mevent.h"
 
 #define TYPER_MBIS (1 << 16)
+#define GICD_IIDR 0x0008
+#define GICD_TYPER2 0x000c
+#define GICD_STATUSR 0x0010
 
 struct vgic_softc {
 	struct mem_range mr;
@@ -74,6 +77,13 @@ uint32_t
 vgic_read(struct vgic_softc *sc, int offset)
 {
 	uint64_t val;
+
+	switch (offset) {
+	case GICD_IIDR:
+	case GICD_TYPER2:
+	case GICD_STATUSR:
+		return (0);
+	}
 
 	if (hv_gic_get_distributor_reg(offset, &val) != HV_SUCCESS) {
 		EPRINTLN("hv_gic_get_distributor_reg() failed: offset 0x%x\n",
@@ -157,7 +167,6 @@ init_apple_vgic(struct vmctx *ctx, uint64_t dist_start, size_t dist_size,
 
 	hv_gic_get_distributor_reg(HV_GIC_DISTRIBUTOR_REG_GICD_TYPER, &typer);
 	if (!spi_intid_count || (typer & TYPER_MBIS)) {
-		EPRINTLN("hv_gic_get_distributor_reg() failed");
 		return (0);
 	}
 

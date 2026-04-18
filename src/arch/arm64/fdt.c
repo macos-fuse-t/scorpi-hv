@@ -219,9 +219,10 @@ fdt_add_gic(uint64_t dist_base, uint64_t dist_size, uint64_t redist_base,
 		SET_PROP_U32(prop, 0, spi_intid_base);
 		SET_PROP_U32(prop, 1, spi_count);
 
-		/*fdt_property_placeholder(fdt, "mbi-alias", 2 *
-		sizeof(uint32_t), &prop); SET_PROP_U32(prop, 0, 0);
-		SET_PROP_U32(prop, 1, mmio_base);*/
+		fdt_property_placeholder(fdt, "mbi-alias",
+		    2 * sizeof(uint32_t), &prop);
+		SET_PROP_U32(prop, 0, mmio_base >> 32);
+		SET_PROP_U32(prop, 1, mmio_base);
 	}
 
 	fdt_end_node(fdt); // GIC
@@ -415,11 +416,12 @@ fdt_add_pcie(int intrs[static 4], uint64_t iobase, uint64_t iolimit,
 	SET_PROP_U32(prop, 13, mmio_base_limit - mmio_base32);
 
 	if (msi_supported() || msix_supported()) {
-		// fdt_property_placeholder(fdt, "msi-map", 4 *
-		// sizeof(uint32_t), &prop); SET_PROP_U32(prop, 0, 0);
-		// /* RID base */ SET_PROP_U32(prop, 1, gic_phandle);	/* MSI
-		// parent */ SET_PROP_U32(prop, 2, 0);		/* MSI base */
-		// SET_PROP_U32(prop, 3, 0x10000);		/* RID length */
+		fdt_property_placeholder(fdt, "msi-map",
+		    4 * sizeof(uint32_t), &prop);
+		SET_PROP_U32(prop, 0, 0); /* RID base */
+		SET_PROP_U32(prop, 1, gic_phandle);
+		SET_PROP_U32(prop, 2, 0); /* MSI base */
+		SET_PROP_U32(prop, 3, 0x10000); /* RID length */
 		fdt_property_u32(fdt, "msi-parent", gic_phandle);
 	}
 	fdt_property_u32(fdt, "#interrupt-cells", 1);

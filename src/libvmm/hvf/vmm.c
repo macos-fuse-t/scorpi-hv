@@ -35,6 +35,12 @@
 #include "internal.h"
 #include "vmm_instruction_emul.h"
 
+#define GICD_SETSPI_NSR 0x40
+#define GICM_SET_SPI_NSR 0x40
+
+static uint64_t gic_dist_base;
+static uint64_t gic_msi_base;
+
 // hypervisor framework implementation
 int
 vm_assert_irq(struct vmctx *ctx, uint32_t irq)
@@ -54,19 +60,14 @@ int
 vm_raise_msi(struct vmctx *ctx, uint64_t addr, uint64_t msg, int bus, int slot,
     int func)
 {
-	// The reason why MSI doesn't work is because OSes use dist_base and
-	// GICD_SETSPI_NSR while apple gic expects mmio_base and
-	// GICM_SETSPI_NSR. Even when set can be worked around, clear from the
-	// OS side doesn't work
-#if 0
-    if (hv_gic_send_msi(addr, msg) != HV_SUCCESS) {
-        EPRINTLN("hv_gic_send_msi() %llx, %llx", addr, msg);
-        exit(-1);
-    }
-#else
-	EPRINTLN("Add support for MSI interrupts: addr %llx %llu", addr, msg);
-	exit(-1);
-#endif
+	if (addr == gic_dist_base + GICD_SETSPI_NSR)
+		addr = gic_msi_base + GICM_SET_SPI_NSR;
+
+	if (hv_gic_send_msi(addr, (uint32_t)msg) != HV_SUCCESS) {
+		EPRINTLN("hv_gic_send_msi() addr %#llx msg %#llx b/s/f %d/%d/%d",
+		    addr, msg, bus, slot, func);
+		exit(-1);
+	}
 	return 0;
 }
 
@@ -84,6 +85,9 @@ vm_attach_vgic(struct vmctx *ctx, uint64_t dist_start, size_t dist_size,
     uint64_t redist_start, size_t redist_size, uint64_t mmio_base,
     uint32_t spi_intid_base, uint32_t spi_intid_count)
 {
+	gic_dist_base = dist_start;
+	gic_msi_base = mmio_base;
+
 	return init_apple_vgic(ctx, dist_start, dist_size, redist_start,
 	    redist_size, mmio_base, spi_intid_base, spi_intid_count);
 }
