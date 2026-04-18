@@ -101,6 +101,17 @@ struct vcpu {
 
 	uint64_t regs[REGMASK_SIZE];
 	struct regs_mask regmask;
+
+	uint64_t pmcr_el0;
+	uint64_t pmcntenset_el0;
+	uint64_t pmintenset_el1;
+	uint64_t pmovsclr_el0;
+	uint64_t pmselr_el0;
+	uint64_t pmuserenr_el0;
+	uint64_t pmccfiltr_el0;
+	uint64_t pmxevtyper_el0;
+	uint64_t oslar_el1;
+	uint64_t osdlr_el1;
 };
 
 static int guest_vaddr2paddr(struct vcpu *vcpu, uint64_t vaddr,
@@ -135,7 +146,9 @@ vm_vcpu_open(struct vmctx *ctx, int vcpuid)
 {
 	struct vcpu *vcpu;
 
-	vcpu = malloc(sizeof(*vcpu));
+	vcpu = calloc(1, sizeof(*vcpu));
+	if (vcpu == NULL)
+		return (NULL);
 	vcpu->ctx = ctx;
 	vcpu->vcpuid = vcpuid;
 	BIT_ZERO(REGMASK_SIZE, &vcpu->regmask);
@@ -722,30 +735,26 @@ arm64_gen_inst_emul_data(struct vcpu *vcpu, uint32_t esr_iss,
 		paging->flags |= VM_GP_MMU_ENABLED;
 }
 
-__unused static uint16_t
+static int
 sysreg2hvf(int sysreg)
 {
 	if ((sysreg & (~MRS_CRm_MASK)) ==
-	    __MRS_REG(DBGBVR_EL1_op0, DBGBVR_EL1_op1, DBGBVR_EL1_CRn, 0,
-		DBGBVR_EL1_op2)) {
+	    (MRS_REG(DBGBVR_EL1) & ~MRS_CRm_MASK)) {
 		return HV_SYS_REG_DBGBVR0_EL1 +
 		    ((sysreg & MRS_CRm_MASK) >> MRS_CRm_SHIFT);
 	}
 	if ((sysreg & (~MRS_CRm_MASK)) ==
-	    __MRS_REG(DBGBCR_EL1_op0, DBGBCR_EL1_op1, DBGBCR_EL1_CRn, 0,
-		DBGBCR_EL1_op2)) {
+	    (MRS_REG(DBGBCR_EL1) & ~MRS_CRm_MASK)) {
 		return HV_SYS_REG_DBGBCR0_EL1 +
 		    ((sysreg & MRS_CRm_MASK) >> MRS_CRm_SHIFT);
 	}
 	if ((sysreg & (~MRS_CRm_MASK)) ==
-	    __MRS_REG(DBGWVR_EL1_op0, DBGWVR_EL1_op1, DBGWVR_EL1_CRn, 0,
-		DBGWVR_EL1_op2)) {
+	    (MRS_REG(DBGWVR_EL1) & ~MRS_CRm_MASK)) {
 		return HV_SYS_REG_DBGWVR0_EL1 +
 		    ((sysreg & MRS_CRm_MASK) >> MRS_CRm_SHIFT);
 	}
 	if ((sysreg & (~MRS_CRm_MASK)) ==
-	    __MRS_REG(DBGWCR_EL1_op0, DBGWCR_EL1_op1, DBGWCR_EL1_CRn, 0,
-		DBGWCR_EL1_op2)) {
+	    (MRS_REG(DBGWCR_EL1) & ~MRS_CRm_MASK)) {
 		return HV_SYS_REG_DBGWCR0_EL1 +
 		    ((sysreg & MRS_CRm_MASK) >> MRS_CRm_SHIFT);
 	}
@@ -813,8 +822,8 @@ sysreg2hvf(int sysreg)
 		return HV_SYS_REG_SPSR_EL1;
 	case MRS_REG(ELR_EL1):
 		return HV_SYS_REG_ELR_EL1;
-	// case MRS_REG(SP_EL0):
-	//	return HV_SYS_REG_SP_EL0;
+	case MRS_REG(SP_EL0):
+		return HV_SYS_REG_SP_EL0;
 	case MRS_REG(AFSR0_EL1):
 		return HV_SYS_REG_AFSR0_EL1;
 	case MRS_REG(AFSR1_EL1):
@@ -823,8 +832,8 @@ sysreg2hvf(int sysreg)
 		return HV_SYS_REG_ESR_EL1;
 	case MRS_REG(FAR_EL1):
 		return HV_SYS_REG_FAR_EL1;
-	// case MRS_REG(PAR_EL1):
-	//	return HV_SYS_REG_PAR_EL1;
+	case MRS_REG(PAR_EL1):
+		return HV_SYS_REG_PAR_EL1;
 	case MRS_REG(MAIR_EL1):
 		return HV_SYS_REG_MAIR_EL1;
 	case MRS_REG(AMAIR_EL1):
@@ -833,12 +842,12 @@ sysreg2hvf(int sysreg)
 		return HV_SYS_REG_VBAR_EL1;
 	case MRS_REG(CONTEXTIDR_EL1):
 		return HV_SYS_REG_CONTEXTIDR_EL1;
-	// case MRS_REG(TPIDR_EL1):
-	//	return HV_SYS_REG_TPIDR_EL1;
+	case MRS_REG(TPIDR_EL1):
+		return HV_SYS_REG_TPIDR_EL1;
 	case MRS_REG(CNTKCTL_EL1):
 		return HV_SYS_REG_CNTKCTL_EL1;
-	// case MRS_REG(CSSELR_EL1):
-	//	return HV_SYS_REG_CSSELR_EL1;
+	case MRS_REG(CSSELR_EL1):
+		return HV_SYS_REG_CSSELR_EL1;
 	case MRS_REG(CNTV_CTL_EL0):
 		return HV_SYS_REG_CNTV_CTL_EL0;
 	case MRS_REG(CNTV_CVAL_EL0):
@@ -850,6 +859,160 @@ sysreg2hvf(int sysreg)
 }
 
 static int
+pmu_reg_index(int sysreg, int base_sysreg, int crm_base)
+{
+	int crm;
+
+	if ((sysreg & ~(MRS_CRm_MASK | MRS_Op2_MASK)) !=
+	    (base_sysreg & ~(MRS_CRm_MASK | MRS_Op2_MASK)))
+		return (-1);
+
+	crm = (sysreg & MRS_CRm_MASK) >> MRS_CRm_SHIFT;
+	if (crm < crm_base || crm > crm_base + 3)
+		return (-1);
+
+	return ((crm - crm_base) << 3) |
+	    ((sysreg & MRS_Op2_MASK) >> MRS_Op2_SHIFT);
+}
+
+static bool
+debug_read(struct vcpu *vcpu, int sysreg, uint64_t *val)
+{
+	switch (sysreg) {
+	case OSDLR_EL1:
+		*val = vcpu->osdlr_el1;
+		return (true);
+	case OSLSR_EL1:
+		*val = vcpu->oslar_el1 ? (1 << 1) : 0;
+		return (true);
+	default:
+		return (false);
+	}
+}
+
+static bool
+debug_write(struct vcpu *vcpu, int sysreg, uint64_t val)
+{
+	switch (sysreg) {
+	case OSDLR_EL1:
+		vcpu->osdlr_el1 = val & 1;
+		return (true);
+	case OSLAR_EL1:
+		vcpu->oslar_el1 = val & 1;
+		return (true);
+	default:
+		return (false);
+	}
+}
+
+static bool
+pmu_read(struct vcpu *vcpu, int sysreg, uint64_t *val)
+{
+	uint64_t pmcr_fixed;
+
+	pmcr_fixed = ((uint64_t)PMCR_IMP_ARM << PMCR_IMP_SHIFT) |
+	    ((uint64_t)PMCR_IDCODE_CORTEX_A57 << PMCR_IDCODE_SHIFT);
+
+	switch (sysreg) {
+	case PMCR_EL0:
+		*val = pmcr_fixed |
+		    (vcpu->pmcr_el0 & (PMCR_E | PMCR_D | PMCR_X | PMCR_DP |
+		    PMCR_LC));
+		return (true);
+	case PMCCNTR_EL0:
+	case PMCEID0_EL0:
+	case PMCEID1_EL0:
+	case PMMIR_EL1:
+	case PMXEVCNTR_EL0:
+		*val = 0;
+		return (true);
+	case PMCNTENCLR_EL0:
+	case PMCNTENSET_EL0:
+		*val = vcpu->pmcntenset_el0;
+		return (true);
+	case PMINTENCLR_EL1:
+	case PMINTENSET_EL1:
+		*val = vcpu->pmintenset_el1;
+		return (true);
+	case PMOVSCLR_EL0:
+	case PMOVSSET_EL0:
+		*val = vcpu->pmovsclr_el0;
+		return (true);
+	case PMSELR_EL0:
+		*val = vcpu->pmselr_el0;
+		return (true);
+	case PMUSERENR_EL0:
+		*val = vcpu->pmuserenr_el0;
+		return (true);
+	case PMCCFILTR_EL0:
+		*val = vcpu->pmccfiltr_el0;
+		return (true);
+	case PMXEVTYPER_EL0:
+		*val = vcpu->pmxevtyper_el0;
+		return (true);
+	default:
+		if (pmu_reg_index(sysreg, MRS_REG(PMEVCNTR_EL0),
+			PMEVCNTR_EL0_CRm) >= 0 ||
+		    pmu_reg_index(sysreg, MRS_REG(PMEVTYPER_EL0),
+			PMEVTYPER_EL0_CRm) >= 0) {
+			*val = 0;
+			return (true);
+		}
+		return (false);
+	}
+}
+
+static bool
+pmu_write(struct vcpu *vcpu, int sysreg, uint64_t val)
+{
+	switch (sysreg) {
+	case PMCR_EL0:
+		vcpu->pmcr_el0 = val & (PMCR_E | PMCR_D | PMCR_X | PMCR_DP |
+		    PMCR_LC);
+		return (true);
+	case PMCCNTR_EL0:
+	case PMSWINC_EL0:
+	case PMXEVCNTR_EL0:
+		return (true);
+	case PMCNTENSET_EL0:
+		vcpu->pmcntenset_el0 |= val & (1ULL << 31);
+		return (true);
+	case PMCNTENCLR_EL0:
+		vcpu->pmcntenset_el0 &= ~val;
+		return (true);
+	case PMINTENSET_EL1:
+		vcpu->pmintenset_el1 |= val & (1ULL << 31);
+		return (true);
+	case PMINTENCLR_EL1:
+		vcpu->pmintenset_el1 &= ~val;
+		return (true);
+	case PMOVSCLR_EL0:
+		vcpu->pmovsclr_el0 &= ~val;
+		return (true);
+	case PMOVSSET_EL0:
+		vcpu->pmovsclr_el0 |= val & (1ULL << 31);
+		return (true);
+	case PMSELR_EL0:
+		vcpu->pmselr_el0 = val & PMSELR_SEL_MASK;
+		return (true);
+	case PMUSERENR_EL0:
+		vcpu->pmuserenr_el0 = val & 0xf;
+		return (true);
+	case PMCCFILTR_EL0:
+		vcpu->pmccfiltr_el0 = val;
+		return (true);
+	case PMXEVTYPER_EL0:
+		vcpu->pmxevtyper_el0 = val;
+		return (true);
+	default:
+		return (pmu_reg_index(sysreg, MRS_REG(PMEVCNTR_EL0),
+		    PMEVCNTR_EL0_CRm) >= 0 ||
+		    pmu_reg_index(sysreg, MRS_REG(PMEVTYPER_EL0),
+		    PMEVTYPER_EL0_CRm) >= 0);
+	}
+}
+
+static int
 arm64_gen_reg_emul_data(struct vcpu *vcpu, uint32_t esr_iss,
     struct vm_exit *vme_ret)
 {
@@ -857,6 +1020,8 @@ arm64_gen_reg_emul_data(struct vcpu *vcpu, uint32_t esr_iss,
 	struct vre *vre;
 	uint64_t val;
 	uint64_t sysreg;
+	int hvreg;
+	hv_return_t hvret;
 
 	vre = &vme_ret->u.reg_emul.vre;
 	vre->inst_syndrome = esr_iss;
@@ -865,22 +1030,66 @@ arm64_gen_reg_emul_data(struct vcpu *vcpu, uint32_t esr_iss,
 	reg_num = ISS_MSR_Rt(esr_iss);
 	vre->reg = reg_num;
 
-	sysreg = __MRS_REG(ISS_MSR_OP0(esr_iss), ISS_MSR_OP1(esr_iss),
-	    ISS_MSR_CRn(esr_iss), ISS_MSR_CRm(esr_iss), ISS_MSR_OP2(esr_iss));
-	DPRINTLN("sysreg 0x%llx (%hx), reg %x", sysreg, sysreg2hvf(sysreg), reg_num);
+	sysreg = ISS_MSR_SYSREG(esr_iss);
+	hvreg = sysreg2hvf(sysreg);
+	DPRINTLN("sysreg %#llx, hvreg %#x, reg %x, dir %s", sysreg, hvreg,
+	    reg_num, vre->dir == VM_DIR_READ ? "read" : "write");
+
 	if (vre->dir == VM_DIR_READ) {
-		if (hv_vcpu_get_sys_reg(vcpu->vcpu, sysreg, &val) !=
-		    HV_SUCCESS) {
-			DPRINTLN("hv_vcpu_get_sys_reg() failed");
-			// return (-1);
+		if (hvreg >= 0) {
+			hvret = hv_vcpu_get_sys_reg(vcpu->vcpu,
+			    (hv_sys_reg_t)hvreg, &val);
+			if (hvret != HV_SUCCESS) {
+				EPRINTLN("hv_vcpu_get_sys_reg(%#x) failed: %x",
+				    hvreg, hvret);
+				return (1);
+			}
+		} else if (!debug_read(vcpu, sysreg, &val) &&
+		    !pmu_read(vcpu, sysreg, &val)) {
+			EPRINTLN("Unhandled MRS sysreg: op0 %u op1 %u CRn %u "
+			    "CRm %u op2 %u Rt %u syndrome %#x",
+			    ISS_MSR_OP0(esr_iss), ISS_MSR_OP1(esr_iss),
+			    ISS_MSR_CRn(esr_iss), ISS_MSR_CRm(esr_iss),
+			    ISS_MSR_OP2(esr_iss), reg_num, esr_iss);
+			return (1);
 		}
-		hv_vcpu_set_reg(vcpu->vcpu, reg_num, val);
+		if (reg_num != 31) {
+			hvret = hv_vcpu_set_reg(vcpu->vcpu, HV_REG_X0 + reg_num,
+			    val);
+			if (hvret != HV_SUCCESS) {
+				EPRINTLN("hv_vcpu_set_reg(X%u) failed: %x",
+				    reg_num, hvret);
+				return (1);
+			}
+		}
 	} else {
-		hv_vcpu_get_reg(vcpu->vcpu, reg_num, &val);
-		if (hv_vcpu_set_sys_reg(vcpu->vcpu, sysreg, val) !=
-		    HV_SUCCESS) {
-			DPRINTLN("hv_vcpu_set_sys_reg() failed");
-			// return (-1);
+		if (reg_num == 31) {
+			val = 0;
+		} else {
+			hvret = hv_vcpu_get_reg(vcpu->vcpu, HV_REG_X0 + reg_num,
+			    &val);
+			if (hvret != HV_SUCCESS) {
+				EPRINTLN("hv_vcpu_get_reg(X%u) failed: %x",
+				    reg_num, hvret);
+				return (1);
+			}
+		}
+		if (hvreg >= 0) {
+			hvret = hv_vcpu_set_sys_reg(vcpu->vcpu,
+			    (hv_sys_reg_t)hvreg, val);
+			if (hvret != HV_SUCCESS) {
+				EPRINTLN("hv_vcpu_set_sys_reg(%#x) failed: %x",
+				    hvreg, hvret);
+				return (1);
+			}
+		} else if (!debug_write(vcpu, sysreg, val) &&
+		    !pmu_write(vcpu, sysreg, val)) {
+			EPRINTLN("Unhandled MSR sysreg: op0 %u op1 %u CRn %u "
+			    "CRm %u op2 %u Rt %u syndrome %#x value %#llx",
+			    ISS_MSR_OP0(esr_iss), ISS_MSR_OP1(esr_iss),
+			    ISS_MSR_CRn(esr_iss), ISS_MSR_CRm(esr_iss),
+			    ISS_MSR_OP2(esr_iss), reg_num, esr_iss, val);
+			return (1);
 		}
 	}
 	return 0;
@@ -973,10 +1182,8 @@ vmexit_handle_exception(struct vcpu *vcpu, struct vm_exit *vme)
 		break;
 	case EXCP_MSR:
 		// vmm_stat_incr(vcpu, VMEXIT_MSR, 1);
-		EPRINTLN("EXCP_MSR\n!!!!!!!\n");
 		ret = arm64_gen_reg_emul_data(vcpu, esr_iss, vme);
 		vme->exitcode = VM_EXITCODE_REG_EMUL;
-		exit(-1);
 #if 0
 			uint64_t paddr;
 			if (guest_vaddr2paddr(vcpu, pc,  &paddr) ==1) {

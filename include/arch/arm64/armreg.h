@@ -331,6 +331,15 @@
 #define	CONTEXTIDR_EL12_CRm	0
 #define	CONTEXTIDR_EL12_op2	1
 
+/* TPIDR_EL1 - EL1 Software Thread ID Register */
+#define	TPIDR_EL1		MRS_REG(TPIDR_EL1)
+#define	TPIDR_EL1_REG		MRS_REG_ALT_NAME(TPIDR_EL1)
+#define	TPIDR_EL1_op0		3
+#define	TPIDR_EL1_op1		0
+#define	TPIDR_EL1_CRn		13
+#define	TPIDR_EL1_CRm		0
+#define	TPIDR_EL1_op2		4
+
 /* CPACR_EL1 */
 #define	CPACR_EL1_REG		MRS_REG_ALT_NAME(CPACR_EL1)
 #define	CPACR_EL1_op0		3
@@ -359,6 +368,13 @@
 #define	CPACR_EL12_op2		2
 
 /* CSSELR_EL1 - Cache size selection register */
+#define	CSSELR_EL1		MRS_REG(CSSELR_EL1)
+#define	CSSELR_EL1_REG		MRS_REG_ALT_NAME(CSSELR_EL1)
+#define	CSSELR_EL1_op0		3
+#define	CSSELR_EL1_op1		2
+#define	CSSELR_EL1_CRn		0
+#define	CSSELR_EL1_CRm		0
+#define	CSSELR_EL1_op2		0
 #define	CSSELR_Level(i)		(i << 1)
 #define	CSSELR_InD		0x00000001
 
@@ -431,10 +447,12 @@
 						/* through the intr framework */
 
 /* DBGBCR<n>_EL1 - Debug Breakpoint Control Registers */
+#define	DBGBCR_EL1		MRS_REG(DBGBCR_EL1)
 #define	DBGBCR_EL1_op0		2
 #define	DBGBCR_EL1_op1		0
 #define	DBGBCR_EL1_CRn		0
 /* DBGBCR_EL1_CRm indicates which watchpoint this register is for */
+#define	DBGBCR_EL1_CRm		0
 #define	DBGBCR_EL1_op2		5
 #define	DBGBCR_EN		0x1
 #define	DBGBCR_PMC_SHIFT	1
@@ -453,17 +471,21 @@
 #define	DBGBCR_BT		(0xf << DBGBCR_BT_SHIFT)
 
 /* DBGBVR<n>_EL1 - Debug Breakpoint Value Registers */
+#define	DBGBVR_EL1		MRS_REG(DBGBVR_EL1)
 #define	DBGBVR_EL1_op0		2
 #define	DBGBVR_EL1_op1		0
 #define	DBGBVR_EL1_CRn		0
 /* DBGBVR_EL1_CRm indicates which watchpoint this register is for */
+#define	DBGBVR_EL1_CRm		0
 #define	DBGBVR_EL1_op2		4
 
 /* DBGWCR<n>_EL1 - Debug Watchpoint Control Registers */
+#define	DBGWCR_EL1		MRS_REG(DBGWCR_EL1)
 #define	DBGWCR_EL1_op0		2
 #define	DBGWCR_EL1_op1		0
 #define	DBGWCR_EL1_CRn		0
 /* DBGWCR_EL1_CRm indicates which watchpoint this register is for */
+#define	DBGWCR_EL1_CRm		0
 #define	DBGWCR_EL1_op2		7
 #define	DBGWCR_EN		0x1
 #define	DBGWCR_PAC_SHIFT	1
@@ -486,10 +508,12 @@
 #define	DBGWCR_MASK		(0x1f << DBGWCR_MASK_SHIFT)
 
 /* DBGWVR<n>_EL1 - Debug Watchpoint Value Registers */
+#define	DBGWVR_EL1		MRS_REG(DBGWVR_EL1)
 #define	DBGWVR_EL1_op0		2
 #define	DBGWVR_EL1_op1		0
 #define	DBGWVR_EL1_CRn		0
 /* DBGWVR_EL1_CRm indicates which watchpoint this register is for */
+#define	DBGWVR_EL1_CRm		0
 #define	DBGWVR_EL1_op2		6
 
 /* DCZID_EL0 - Data Cache Zero ID register */
@@ -610,6 +634,12 @@
      ((reg ## _CRn) << ISS_MSR_CRn_SHIFT) |		\
      ((reg ## _CRm) << ISS_MSR_CRm_SHIFT) |		\
      ((reg ## _op2) << ISS_MSR_OP2_SHIFT))
+#define	 ISS_MSR_SYSREG(iss)				\
+    ((ISS_MSR_OP0(iss) << MRS_Op0_SHIFT) |		\
+     (ISS_MSR_OP1(iss) << MRS_Op1_SHIFT) |		\
+     (ISS_MSR_CRn(iss) << MRS_CRn_SHIFT) |		\
+     (ISS_MSR_CRm(iss) << MRS_CRm_SHIFT) |		\
+     (ISS_MSR_OP2(iss) << MRS_Op2_SHIFT))
 
 #define	 ISS_DATA_ISV_SHIFT	24
 #define	 ISS_DATA_ISV		(0x01 << ISS_DATA_ISV_SHIFT)
@@ -2056,6 +2086,13 @@
 #define	OSLSR_EL1_op2			4
 
 /* PAR_EL1 - Physical Address Register */
+#define	PAR_EL1			MRS_REG(PAR_EL1)
+#define	PAR_EL1_REG		MRS_REG_ALT_NAME(PAR_EL1)
+#define	PAR_EL1_op0		3
+#define	PAR_EL1_op1		0
+#define	PAR_EL1_CRn		7
+#define	PAR_EL1_CRm		4
+#define	PAR_EL1_op2		0
 #define	PAR_F_SHIFT		0
 #define	PAR_F			(0x1 << PAR_F_SHIFT)
 #define	PAR_SUCCESS(x)		(((x) & PAR_F) == 0)
@@ -2227,20 +2264,24 @@
 #define	PMCR_N_MASK			(0x1f << PMCR_N_SHIFT)
 
 /* PMEVCNTR<n>_EL0 */
+#define	PMEVCNTR_EL0			MRS_REG(PMEVCNTR_EL0)
 #define	PMEVCNTR_EL0_op0		3
 #define	PMEVCNTR_EL0_op1		3
 #define	PMEVCNTR_EL0_CRn		14
 #define	PMEVCNTR_EL0_CRm		8
+#define	PMEVCNTR_EL0_op2		0
 /*
  * PMEVCNTRn_EL0_CRm[1:0] holds the upper 2 bits of 'n'
  * PMEVCNTRn_EL0_op2 holds the lower 3 bits of 'n'
  */
 
 /* PMEVTYPER<n>_EL0 - Performance Monitoring Event Type */
+#define	PMEVTYPER_EL0			MRS_REG(PMEVTYPER_EL0)
 #define	PMEVTYPER_EL0_op0		3
 #define	PMEVTYPER_EL0_op1		3
 #define	PMEVTYPER_EL0_CRn		14
 #define	PMEVTYPER_EL0_CRm		12
+#define	PMEVTYPER_EL0_op2		0
 /*
  * PMEVTYPERn_EL0_CRm[1:0] holds the upper 2 bits of 'n'
  * PMEVTYPERn_EL0_op2 holds the lower 3 bits of 'n'
@@ -2549,6 +2590,16 @@
 #define	SPSR_EL1_CRn			4
 #define	SPSR_EL1_CRm			0
 #define	SPSR_EL1_op2			0
+
+/* SP_EL0 */
+#define	SP_EL0				MRS_REG(SP_EL0)
+#define	SP_EL0_REG			MRS_REG_ALT_NAME(SP_EL0)
+#define	SP_EL0_op0			3
+#define	SP_EL0_op1			0
+#define	SP_EL0_CRn			4
+#define	SP_EL0_CRm			1
+#define	SP_EL0_op2			0
+
 /*
  * When the exception is taken in AArch64:
  * M[3:2] is the exception level
