@@ -31,10 +31,15 @@
 #include <pthread.h>
 #include "common.h"
 #include <support/ethernet.h>
-#include <vmnet/vmnet.h>
 #include "debug.h"
 #include "net_backends.h"
 #include "net_backends_priv.h"
+#include <net/ethernet.h>   // still provides struct ether_addr
+
+#ifndef ether_addr_t
+typedef struct ether_addr ether_addr_t;
+#endif
+#include <vmnet/vmnet.h>
 
 struct vmnet_priv {
 	uint64_t mtu;

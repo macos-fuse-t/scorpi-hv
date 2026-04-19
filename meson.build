@@ -75,6 +75,7 @@ sources = files(
     'src/usb_kbd.c',
     'src/smbiostbl.c',
     'src/slirp_net_backend.c',
+    'src/sock_net_backend.c',
     'src/usb_net.c',
     'src/pci_virtio_gpu.c',
     'src/pci_virtio_console.c',
@@ -102,7 +103,7 @@ if host_machine.system() == 'darwin'
         'src/libvmm/hvf/vmm.c',
         'src/libvmm/hvf/vgic.c',
         'src/libvmm/hvf/vmm_instruction_emul.c',
-        'src/vmnet_net_backend.c',
+        #'src/vmnet_net_backend.c',
     )
 endif
 
