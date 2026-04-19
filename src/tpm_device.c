@@ -66,7 +66,7 @@ tpm_write_dsdt(const struct acpi_device *const dev)
 	dsdt_line("Name(TPM2, Package(2) {0, 0})");
 	dsdt_line("Name(TPM3, Package(3) {0, 0, 0})");
 
-	if (ppi->write_dsdt_regions) {
+	if (ppi != NULL && ppi->write_dsdt_regions) {
 		error = ppi->write_dsdt_regions(tpm->ppi_sc);
 		if (error) {
 			warnx("%s: failed to write ppi dsdt regions\n",
@@ -85,7 +85,7 @@ tpm_write_dsdt(const struct acpi_device *const dev)
 	dsdt_line("Method(_DSM, 4, Serialized)");
 	dsdt_line("{");
 	dsdt_indent(1);
-	if (ppi->write_dsdt_dsm) {
+	if (ppi != NULL && ppi->write_dsdt_dsm) {
 		error = ppi->write_dsdt_dsm(tpm->ppi_sc);
 		if (error) {
 			warnx("%s: failed to write ppi dsdt dsm\n", __func__);
@@ -138,8 +138,8 @@ tpm_device_create(struct tpm_device **const new_dev, struct vmctx *const vm_ctx,
 		goto err_out;
 	}
 
+	set_config_value_node_if_unset(nvl, "version", "2.0");
 	set_config_value_node_if_unset(nvl, "intf", "crb");
-	set_config_value_node_if_unset(nvl, "ppi", "qemu");
 
 	value = get_config_value_node(nvl, "version");
 	assert(value != NULL);
@@ -206,24 +206,26 @@ tpm_device_create(struct tpm_device **const new_dev, struct vmctx *const vm_ctx,
 	}
 
 	value = get_config_value_node(nvl, "ppi");
-	SET_FOREACH(pp_ppi, tpm_ppi_set)
-	{
-		if (strcmp(value, (*pp_ppi)->name)) {
-			continue;
+	if (value != NULL && strcmp(value, "none") != 0) {
+		SET_FOREACH(pp_ppi, tpm_ppi_set)
+		{
+			if (strcmp(value, (*pp_ppi)->name)) {
+				continue;
+			}
+			dev->ppi = *pp_ppi;
+			break;
 		}
-		dev->ppi = *pp_ppi;
-		break;
-	}
-	if (dev->ppi == NULL) {
-		warnx("TPM PPI \"%s\" not found\n", value);
-		error = EINVAL;
-		goto err_out;
-	}
-
-	if (dev->ppi->init) {
-		error = dev->ppi->init(&dev->ppi_sc);
-		if (error)
+		if (dev->ppi == NULL) {
+			warnx("TPM PPI \"%s\" not found\n", value);
+			error = EINVAL;
 			goto err_out;
+		}
+
+		if (dev->ppi->init) {
+			error = dev->ppi->init(&dev->ppi_sc);
+			if (error)
+				goto err_out;
+		}
 	}
 
 	*new_dev = dev;

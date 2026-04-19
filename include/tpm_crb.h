@@ -1,0 +1,22 @@
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Copyright (c) 2022 Beckhoff Automation GmbH & Co. KG
+ * Author: Corvin Kohne <c.koehne@beckhoff.com>
+ */
+
+#pragma once
+
+#define TPM_CRB_ADDRESS 0x20000
+#define TPM_CRB_REGS_SIZE 0x1000
+#define TPM_CRB_MMIO_SIZE TPM_CRB_REGS_SIZE
+
+#define TPM_CRB_CONTROL_AREA_OFFSET 0x40
+#define TPM_CRB_CONTROL_AREA_ADDRESS \
+	(TPM_CRB_ADDRESS + TPM_CRB_CONTROL_AREA_OFFSET)
+#define TPM_CRB_CONTROL_AREA_SIZE TPM_CRB_REGS_SIZE
+
+#define TPM_CRB_DATA_BUFFER_OFFSET 0x80
+#define TPM_CRB_DATA_BUFFER_ADDRESS \
+	(TPM_CRB_ADDRESS + TPM_CRB_DATA_BUFFER_OFFSET)
+#define TPM_CRB_DATA_BUFFER_SIZE 0xF80

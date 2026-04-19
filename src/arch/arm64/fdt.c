@@ -323,6 +323,22 @@ fdt_add_fwcfg(uint64_t mmio_base, uint64_t mmio_size)
 }
 
 void
+fdt_add_tpm(uint64_t tpm_base, uint64_t tpm_size)
+{
+	char node_name[32];
+	void *fdt;
+
+	fdt = fdtroot;
+
+	snprintf(node_name, sizeof(node_name), "tpm@%llx",
+	    (unsigned long long)tpm_base);
+	fdt_begin_node(fdt, node_name);
+	fdt_property_string(fdt, "compatible", "tcg,tpm-tis-mmio");
+	set_single_reg(fdt, tpm_base, tpm_size);
+	fdt_end_node(fdt);
+}
+
+void
 fdt_add_timer(void)
 {
 	void *fdt, *interrupts;

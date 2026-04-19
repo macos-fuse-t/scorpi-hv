@@ -53,6 +53,7 @@
 #include "qemu_fwcfg.h"
 #include "rtc_pl031.h"
 #include "smbiostbl.h"
+#include "tpm_crb.h"
 #include "uart_emul.h"
 #include "usb_emul.h"
 
@@ -109,6 +110,7 @@ bhyve_usage(int code)
 	    "       -k: key=value flat config file\n"
 	    "       -m: memory size\n"
 	    "       -M: enable experimental GIC MBI/MSI support\n"
+	    "       -l: device config, e.g. cnc,/path/to/socket or tpm,swtpm,/path/to/tpm.socket\n"
 	    "       -o: set config 'var' to 'value'\n"
 	    "       -p: pin 'vcpu' to 'hostcpu'\n"
 	    "       -S: guest memory cannot be swapped\n"
@@ -118,6 +120,62 @@ bhyve_usage(int code)
 	    progname, (int)strlen(progname), "", (int)strlen(progname), "",
 	    (int)strlen(progname), "");
 	exit(code);
+}
+
+static void
+bhyve_parse_lpc_device_config(const char *opt)
+{
+	nvlist_t *nvl;
+	char *cfg, *name, *type, *path, *next, *pair, *key, *value;
+
+	cfg = strdup(opt);
+	if (cfg == NULL)
+		err(4, "Failed to allocate memory");
+
+	next = cfg;
+	name = strsep(&next, ",");
+	if (name == NULL || *name == '\0')
+		errx(EX_USAGE, "invalid -l config '%s'", opt);
+
+	if (strcmp(name, "cnc") == 0) {
+		path = strsep(&next, ",");
+		if (path == NULL || *path == '\0' || next != NULL)
+			errx(EX_USAGE, "invalid cnc config '%s'", opt);
+		set_config_value("comm_sock", path);
+		free(cfg);
+		return;
+	}
+
+	if (strcmp(name, "tpm") != 0) {
+		set_config_value("comm_sock", opt);
+		free(cfg);
+		return;
+	}
+
+	type = strsep(&next, ",");
+	path = strsep(&next, ",");
+	if (type == NULL || *type == '\0' || path == NULL || *path == '\0')
+		errx(EX_USAGE, "invalid TPM config '%s'", opt);
+
+	nvl = create_config_node("tpm");
+	set_config_value_node(nvl, "type", type);
+	set_config_value_node(nvl, "path", path);
+	set_config_value_node(nvl, "version", "2.0");
+	set_config_value_node(nvl, "intf", "crb");
+
+	while ((pair = strsep(&next, ",")) != NULL) {
+		if (*pair == '\0')
+			continue;
+		key = pair;
+		value = strchr(pair, '=');
+		if (value == NULL || value[1] == '\0')
+			errx(EX_USAGE, "invalid TPM option '%s'", key);
+		*value = '\0';
+		value++;
+		set_config_value_node(nvl, key, value);
+	}
+
+	free(cfg);
 }
 
 void
@@ -184,7 +242,7 @@ bhyve_optparse(int argc, char **argv)
 			set_config_bool("virtio_msix", false);
 			break;
 		case 'l':
-			set_config_value("comm_sock", optarg);
+			bhyve_parse_lpc_device_config(optarg);
 			break;
 		case 'h':
 			bhyve_usage(0);
@@ -415,6 +473,8 @@ bhyve_init_platform(struct vmctx *ctx, struct vcpu *bsp)
 	    PCI_EMUL_MEMBASE32, PCI_EMUL_MEMLIMIT32);
 	if (bootrom_vars(&vars_gpa, &vars_size) == 0)
 		fdt_add_flash(vars_gpa, vars_size);
+	if (find_config_node("tpm") != NULL)
+		fdt_add_tpm(TPM_CRB_ADDRESS, TPM_CRB_MMIO_SIZE);
 
 	error = smbios_build(ctx, &smbios, &smbios_len);
 	if (error) {
