@@ -478,6 +478,30 @@ qemu_fwcfg_add_file(const char *name, const uint32_t size, void *const data)
 	return (0);
 }
 
+int
+qemu_fwcfg_add_file_deferred(const char *name, const uint32_t size,
+    void *const data)
+{
+	struct qemu_fwcfg_user_file *fwcfg_file;
+
+	if (fwcfg_sc.directory != NULL)
+		return (qemu_fwcfg_add_file(name, size, data));
+
+	if (strlen(name) >= QEMU_FWCFG_MAX_NAME)
+		return (EINVAL);
+
+	fwcfg_file = malloc(sizeof(*fwcfg_file));
+	if (fwcfg_file == NULL)
+		return (ENOMEM);
+
+	strlcpy((char *)fwcfg_file->name, name, sizeof(fwcfg_file->name));
+	fwcfg_file->size = size;
+	fwcfg_file->data = data;
+	STAILQ_INSERT_TAIL(&user_files, fwcfg_file, chain);
+
+	return (0);
+}
+
 static int
 qemu_fwcfg_add_user_files(void)
 {

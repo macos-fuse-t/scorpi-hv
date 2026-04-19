@@ -48,6 +48,7 @@ sources = files(
     'src/tpm_device.c',
     'src/tpm_emul_swtpm.c',
     'src/tpm_intf_crb.c',
+    'src/tpm_ppi_qemu.c',
     'src/mevent.c',
     'src/qemu_fwcfg.c',
     'src/qemu_loader.c',

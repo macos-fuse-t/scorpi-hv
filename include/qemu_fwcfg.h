@@ -22,5 +22,7 @@ struct qemu_fwcfg_item {
 
 int qemu_fwcfg_add_file(const char *name,
     const uint32_t size, void *const data);
+int qemu_fwcfg_add_file_deferred(const char *name,
+    const uint32_t size, void *const data);
 int qemu_fwcfg_init(struct vmctx *const ctx, uint64_t mmio_base, size_t mmio_size);
 int qemu_fwcfg_parse_cmdline_arg(const char *opt);

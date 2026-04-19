@@ -140,6 +140,7 @@ tpm_device_create(struct tpm_device **const new_dev, struct vmctx *const vm_ctx,
 
 	set_config_value_node_if_unset(nvl, "version", "2.0");
 	set_config_value_node_if_unset(nvl, "intf", "crb");
+	set_config_value_node_if_unset(nvl, "ppi", "qemu");
 
 	value = get_config_value_node(nvl, "version");
 	assert(value != NULL);
