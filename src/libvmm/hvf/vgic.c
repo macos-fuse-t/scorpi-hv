@@ -31,6 +31,7 @@
 
 #include <sys/mman.h>
 #include <assert.h>
+#include <stdbool.h>
 #include <limits.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -48,33 +49,40 @@
 #define GICD_IIDR 0x0008
 #define GICD_TYPER2 0x000c
 #define GICD_STATUSR 0x0010
+#define GICD_IPRIORITYR 0x0400
+#define GICD_IROUTER 0x6000
+#define GICD_IROUTER_LAST 0x7ff8
 
 struct vgic_softc {
 	struct mem_range mr;
 	uintptr_t shadow_dist;
+	size_t dist_size;
+	uint32_t max_intid;
 };
 
-void
-vgic_write(struct vgic_softc *sc, int offset, uint32_t value)
+static int
+vgic_reg_width(int offset)
 {
-	switch (offset) {
-	case HV_GIC_DISTRIBUTOR_REG_GICD_CTLR:
-		// if we don't do this it crashes and types: "FIXME IF: "Handle
-		// this" line 1479" Would you Apple?
-		value &= 0x8000007F;
-		break;
-	case 0x40: // GICD_SETSPI_NSR
-		EPRINTLN("!!!!SPI %x\n", value);
-		break;
-	}
-	if (hv_gic_set_distributor_reg(offset, value) != HV_SUCCESS) {
-		EPRINTLN("hv_gic_set_distributor_reg() failed: offset 0x%x\n",
-		    offset);
-	}
+	if (offset >= GICD_IROUTER && offset <= GICD_IROUTER_LAST)
+		return (8);
+
+	return (4);
 }
 
-uint32_t
-vgic_read(struct vgic_softc *sc, int offset)
+static bool
+vgic_ignore_dist_access(struct vgic_softc *sc, int offset)
+{
+	uint32_t intid;
+
+	if (offset < GICD_IROUTER || offset > GICD_IROUTER_LAST)
+		return (false);
+
+	intid = (offset - GICD_IROUTER) / 8;
+	return (intid > sc->max_intid);
+}
+
+static uint64_t
+vgic_read_aligned(struct vgic_softc *sc, int offset)
 {
 	uint64_t val;
 
@@ -85,10 +93,13 @@ vgic_read(struct vgic_softc *sc, int offset)
 		return (0);
 	}
 
+	if (vgic_ignore_dist_access(sc, offset))
+		return (0);
+
 	if (hv_gic_get_distributor_reg(offset, &val) != HV_SUCCESS) {
 		EPRINTLN("hv_gic_get_distributor_reg() failed: offset 0x%x\n",
 		    offset);
-		return 0;
+		return (0);
 	}
 
 	switch (offset) {
@@ -96,21 +107,88 @@ vgic_read(struct vgic_softc *sc, int offset)
 		val |= TYPER_MBIS;
 		break;
 	}
-	return val;
+
+	return (val);
+}
+
+static void
+vgic_write_aligned(struct vgic_softc *sc, int offset, uint64_t value)
+{
+	switch (offset) {
+	case HV_GIC_DISTRIBUTOR_REG_GICD_CTLR:
+		// if we don't do this it crashes and types: "FIXME IF: "Handle
+		// this" line 1479" Would you Apple?
+		value &= 0x8000007F;
+		break;
+	case 0x40: // GICD_SETSPI_NSR
+		EPRINTLN("!!!!SPI %llx\n", (unsigned long long)value);
+		break;
+	}
+
+	if (vgic_ignore_dist_access(sc, offset))
+		return;
+
+	if (hv_gic_set_distributor_reg(offset, value) != HV_SUCCESS) {
+		EPRINTLN("hv_gic_set_distributor_reg() failed: offset 0x%x\n",
+		    offset);
+	}
+}
+
+static void
+vgic_write(struct vgic_softc *sc, int offset, int size, uint64_t value)
+{
+	int reg_width, aligned;
+	uint64_t cur, mask;
+	int shift;
+
+	reg_width = vgic_reg_width(offset);
+	aligned = offset & ~(reg_width - 1);
+
+	if ((size == reg_width) && (offset == aligned)) {
+		vgic_write_aligned(sc, offset, value);
+		return;
+	}
+
+	cur = vgic_read_aligned(sc, aligned);
+	shift = (offset - aligned) * 8;
+	mask = (size == 8) ? UINT64_MAX : ((1ULL << (size * 8)) - 1);
+	cur &= ~(mask << shift);
+	cur |= (value & mask) << shift;
+	vgic_write_aligned(sc, aligned, cur);
+}
+
+static uint64_t
+vgic_read(struct vgic_softc *sc, int offset, int size)
+{
+	int reg_width, aligned;
+	uint64_t val, mask;
+	int shift;
+
+	reg_width = vgic_reg_width(offset);
+	aligned = offset & ~(reg_width - 1);
+
+	if ((size == reg_width) && (offset == aligned))
+		return (vgic_read_aligned(sc, offset));
+
+	val = vgic_read_aligned(sc, aligned);
+	shift = (offset - aligned) * 8;
+	mask = (size == 8) ? UINT64_MAX : ((1ULL << (size * 8)) - 1);
+	return ((val >> shift) & mask);
 }
 
 static int
 mmio_vgic_mem_handler(struct vcpu *vcpu __unused, int dir, uint64_t addr,
-    int size __unused, uint64_t *val, void *arg1, long arg2)
+    int size, uint64_t *val, void *arg1, long arg2)
 {
 	struct vgic_softc *sc = arg1;
 	long reg;
 
 	reg = addr - arg2;
-	if (dir == MEM_F_WRITE)
-		vgic_write(sc, reg, *val);
-	else
-		*val = vgic_read(sc, reg);
+	if (dir == MEM_F_WRITE) {
+		vgic_write(sc, reg, size, *val);
+	} else {
+		*val = vgic_read(sc, reg, size);
+	}
 
 	return (0);
 }
@@ -177,6 +255,8 @@ init_apple_vgic(struct vmctx *ctx, uint64_t dist_start, size_t dist_size,
 	bzero(&sc->mr, sizeof(struct mem_range));
 
 	sc->shadow_dist = 0;
+	sc->dist_size = dist_size;
+	sc->max_intid = spi_intid_base + spi_intid_count - 1;
 	error = vm_setup_memory_segment(ctx, dist_gpa, dist_size,
 	    PROT_READ | PROT_WRITE, &sc->shadow_dist);
 	if (error) {
