@@ -1064,10 +1064,12 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 	data = NULL;
 	idx = xfer->head;
 	iovcnt = 0;
-	for (i = idx; i < xfer->ndata && iovcnt < nitems(iov); i++) {
+	for (i = 0; i < xfer->ndata && iovcnt < nitems(iov); i++) {
 		data = &xfer->data[idx];
-		if (data->processed)
+		if (data->processed) {
+			idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
 			continue;
+		}
 
 		if (data->buf != NULL && data->blen != 0) {
 			iov->iov_base = data->buf;
@@ -1091,7 +1093,8 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 		    8 * sizeof(struct usb_ncm16_dp) + 4;
 		riov = iov_trim(riov, &riov_len, hdr_len);
 		if (riov == NULL) {
-			WPRINTF(("unet_process_bulk_in: not enough header space"));
+			WPRINTF(
+			    ("unet_process_bulk_in: not enough header space"));
 			WPRINTF(("xfer block size %d, %d out of %d\n",
 			    data->blen, i, xfer->ndata));
 			assert(0);
