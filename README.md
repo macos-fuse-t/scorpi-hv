@@ -41,19 +41,23 @@ Currently, Scorpi runs on Mac ARM64 using Apple's Hypervisor Framework. The plan
 
 ## Running a Windows VM
 
-The easiest way to try a Windows 11 VM is to download a Microsoft HyperV preview image and convert it to Scorpi.
+Use a Windows ARM<sub>64</sub> ISO together with `swtpm`.
 
-1. Download a VHDX image from:\
-   [Windows Insider Preview ARM<sub>64</sub>](https://www.microsoft.com/en-us/software-download/windowsinsiderpreviewarm64)
-2. Convert the disk image to Scorpi format using `qemu-img`:
+1. Download a Windows ARM<sub>64</sub> ISO
+2. Create an empty disk with:
    ```sh
-   qemu-img convert -f vhdx -O raw input.vhdx win11.img
+   mkfile -n [size] [img_file]
    ```
-3. Run Scorpi:
+3. Launch the TPM emulator `swtpm` and expose a Unix socket for Scorpi:
    ```sh
-   ./builddir/scorpi -s 0,hostbridge -o bootrom=./firmware/SCORPI_EFI.fd -s 1,xhci -u kbd -u tablet -u net,backend=slirp -s 2,ahci-hd,win11.img -s 3,virtio-gpu,fb=on -l /tmp/vm_sock -c 4 -m 4G vm1
+   mkdir -p /tmp/scorpi-tpm/state
+   swtpm socket --tpm2 --flags startup-clear --tpmstate dir=/tmp/scorpi-tpm/state --server type=unixio,path=/tmp/scorpi-tpm/swtpm.sock
    ```
-4. Run ScorpiViewer.
+4. Launch Scorpi:
+   ```sh
+   ./builddir/scorpi -s 0,hostbridge -o bootrom=./firmware/SCORPI_EFI.fd -o bootvars=./firmware/SCORPI_VARS.fd -s 1,xhci -u kbd -u tablet -u net,backend=slirp -s 2,ahci-hd,[img_file] -s 3,ahci-cd,[iso] -s 5,virtio-gpu,fb=on -m 4G -c 2 -l cnc,/tmp/vm_sock -l tpm,swtpm,/tmp/scorpi-tpm/swtpm.sock,version=2.0,intf=tis vm1
+   ```
+5. Run ScorpiViewer.
 
 ## Future Roadmap
 
@@ -76,4 +80,3 @@ Scorpi is released under a **permissive license**, providing flexibility for var
 Contributions and feedback are welcome! Stay tuned for updates as Scorpi evolves into a powerful and versatile hypervisor.
 
 For inquiries, contact **Alex Fishman** at [alex@fuse-t.org](mailto\:alex@fuse-t.org).
-
