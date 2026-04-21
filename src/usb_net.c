@@ -70,6 +70,8 @@ static int unet_debug = 0;
 
 #define DEFAULT_MAC_ADDR "00CD563B4270"
 #define UNET_MTU_SIZE	 1514
+#define UNET_NTB_MAX_SIZE 65536
+#define UNET_NTB_MAX_FRAMES 32
 
 enum {
 	UMSTR_LANG,
@@ -319,6 +321,7 @@ struct unet_softc {
 
 	uint16_t ntb_format;
 	uint16_t max_dgram;
+	uint32_t ntb_input_size;
 	enum unet_notify_state notify_state;
 
 	uint16_t seq;
@@ -345,6 +348,12 @@ unet_transmit_backend(struct unet_softc *sc, struct iovec *iov, int iovcnt)
 		return;
 
 	netbe_send(sc->vsc_be, iov, iovcnt);
+}
+
+static bool
+unet_ntb_format_supported(uint16_t format)
+{
+	return (format == UCDC_NCM_FORMAT_NTB16);
 }
 
 static bool
@@ -388,8 +397,9 @@ unet_init(struct usb_hci *hci, nvlist_t *nvl)
 	sc = calloc(1, sizeof(struct unet_softc));
 	sc->hci = hci;
 
-	sc->ntb_format = UCDC_NCM_FORMAT_NTB32;
+	sc->ntb_format = UCDC_NCM_FORMAT_NTB16;
 	sc->max_dgram = 8192;
+	sc->ntb_input_size = UNET_NTB_MAX_SIZE;
 
 	pthread_mutexattr_init(&attr);
 	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
@@ -453,13 +463,14 @@ unet_request(void *scarg, struct usb_data_xfer *xfer)
 	int eshort;
 
 	sc = scarg;
+	pthread_mutex_lock(&sc->mtx);
 
 	data = NULL;
 	udata = NULL;
 	idx = xfer->head;
 	for (i = 0; i < xfer->ndata; i++) {
 		xfer->data[idx].bdone = 0;
-		if (data == NULL && USB_DATA_OK(xfer, i)) {
+		if (data == NULL && USB_DATA_OK(xfer, idx)) {
 			data = &xfer->data[idx];
 			udata = data->buf;
 		}
@@ -729,11 +740,56 @@ unet_request(void *scarg, struct usb_data_xfer *xfer)
 		data->bdone += len;
 		break;
 
+	case UREQ(UCDC_NCM_GET_NTB_FORMAT, UT_READ_CLASS_INTERFACE):
+		if (!data)
+			break;
+
+		if (len >= 2) {
+			data->blen = len - 2;
+			len = 2;
+		} else
+			data->blen = 0;
+		memcpy(data->buf, &sc->ntb_format, len);
+		data->bdone += len;
+		break;
+
+	case UREQ(UCDC_NCM_GET_NTB_INPUT_SIZE, UT_READ_CLASS_INTERFACE):
+		if (!data)
+			break;
+
+		if (len >= 4) {
+			data->blen = len - 4;
+			len = 4;
+		} else
+			data->blen = 0;
+		memcpy(data->buf, &sc->ntb_input_size, len);
+		data->bdone += len;
+		break;
+
 	case UREQ(UCDC_NCM_SET_NTB_FORMAT, UT_WRITE_CLASS_INTERFACE):
 		DPRINTF((
 		    "unet: (UCDC_NCM_SET_NTB_FORMAT, UT_WRITE_CLASS_INTERFACE): %d",
 		    value));
+		if (!unet_ntb_format_supported(value)) {
+			err = USB_ERR_STALLED;
+			goto done;
+		}
 		sc->ntb_format = value;
+		break;
+
+	case UREQ(UCDC_NCM_SET_NTB_INPUT_SIZE, UT_WRITE_CLASS_INTERFACE):
+		DPRINTF((
+		    "unet: (UCDC_NCM_SET_NTB_INPUT_SIZE, UT_WRITE_CLASS_INTERFACE)"));
+		if (!data || len < 4)
+			break;
+		sc->ntb_input_size = usb_extract_u32(data->buf);
+		if (sc->ntb_input_size < sizeof(struct usb_ncm16_hdr) +
+		    sizeof(struct usb_ncm16_dpt) +
+		    (2 * sizeof(struct usb_ncm16_dp)) ||
+		    sc->ntb_input_size > UNET_NTB_MAX_SIZE) {
+			err = USB_ERR_STALLED;
+			goto done;
+		}
 		break;
 
 	case UREQ(UCDC_NCM_SET_MAX_DATAGRAM_SIZE, UT_WRITE_CLASS_INTERFACE):
@@ -767,6 +823,8 @@ done:
 	else if (eshort)
 		err = USB_ERR_SHORT_XFER;
 
+	pthread_mutex_unlock(&sc->mtx);
+
 	DPRINTF(("unet request error code %d (0=ok), blen %u txlen %u", err,
 	    (data ? data->blen : 0), (data ? data->bdone : 0)));
 
@@ -792,7 +850,7 @@ struct usb_cdc_notification link_notify = {
 	MSETW(.data, 1),
 };
 
-static int
+static size_t
 unet_process_bulk_out_packet(struct unet_softc *sc, struct iovec *iov,
     int iovcnt)
 {
@@ -803,33 +861,95 @@ unet_process_bulk_out_packet(struct unet_softc *sc, struct iovec *iov,
 	struct usb_ncm16_dpt ndp;
 	struct usb_ncm16_dp dp[32];
 	int pktiovcnt;
+	size_t avail;
+	size_t advance;
+	size_t copied;
+	uint16_t block_len;
+	uint16_t dpt_idx;
+	uint16_t dpt_len;
+	size_t consumed;
 	size_t len;
 
+	consumed = 0;
 	while (iovcnt) {
-		iov_copy(&ntb, sizeof(ntb), iov, iovcnt, 0);
+		avail = count_iov(iov, iovcnt);
+		if (avail < sizeof(ntb)) {
+			DPRINTF(("unet bulk-out: partial NTB tail %zu byte(s) left in TRB",
+			    avail));
+			break;
+		}
+
+		copied = iov_copy(&ntb, sizeof(ntb), iov, iovcnt, 0);
+		if (copied < sizeof(ntb)) {
+			WPRINTF(("unet bulk-out: short NTB header copy %zu/%zu byte(s)",
+			    copied, sizeof(ntb)));
+			break;
+		}
 
 		if (usb_extract_u32(ntb.dwSignature) != 0x484D434E) { // "NCMH"
 			EPRINTLN("Invalid NTB signature %x, len %d",
 			    usb_extract_u32(ntb.dwSignature),
 			    usb_extract_u16(ntb.wHeaderLength));
-			// return (-1);
-			iov = iov_trim(iov, &iovcnt,
-			    usb_extract_u16(ntb.wHeaderLength));
+			iov = iov_trim(iov, &iovcnt, 1);
+			consumed += 1;
 			continue;
 		}
 
-		iov_copy(&ndp, sizeof(ndp), iov, iovcnt,
-		    usb_extract_u16(ntb.wDptIndex));
+		block_len = usb_extract_u16(ntb.wBlockLength);
+		dpt_idx = usb_extract_u16(ntb.wDptIndex);
+		if (block_len > avail) {
+			WPRINTF(("unet bulk-out: NTB crosses TRB boundary: block=%u avail=%zu",
+			    block_len, avail));
+			break;
+		}
+		if (usb_extract_u16(ntb.wHeaderLength) < sizeof(ntb) ||
+		    block_len < sizeof(ntb) ||
+		    dpt_idx < sizeof(ntb) || dpt_idx + sizeof(ndp) > block_len) {
+			EPRINTLN("Invalid NTB layout hdr=%u block=%u dpt=%u avail=%zu",
+			    usb_extract_u16(ntb.wHeaderLength), block_len, dpt_idx,
+			    avail);
+			iov = iov_trim(iov, &iovcnt, 1);
+			consumed += 1;
+			continue;
+		}
+
+		copied = iov_copy(&ndp, sizeof(ndp), iov, iovcnt, dpt_idx);
+		if (copied < sizeof(ndp)) {
+			iov = iov_trim(iov, &iovcnt, 1);
+			consumed += 1;
+			continue;
+		}
+
 		if (usb_extract_u32(ndp.dwSignature) != 0x304D434E) { // "NCM0"
 			EPRINTLN("Invalid NDP signature %d",
 			    usb_extract_u32(ndp.dwSignature));
-			return (-1);
+			iov = iov_trim(iov, &iovcnt, 1);
+			consumed += 1;
+			continue;
 		}
 
-		// Extract Packets
-		nframes = (usb_extract_u16(ndp.wLength) - 8) / 4 - 1;
-		iov_copy(dp, nframes * sizeof(dp[0]), iov, iovcnt,
-		    usb_extract_u16(ntb.wDptIndex) + sizeof(ndp));
+		dpt_len = usb_extract_u16(ndp.wLength);
+		if (dpt_len < sizeof(ndp) || dpt_idx + dpt_len > block_len) {
+			EPRINTLN("Invalid NDP length %u", dpt_len);
+			iov = iov_trim(iov, &iovcnt, 1);
+			consumed += 1;
+			continue;
+		}
+
+		nframes = (dpt_len - sizeof(ndp)) / sizeof(dp[0]);
+		if (nframes <= 0) {
+			iov = iov_trim(iov, &iovcnt, block_len);
+			consumed += block_len;
+			continue;
+		}
+		nframes = MIN(nframes, (int)nitems(dp));
+		copied = iov_copy(dp, nframes * sizeof(dp[0]), iov, iovcnt,
+		    dpt_idx + sizeof(ndp));
+		if (copied < (size_t)nframes * sizeof(dp[0])) {
+			iov = iov_trim(iov, &iovcnt, 1);
+			consumed += 1;
+			continue;
+		}
 
 		for (int i = 0; i < nframes; i++) {
 			idx = usb_extract_u16(dp[i].wFrameIndex);
@@ -837,46 +957,89 @@ unet_process_bulk_out_packet(struct unet_softc *sc, struct iovec *iov,
 			if (!idx || !pktlen) {
 				break;
 			}
+			if ((size_t)idx + pktlen > block_len) {
+				EPRINTLN("Invalid frame range idx=%u len=%u block=%u",
+				    idx, pktlen, block_len);
+				break;
+			}
 
 			len = make_iov(iov, iovcnt, pktiov, &pktiovcnt, idx,
 			    pktlen);
-			assert(len == pktlen);
+			if (len != pktlen) {
+				EPRINTLN("Short frame gather %zu/%u", len, pktlen);
+				break;
+			}
 
 			unet_transmit_backend(sc, pktiov, pktiovcnt);
 		}
 
-		iov = iov_trim(iov, &iovcnt, usb_extract_u16(ntb.wBlockLength));
+		advance = block_len;
+		iov = iov_trim(iov, &iovcnt, advance);
+		consumed += advance;
 	}
 
-	return (0);
+	return (consumed);
 }
 
 static int
 unet_process_bulk_out(struct unet_softc *sc, struct usb_data_xfer *xfer)
 {
 	struct usb_data_xfer_block *data;
-	int i;
+	int i, idx;
 	int err = USB_ERR_NORMAL_COMPLETION;
 	struct iovec iov[USB_MAX_XFER_BLOCKS];
+	size_t consumed, remaining;
 	int iovcnt;
 
 	iovcnt = 0;
-	data = NULL;
-	for (i = xfer->head; i < xfer->ndata; i++) {
-		assert(i < USB_MAX_XFER_BLOCKS);
-		data = &xfer->data[i];
+	idx = xfer->head;
+	for (i = 0; i < xfer->ndata; i++) {
+		data = &xfer->data[idx];
 		if (data->processed) {
+			idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
 			continue;
 		}
-		data->processed = 1;
+
 		if (data->buf != NULL && data->blen != 0) {
-			iov[iovcnt].iov_base = data->buf;
-			iov[iovcnt++].iov_len = data->blen;
-			data->bdone = data->blen;
-			data->blen = 0;
+			iov[iovcnt].iov_base = (uint8_t *)data->buf + data->bdone;
+			iov[iovcnt].iov_len = data->blen;
+			iovcnt++;
+		} else {
+			data->processed = 1;
 		}
+		idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
 	}
-	unet_process_bulk_out_packet(sc, iov, iovcnt);
+
+	if (iovcnt == 0)
+		return (err);
+
+	consumed = unet_process_bulk_out_packet(sc, iov, iovcnt);
+	remaining = consumed;
+
+	idx = xfer->head;
+	for (i = 0; i < xfer->ndata && remaining > 0; i++) {
+		size_t chunk;
+
+		data = &xfer->data[idx];
+		if (data->processed) {
+			idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
+			continue;
+		}
+		if (data->buf == NULL || data->blen == 0) {
+			data->processed = 1;
+			idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
+			continue;
+		}
+
+		chunk = MIN((size_t)data->blen, remaining);
+		data->bdone += chunk;
+		data->blen -= chunk;
+		remaining -= chunk;
+		if (data->blen == 0)
+			data->processed = 1;
+
+		idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
+	}
 
 	return err;
 }
@@ -914,8 +1077,6 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 		} else {
 			assert(i == xfer->ndata - 1);
 			assert(0);
-			// data->processed = 1;
-			// continue;
 		}
 		idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
 
@@ -930,8 +1091,7 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 		    8 * sizeof(struct usb_ncm16_dp) + 4;
 		riov = iov_trim(riov, &riov_len, hdr_len);
 		if (riov == NULL) {
-			WPRINTF(
-			    ("unet_process_bulk_in: not enough header space"));
+			WPRINTF(("unet_process_bulk_in: not enough header space"));
 			WPRINTF(("xfer block size %d, %d out of %d\n",
 			    data->blen, i, xfer->ndata));
 			assert(0);
@@ -953,18 +1113,15 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 			pkt++;
 		}
 
-		// no data received
 		if (total_len == hdr_len)
 			break;
 
-		// mark used data blocks
 		plen = data->blen;
 		len = hdr_len;
 		data->bdone = plen;
 		data->blen = 0;
 		data->processed = 1;
 
-		// last dp should be padded 0
 		USETW(dp[pkt].wFrameIndex, 0);
 		USETW(dp[pkt].wFrameLength, 0);
 
