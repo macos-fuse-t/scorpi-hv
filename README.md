@@ -41,8 +41,6 @@ Currently, Scorpi runs on Mac ARM64 using Apple's Hypervisor Framework. The plan
 
 ## Running a Windows VM
 
-Use a Windows ARM<sub>64</sub> ISO together with `swtpm`.
-
 1. Download a Windows ARM<sub>64</sub> ISO
 2. Create an empty disk with:
    ```sh
@@ -50,7 +48,7 @@ Use a Windows ARM<sub>64</sub> ISO together with `swtpm`.
    ```
 3. Launch the TPM emulator `swtpm` and expose a Unix socket for Scorpi:
    ```sh
-   mkdir -p /tmp/scorpi-tpm/state
+   mkdir -p /tmp/scorpi-tpm
    swtpm socket --tpm2 --flags startup-clear --tpmstate dir=/tmp/scorpi-tpm/state --server type=unixio,path=/tmp/scorpi-tpm/swtpm.sock
    ```
 4. Launch Scorpi:
