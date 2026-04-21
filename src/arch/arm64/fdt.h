@@ -48,7 +48,8 @@ void fdt_add_pcie(int intrs[static 4], uint64_t iobase, uint64_t iolimit,
 void fdt_add_uart(uint64_t uart_base, uint64_t uart_size, int intr);
 void fdt_add_rtc(uint64_t rtc_base, uint64_t rtc_size, int intr);
 void fdt_add_fwcfg(uint64_t mmio_base, uint64_t mmio_size);
-void fdt_add_tpm(uint64_t tpm_base, uint64_t tpm_size);
+void fdt_add_tpm(uint64_t tpm_base, uint64_t tpm_size,
+    const char *tpm_interface);
 void fdt_add_flash(uint64_t base, uint64_t size);
 void fdt_finalize(void);
 

@@ -54,6 +54,7 @@
 #include "rtc_pl031.h"
 #include "smbiostbl.h"
 #include "tpm_crb.h"
+#include "tpm_tis.h"
 #include "uart_emul.h"
 #include "usb_emul.h"
 
@@ -394,6 +395,7 @@ bhyve_init_platform(struct vmctx *ctx, struct vcpu *bsp)
 	uint64_t elr;
 	int error;
 	uint32_t spi_base, spi_count;
+	nvlist_t *tpm;
 	void *smbios;
 	size_t smbios_len;
 	uint64_t vars_gpa, vars_size;
@@ -473,8 +475,15 @@ bhyve_init_platform(struct vmctx *ctx, struct vcpu *bsp)
 	    PCI_EMUL_MEMBASE32, PCI_EMUL_MEMLIMIT32);
 	if (bootrom_vars(&vars_gpa, &vars_size) == 0)
 		fdt_add_flash(vars_gpa, vars_size);
-	if (find_config_node("tpm") != NULL)
-		fdt_add_tpm(TPM_CRB_ADDRESS, TPM_CRB_MMIO_SIZE);
+	if ((tpm = find_config_node("tpm")) != NULL) {
+		const char *intf;
+
+		intf = get_config_value_node(tpm, "intf");
+		if (intf != NULL && strcmp(intf, "tis") == 0)
+			fdt_add_tpm(TPM_TIS_ADDRESS, TPM_TIS_MMIO_SIZE, "tis");
+		else
+			fdt_add_tpm(TPM_CRB_ADDRESS, TPM_CRB_MMIO_SIZE, "crb");
+	}
 
 	error = smbios_build(ctx, &smbios, &smbios_len);
 	if (error) {

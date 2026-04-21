@@ -1,0 +1,11 @@
+/*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
+#pragma once
+
+#define TPM_TIS_ADDRESS 0x20000
+#define TPM_TIS_LOCALITY_SIZE 0x1000
+#define TPM_TIS_NUM_LOCALITIES 5
+#define TPM_TIS_MMIO_SIZE (TPM_TIS_LOCALITY_SIZE * TPM_TIS_NUM_LOCALITIES)
+#define TPM_TIS_BUFFER_SIZE 4096

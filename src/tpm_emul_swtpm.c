@@ -134,7 +134,6 @@ tpm_swtpm_init(void **sc, nvlist_t *nvl)
 		    __func__, path);
 		goto err_out;
 	}
-
 	*sc = tpm;
 
 	return (0);

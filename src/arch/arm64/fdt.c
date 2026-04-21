@@ -323,7 +323,7 @@ fdt_add_fwcfg(uint64_t mmio_base, uint64_t mmio_size)
 }
 
 void
-fdt_add_tpm(uint64_t tpm_base, uint64_t tpm_size)
+fdt_add_tpm(uint64_t tpm_base, uint64_t tpm_size, const char *tpm_interface)
 {
 	char node_name[32];
 	void *fdt;
@@ -334,6 +334,7 @@ fdt_add_tpm(uint64_t tpm_base, uint64_t tpm_size)
 	    (unsigned long long)tpm_base);
 	fdt_begin_node(fdt, node_name);
 	fdt_property_string(fdt, "compatible", "tcg,tpm-tis-mmio");
+	fdt_property_string(fdt, "scorpi,tpm-interface", tpm_interface);
 	set_single_reg(fdt, tpm_base, tpm_size);
 	fdt_end_node(fdt);
 }
