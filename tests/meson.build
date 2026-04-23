@@ -187,3 +187,17 @@ scorpi_yaml_api_parity_test_executable = executable(
 )
 
 test('scorpi_yaml_api_parity_test', scorpi_yaml_api_parity_test_executable)
+
+scorpi_yaml_file_cli_test_src = files(
+  'scorpi_yaml_file_cli_test.c',
+  '../src/scorpi_cli.c',
+)
+
+scorpi_yaml_file_cli_test_executable = executable(
+  'scorpi_yaml_file_cli_test',
+  scorpi_yaml_file_cli_test_src,
+  dependencies: scorpi_kit_dep,
+  include_directories: [inc, libscorpi_test_inc],
+)
+
+test('scorpi_yaml_file_cli_test', scorpi_yaml_file_cli_test_executable)

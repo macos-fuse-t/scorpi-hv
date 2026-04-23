@@ -103,10 +103,11 @@ bhyve_usage(int code)
 	fprintf(stderr,
 	    "Usage: %s [-CHhMSW]\n"
 	    "       %*s [-c [[cpus=]numcpus][,sockets=n][,cores=n][,threads=n]]\n"
-	    "       %*s [-k config_file] [-m mem] [-o var=value]\n"
+	    "       %*s [-f yaml_file] [-k config_file] [-m mem] [-o var=value]\n"
 	    "       %*s [-p vcpu:hostcpu] [-r file] [-s pci] [-U uuid] vmname\n"
 	    "       -C: include guest memory in core file\n"
 	    "       -c: number of CPUs and/or topology specification\n"
+	    "       -f: load VM configuration from YAML\n"
 	    "       -h: help\n"
 	    "       -k: key=value flat config file\n"
 	    "       -m: memory size\n"
@@ -185,28 +186,39 @@ bhyve_optparse(int argc, char **argv)
 	const char *optstr;
 	int c;
 
-	optstr = "hCMWk:f:o:p:c:s:m:U:u:l:";
+	optstr = "hCf:MWk:o:p:c:s:m:U:u:l:";
 	while ((c = getopt(argc, argv, optstr)) != -1) {
 		switch (c) {
+		case 'f':
+			if (bhyve_get_yaml_config_file() != NULL)
+				errx(EX_USAGE, "duplicate -f option");
+			bhyve_set_yaml_config_file(optarg);
+			break;
 		case 'c':
+			bhyve_note_legacy_config_used();
 			if (bhyve_topology_parse(optarg) != 0) {
 				errx(EX_USAGE, "invalid cpu topology '%s'",
 				    optarg);
 			}
 			break;
 		case 'C':
+			bhyve_note_legacy_config_used();
 			set_config_bool("memory.guest_in_core", true);
 			break;
 		case 'k':
+			bhyve_note_legacy_config_used();
 			bhyve_parse_simple_config_file(optarg);
 			break;
 		case 'm':
+			bhyve_note_legacy_config_used();
 			set_config_value("memory.size", optarg);
 			break;
 		case 'M':
+			bhyve_note_legacy_config_used();
 			set_config_bool("gic.msi", true);
 			break;
 		case 'o':
+			bhyve_note_legacy_config_used();
 			if (!bhyve_parse_config_option(optarg)) {
 				errx(EX_USAGE,
 				    "invalid configuration option '%s'",
@@ -214,6 +226,7 @@ bhyve_optparse(int argc, char **argv)
 			}
 			break;
 		case 'p':
+			bhyve_note_legacy_config_used();
 			if (bhyve_pincpu_parse(optarg) != 0) {
 				errx(EX_USAGE,
 				    "invalid vcpu pinning configuration '%s'",
@@ -221,6 +234,7 @@ bhyve_optparse(int argc, char **argv)
 			}
 			break;
 		case 's':
+			bhyve_note_legacy_config_used();
 			if (strncmp(optarg, "help", strlen(optarg)) == 0) {
 				pci_print_supported_devices();
 				exit(0);
@@ -229,6 +243,7 @@ bhyve_optparse(int argc, char **argv)
 			else
 				break;
 		case 'u':
+			bhyve_note_legacy_config_used();
 			if (strncmp(optarg, "help", strlen(optarg)) == 0) {
 				usb_print_supported_devices();
 				exit(0);
@@ -237,12 +252,15 @@ bhyve_optparse(int argc, char **argv)
 			else
 				break;
 		case 'U':
+			bhyve_note_legacy_config_used();
 			set_config_value("uuid", optarg);
 			break;
 		case 'W':
+			bhyve_note_legacy_config_used();
 			set_config_bool("virtio_msix", false);
 			break;
 		case 'l':
+			bhyve_note_legacy_config_used();
 			bhyve_parse_lpc_device_config(optarg);
 			break;
 		case 'h':

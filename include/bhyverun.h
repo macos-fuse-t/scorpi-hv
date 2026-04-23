@@ -67,6 +67,10 @@ typedef int (*vmexit_handler_t)(struct vmctx *, struct vcpu *, struct vm_run *);
 void bhyve_init_config(void);
 void bhyve_optparse(int argc, char **argv);
 void bhyve_usage(int code);
+void bhyve_set_yaml_config_file(const char *path);
+const char *bhyve_get_yaml_config_file(void);
+void bhyve_note_legacy_config_used(void);
+bool bhyve_legacy_config_used(void);
 
 /* Interfaces used by command-line option-parsing code. */
 bool bhyve_parse_config_option(const char *option);

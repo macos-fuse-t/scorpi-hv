@@ -85,6 +85,7 @@
 #endif
 #include "cnc.h"
 #include "compat.h"
+#include "scorpi_cli.h"
 #include "scorpi_internal.h"
 #include "tpm_device.h"
 #include "vmexit.h"
@@ -117,6 +118,8 @@ static struct vcpu_info {
 static cpuset_t **vcpumap;
 
 uuid_t vm_uuid;
+static const char *bhyve_yaml_config_file;
+static bool bhyve_cli_legacy_config_used;
 
 /*
  * XXX This parser is known to have the following issues:
@@ -511,6 +514,30 @@ vm_loop(struct vmctx *ctx, struct vcpu *vcpu)
 	EPRINTLN("vm_run error %d, errno %d", error, errno);
 }
 
+void
+bhyve_set_yaml_config_file(const char *path)
+{
+	bhyve_yaml_config_file = path;
+}
+
+const char *
+bhyve_get_yaml_config_file(void)
+{
+	return (bhyve_yaml_config_file);
+}
+
+void
+bhyve_note_legacy_config_used(void)
+{
+	bhyve_cli_legacy_config_used = true;
+}
+
+bool
+bhyve_legacy_config_used(void)
+{
+	return (bhyve_cli_legacy_config_used);
+}
+
 static int
 num_vcpus_allowed(struct vmctx *ctx, struct vcpu *vcpu)
 {
@@ -845,22 +872,10 @@ bhyve_run_configured_vm(void)
 }
 
 static int
-bhyve_run_via_scorpi_kit(void)
+bhyve_run_vm_with_scorpi_kit(scorpi_vm_t vm)
 {
-	const nvlist_t *config;
-	scorpi_vm_t vm;
 	int exit_code;
 	scorpi_error_t error;
-
-	config = get_config_tree();
-	error = scorpi_load_vm_from_config_tree(config, &vm);
-	if (error == SCORPI_ERR_UNSUPPORTED)
-		return (bhyve_run_configured_vm());
-	if (error != SCORPI_OK) {
-		fprintf(stderr, "scorpi_kit: failed to translate CLI config (%d)\n",
-		    error);
-		return (1);
-	}
 
 	error = scorpi_start_vm(vm);
 	if (error != SCORPI_OK) {
@@ -880,13 +895,61 @@ bhyve_run_via_scorpi_kit(void)
 	return (exit_code);
 }
 
+static int
+bhyve_run_via_scorpi_kit(void)
+{
+	const nvlist_t *config;
+	scorpi_vm_t vm;
+	scorpi_error_t error;
+
+	config = get_config_tree();
+	error = scorpi_load_vm_from_config_tree(config, &vm);
+	if (error == SCORPI_ERR_UNSUPPORTED)
+		return (bhyve_run_configured_vm());
+	if (error != SCORPI_OK) {
+		fprintf(stderr, "scorpi_kit: failed to translate CLI config (%d)\n",
+		    error);
+		return (1);
+	}
+
+	return (bhyve_run_vm_with_scorpi_kit(vm));
+}
+
+static int
+bhyve_run_yaml_file(const char *path)
+{
+	scorpi_vm_t vm;
+	scorpi_error_t error;
+
+	error = scorpi_cli_load_vm_from_yaml_file(path, &vm);
+	if (error != SCORPI_OK) {
+		fprintf(stderr, "scorpi_kit: failed to load YAML file %s (%d)\n",
+		    path, error);
+		return (1);
+	}
+
+	return (bhyve_run_vm_with_scorpi_kit(vm));
+}
+
 int
 main(int argc, char *argv[])
 {
+	const char *yaml_file;
+
 	bhyve_init_config();
 	bhyve_optparse(argc, argv);
 	argc -= optind;
 	argv += optind;
+
+	yaml_file = bhyve_get_yaml_config_file();
+	if (yaml_file != NULL) {
+		if (argc != 0)
+			errx(EX_USAGE, "-f cannot be combined with a vmname");
+		if (bhyve_legacy_config_used())
+			errx(EX_USAGE,
+			    "-f cannot be combined with legacy configuration options");
+		return (bhyve_run_yaml_file(yaml_file));
+	}
 
 	if (argc > 1)
 		bhyve_usage(1);
