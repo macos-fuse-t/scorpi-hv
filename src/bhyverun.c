@@ -633,7 +633,7 @@ bhyve_parse_gdb_options(const char *opt)
 #endif
 
 int
-main(int argc, char *argv[])
+bhyve_run_configured_vm(void)
 {
 	int error;
 	int max_vcpus, memflags;
@@ -645,14 +645,6 @@ main(int argc, char *argv[])
 	struct restore_state rstate;
 #endif
 
-	bhyve_init_config();
-	bhyve_optparse(argc, argv);
-	argc -= optind;
-	argv += optind;
-
-	if (argc > 1)
-		bhyve_usage(1);
-
 #ifdef BHYVE_SNAPSHOT
 	if (restore_file != NULL) {
 		error = load_restore_file(restore_file, &rstate);
@@ -661,7 +653,7 @@ main(int argc, char *argv[])
 			    "Failed to read checkpoint info from "
 			    "file: '%s'.\n",
 			    restore_file);
-			exit(1);
+			return (1);
 		}
 		vmname = lookup_vmname(&rstate);
 		if (vmname != NULL)
@@ -669,16 +661,13 @@ main(int argc, char *argv[])
 	}
 #endif
 
-	if (argc == 1)
-		set_config_value("name", argv[0]);
-
 	vmname = get_config_value("name");
 	if (vmname == NULL)
-		bhyve_usage(1);
+		return (EX_USAGE);
 
 	if (get_config_bool_default("config.dump", false)) {
 		dump_config();
-		exit(1);
+		return (1);
 	}
 
 	uuid_generate(vm_uuid);
@@ -688,8 +677,10 @@ main(int argc, char *argv[])
 
 	value = get_config_value("memory.size");
 	error = vm_parse_memsize(value, &memsize);
-	if (error)
-		errx(EX_USAGE, "invalid memsize '%s'", value);
+	if (error) {
+		fprintf(stderr, "invalid memsize '%s'\n", value);
+		return (EX_USAGE);
+	}
 
 	ctx = do_open(vmname);
 
@@ -702,7 +693,7 @@ main(int argc, char *argv[])
 
 	if (guest_ncpus < 1) {
 		fprintf(stderr, "Invalid guest vCPUs (%d)\n", guest_ncpus);
-		exit(1);
+		return (1);
 	}
 #endif
 
@@ -711,7 +702,7 @@ main(int argc, char *argv[])
 	if (guest_ncpus > max_vcpus) {
 		fprintf(stderr, "%d vCPUs requested but only %d available\n",
 		    guest_ncpus, max_vcpus);
-		exit(4);
+		return (4);
 	}
 
 	bhyve_init_vcpu(bsp);
@@ -736,7 +727,7 @@ main(int argc, char *argv[])
 	error = vm_setup_memory(ctx, memsize, VM_MMAP_ALL);
 	if (error) {
 		fprintf(stderr, "Unable to setup memory (%d)\n", errno);
-		exit(4);
+		return (4);
 	}
 
 	init_mem(guest_ncpus);
@@ -748,16 +739,16 @@ main(int argc, char *argv[])
 	if (init_pci(ctx) != 0) {
 		EPRINTLN("Device emulation initialization error: %s",
 		    strerror(errno));
-		exit(4);
+		return (4);
 	}
 
 	if (init_tpm(ctx) != 0) {
 		EPRINTLN("Failed to init TPM device");
-		exit(4);
+		return (4);
 	}
 
 	if (bhyve_init_platform(ctx, bsp) != 0)
-		exit(4);
+		return (4);
 
 	/*
 	 * Initialize after PCI, to allow a bootrom file to reserve the high
@@ -773,7 +764,7 @@ main(int argc, char *argv[])
 #endif
 
 	if (bhyve_init_platform_late(ctx, bsp) != 0)
-		exit(4);
+		return (4);
 
 	/*
 	 * Add all vCPUs.
@@ -786,31 +777,31 @@ main(int argc, char *argv[])
 		FPRINTLN(stdout, "Pausing pci devs...");
 		if (vm_pause_devices() != 0) {
 			EPRINTLN("Failed to pause PCI device state.");
-			exit(1);
+			return (1);
 		}
 
 		FPRINTLN(stdout, "Restoring vm mem...");
 		if (restore_vm_mem(ctx, &rstate) != 0) {
 			EPRINTLN("Failed to restore VM memory.");
-			exit(1);
+			return (1);
 		}
 
 		FPRINTLN(stdout, "Restoring pci devs...");
 		if (vm_restore_devices(&rstate) != 0) {
 			EPRINTLN("Failed to restore PCI device state.");
-			exit(1);
+			return (1);
 		}
 
 		FPRINTLN(stdout, "Restoring kernel structs...");
 		if (vm_restore_kern_structs(ctx, &rstate) != 0) {
 			EPRINTLN("Failed to restore kernel structs.");
-			exit(1);
+			return (1);
 		}
 
 		FPRINTLN(stdout, "Resuming pci devs...");
 		if (vm_resume_devices() != 0) {
 			EPRINTLN("Failed to resume PCI device state.");
-			exit(1);
+			return (1);
 		}
 	}
 #endif
@@ -825,14 +816,16 @@ main(int argc, char *argv[])
 	 * checkpointing thread for communication with bhyvectl
 	 */
 	if (init_checkpoint_thread(ctx) != 0)
-		errx(EX_OSERR, "Failed to start checkpoint thread");
+		return (EX_OSERR);
 #endif
 
 #ifdef BHYVE_SNAPSHOT
 	if (restore_file != NULL) {
 		destroy_restore_state(&rstate);
-		if (vm_restore_time(ctx) < 0)
-			err(EX_OSERR, "Unable to restore time");
+		if (vm_restore_time(ctx) < 0) {
+			EPRINTLN("Unable to restore time");
+			return (EX_OSERR);
+		}
 
 		for (int vcpuid = 0; vcpuid < guest_ncpus; vcpuid++)
 			vm_resume_cpu(vcpu_info[vcpuid].vcpu);
@@ -847,5 +840,24 @@ main(int argc, char *argv[])
 	 */
 	mevent_dispatch();
 
-	exit(4);
+	return (4);
+}
+
+int
+main(int argc, char *argv[])
+{
+	bhyve_init_config();
+	bhyve_optparse(argc, argv);
+	argc -= optind;
+	argv += optind;
+
+	if (argc > 1)
+		bhyve_usage(1);
+
+	if (argc == 1)
+		set_config_value("name", argv[0]);
+	else if (argc == 0 && get_config_value("name") == NULL)
+		bhyve_usage(1);
+
+	return (bhyve_run_configured_vm());
 }

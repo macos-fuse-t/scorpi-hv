@@ -81,5 +81,6 @@ void bhyve_init_vcpu(struct vcpu *vcpu);
 void bhyve_start_vcpu(struct vcpu *vcpu, bool bsp);
 int bhyve_init_platform(struct vmctx *ctx, struct vcpu *bsp);
 int bhyve_init_platform_late(struct vmctx *ctx, struct vcpu *bsp);
+int bhyve_run_configured_vm(void);
 
 #endif
