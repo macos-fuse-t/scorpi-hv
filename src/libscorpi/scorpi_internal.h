@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "nv.h"
 #include "scorpi.h"
 
 enum scorpi_prop_kind {
@@ -81,3 +82,10 @@ bool scorpi_normalized_vm_equal(const struct scorpi_normalized_vm *lhs,
     const struct scorpi_normalized_vm *rhs);
 const struct scorpi_normalized_prop *scorpi_normalized_vm_find_prop(
     const struct scorpi_normalized_vm *vm, const char *name);
+scorpi_error_t scorpi_vm_to_config(const struct scorpi_normalized_vm *vm,
+    nvlist_t **out_config);
+void scorpi_config_destroy(nvlist_t *config);
+const nvlist_t *scorpi_config_find_node(const nvlist_t *config,
+    const char *path);
+const char *scorpi_config_get_value(const nvlist_t *config, const char *path);
+bool scorpi_config_equal(const nvlist_t *lhs, const nvlist_t *rhs);

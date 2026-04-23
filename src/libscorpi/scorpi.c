@@ -31,6 +31,7 @@
 #include <stddef.h>
 #include <sys/types.h>
 #include <libutil.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -623,6 +624,542 @@ scorpi_normalized_vm_find_prop(const struct scorpi_normalized_vm *vm,
 			return (&vm->props[i]);
 	}
 	return (NULL);
+}
+
+static const struct scorpi_normalized_prop *
+scorpi_normalized_device_find_prop(const struct scorpi_normalized_device *device,
+    const char *name)
+{
+	size_t i;
+
+	if (device == NULL || name == NULL)
+		return (NULL);
+	for (i = 0; i < device->prop_count; i++) {
+		if (strcmp(device->props[i].name, name) == 0)
+			return (&device->props[i]);
+	}
+	return (NULL);
+}
+
+static scorpi_error_t
+scorpi_normalized_prop_to_string(const struct scorpi_normalized_prop *prop,
+    char **out_value)
+{
+	char buf[32];
+	int len;
+
+	if (prop == NULL || out_value == NULL)
+		return (SCORPI_ERR_INVALID_ARG);
+	*out_value = NULL;
+
+	switch (prop->kind) {
+	case SCORPI_PROP_STRING:
+		if (prop->value.string == NULL)
+			return (SCORPI_ERR_VALIDATION);
+		*out_value = strdup(prop->value.string);
+		break;
+	case SCORPI_PROP_BOOL:
+		*out_value = strdup(prop->value.boolean ? "true" : "false");
+		break;
+	case SCORPI_PROP_U64:
+		len = snprintf(buf, sizeof(buf), "%llu",
+		    (unsigned long long)prop->value.u64);
+		if (len < 0 || (size_t)len >= sizeof(buf))
+			return (SCORPI_ERR_RUNTIME);
+		*out_value = strdup(buf);
+		break;
+	}
+
+	if (*out_value == NULL)
+		return (SCORPI_ERR_RUNTIME);
+	return (SCORPI_OK);
+}
+
+static nvlist_t *
+scorpi_config_get_or_create_node(nvlist_t *root, const char *path)
+{
+	char *copy, *name, *tofree;
+	nvlist_t *child;
+
+	if (root == NULL || path == NULL || *path == '\0')
+		return (root);
+
+	copy = strdup(path);
+	if (copy == NULL)
+		return (NULL);
+	tofree = copy;
+
+	while ((name = strsep(&copy, ".")) != NULL) {
+		if (*name == '\0') {
+			free(tofree);
+			return (NULL);
+		}
+		if (nvlist_exists_nvlist(root, name)) {
+			root = __DECONST(nvlist_t *, nvlist_get_nvlist(root, name));
+			continue;
+		}
+		if (nvlist_exists(root, name)) {
+			free(tofree);
+			return (NULL);
+		}
+		child = nvlist_create(0);
+		if (child == NULL) {
+			free(tofree);
+			return (NULL);
+		}
+		nvlist_move_nvlist(root, name, child);
+		root = child;
+	}
+
+	free(tofree);
+	return (root);
+}
+
+const nvlist_t *
+scorpi_config_find_node(const nvlist_t *config, const char *path)
+{
+	char *copy, *name, *tofree;
+
+	if (config == NULL || path == NULL || *path == '\0')
+		return (config);
+
+	copy = strdup(path);
+	if (copy == NULL)
+		return (NULL);
+	tofree = copy;
+
+	while ((name = strsep(&copy, ".")) != NULL) {
+		if (*name == '\0' || !nvlist_exists_nvlist(config, name)) {
+			free(tofree);
+			return (NULL);
+		}
+		config = nvlist_get_nvlist(config, name);
+	}
+
+	free(tofree);
+	return (config);
+}
+
+const char *
+scorpi_config_get_value(const nvlist_t *config, const char *path)
+{
+	const char *name;
+	char *copy, *node_path;
+	const nvlist_t *node;
+
+	if (config == NULL || path == NULL || *path == '\0')
+		return (NULL);
+
+	name = strrchr(path, '.');
+	if (name == NULL) {
+		if (!nvlist_exists_string(config, path))
+			return (NULL);
+		return (nvlist_get_string(config, path));
+	}
+
+	copy = strdup(path);
+	if (copy == NULL)
+		return (NULL);
+	copy[name - path] = '\0';
+	node_path = copy;
+	name++;
+	node = scorpi_config_find_node(config, node_path);
+	free(copy);
+	if (node == NULL || !nvlist_exists_string(node, name))
+		return (NULL);
+	return (nvlist_get_string(node, name));
+}
+
+static scorpi_error_t
+scorpi_config_set_value(nvlist_t *root, const char *path, const char *value)
+{
+	char *copy, *leaf;
+	nvlist_t *node;
+
+	if (root == NULL || path == NULL || *path == '\0' || value == NULL)
+		return (SCORPI_ERR_INVALID_ARG);
+
+	copy = strdup(path);
+	if (copy == NULL)
+		return (SCORPI_ERR_RUNTIME);
+
+	leaf = strrchr(copy, '.');
+	if (leaf == NULL) {
+		node = root;
+		leaf = copy;
+	} else {
+		*leaf = '\0';
+		leaf++;
+		node = scorpi_config_get_or_create_node(root, copy);
+		if (node == NULL) {
+			free(copy);
+			return (SCORPI_ERR_RUNTIME);
+		}
+	}
+
+	if (nvlist_exists_string(node, leaf))
+		nvlist_free_string(node, leaf);
+	else if (nvlist_exists(node, leaf)) {
+		free(copy);
+		return (SCORPI_ERR_RUNTIME);
+	}
+	nvlist_add_string(node, leaf, value);
+	free(copy);
+	return (SCORPI_OK);
+}
+
+static bool
+scorpi_config_value_equal(const nvlist_t *lhs, const nvlist_t *rhs,
+    const char *name, int type)
+{
+	switch (type) {
+	case NV_TYPE_STRING:
+		return (strcmp(nvlist_get_string(lhs, name),
+		    nvlist_get_string(rhs, name)) == 0);
+	case NV_TYPE_NVLIST:
+		return (scorpi_config_equal(nvlist_get_nvlist(lhs, name),
+		    nvlist_get_nvlist(rhs, name)));
+	default:
+		return (false);
+	}
+}
+
+bool
+scorpi_config_equal(const nvlist_t *lhs, const nvlist_t *rhs)
+{
+	void *cookie;
+	const char *name;
+	int type;
+
+	if (lhs == NULL || rhs == NULL)
+		return (lhs == rhs);
+
+	cookie = NULL;
+	while ((name = nvlist_next(lhs, &type, &cookie)) != NULL) {
+		if (!nvlist_exists_type(rhs, name, type) ||
+		    !scorpi_config_value_equal(lhs, rhs, name, type))
+			return (false);
+	}
+
+	cookie = NULL;
+	while ((name = nvlist_next(rhs, &type, &cookie)) != NULL) {
+		if (!nvlist_exists_type(lhs, name, type) ||
+		    !scorpi_config_value_equal(rhs, lhs, name, type))
+			return (false);
+	}
+
+	return (true);
+}
+
+void
+scorpi_config_destroy(nvlist_t *config)
+{
+	nvlist_destroy(config);
+}
+
+struct scorpi_usb_bus_binding {
+	const char *id;
+	uint64_t bus;
+	uint64_t next_slot;
+};
+
+static scorpi_error_t
+scorpi_collect_usb_bus_bindings(const struct scorpi_normalized_vm *vm,
+    struct scorpi_usb_bus_binding **out_bindings, size_t *out_count)
+{
+	const struct scorpi_normalized_device *device;
+	const struct scorpi_normalized_prop *prop;
+	struct scorpi_usb_bus_binding *bindings;
+	size_t count, i;
+	uint64_t next_bus;
+
+	*out_bindings = NULL;
+	*out_count = 0;
+
+	count = 0;
+	for (i = 0; i < vm->device_count; i++) {
+		if (vm->devices[i].bus == SCORPI_BUS_PCI &&
+		    strcmp(vm->devices[i].device, "xhci") == 0)
+			count++;
+	}
+	if (count == 0)
+		return (SCORPI_OK);
+
+	bindings = calloc(count, sizeof(*bindings));
+	if (bindings == NULL)
+		return (SCORPI_ERR_RUNTIME);
+
+	next_bus = 0;
+	count = 0;
+	for (i = 0; i < vm->device_count; i++) {
+		device = &vm->devices[i];
+		if (device->bus != SCORPI_BUS_PCI || strcmp(device->device, "xhci") != 0)
+			continue;
+
+		bindings[count].id = device->id;
+		bindings[count].next_slot = 1;
+		prop = scorpi_normalized_device_find_prop(device, "bus");
+		if (prop != NULL && prop->kind == SCORPI_PROP_U64)
+			bindings[count].bus = prop->value.u64;
+		else
+			bindings[count].bus = next_bus++;
+		if (bindings[count].bus >= next_bus)
+			next_bus = bindings[count].bus + 1;
+		count++;
+	}
+
+	*out_bindings = bindings;
+	*out_count = count;
+	return (SCORPI_OK);
+}
+
+static struct scorpi_usb_bus_binding *
+scorpi_find_usb_bus_binding(struct scorpi_usb_bus_binding *bindings, size_t count,
+    const char *id)
+{
+	size_t i;
+
+	if (count == 1 && id == NULL)
+		return (&bindings[0]);
+	if (id == NULL)
+		return (NULL);
+	for (i = 0; i < count; i++) {
+		if (bindings[i].id != NULL && strcmp(bindings[i].id, id) == 0)
+			return (&bindings[i]);
+	}
+	return (NULL);
+}
+
+static scorpi_error_t
+scorpi_vm_props_to_config(const struct scorpi_normalized_vm *vm, nvlist_t *config)
+{
+	const struct scorpi_normalized_prop *prop;
+	char *value;
+	size_t i;
+	scorpi_error_t error;
+
+	for (i = 0; i < vm->prop_count; i++) {
+		prop = &vm->props[i];
+		if (strcmp(prop->name, "cpu.cores") == 0) {
+			error = scorpi_normalized_prop_to_string(prop, &value);
+			if (error != SCORPI_OK)
+				return (error);
+			error = scorpi_config_set_value(config, "cpus", value);
+			if (error == SCORPI_OK)
+				error = scorpi_config_set_value(config, "cores", value);
+			free(value);
+			if (error != SCORPI_OK)
+				return (error);
+			error = scorpi_config_set_value(config, "sockets", "1");
+			if (error == SCORPI_OK)
+				error = scorpi_config_set_value(config, "threads", "1");
+			if (error != SCORPI_OK)
+				return (error);
+			continue;
+		}
+
+		error = scorpi_normalized_prop_to_string(prop, &value);
+		if (error != SCORPI_OK)
+			return (error);
+		error = scorpi_config_set_value(config, prop->name, value);
+		free(value);
+		if (error != SCORPI_OK)
+			return (error);
+	}
+
+	return (SCORPI_OK);
+}
+
+static scorpi_error_t
+scorpi_device_props_to_config(const struct scorpi_normalized_device *device,
+    nvlist_t *config, const char *base_path, bool skip_identity_props)
+{
+	const struct scorpi_normalized_prop *prop;
+	char *full_path, *value;
+	size_t i, path_len;
+	scorpi_error_t error;
+
+	for (i = 0; i < device->prop_count; i++) {
+		prop = &device->props[i];
+		if (strcmp(prop->name, "id") == 0 || strcmp(prop->name, "parent") == 0)
+			continue;
+		if (skip_identity_props && strcmp(prop->name, "bus") == 0)
+			continue;
+		if (skip_identity_props && strcmp(prop->name, "port") == 0)
+			continue;
+
+		error = scorpi_normalized_prop_to_string(prop, &value);
+		if (error != SCORPI_OK)
+			return (error);
+
+		path_len = strlen(base_path) + 1 + strlen(prop->name) + 1;
+		full_path = calloc(path_len, 1);
+		if (full_path == NULL) {
+			free(value);
+			return (SCORPI_ERR_RUNTIME);
+		}
+		snprintf(full_path, path_len, "%s.%s", base_path, prop->name);
+		error = scorpi_config_set_value(config, full_path, value);
+		free(full_path);
+		free(value);
+		if (error != SCORPI_OK)
+			return (error);
+	}
+
+	return (SCORPI_OK);
+}
+
+static scorpi_error_t
+scorpi_pci_device_to_config(const struct scorpi_normalized_device *device,
+    struct scorpi_usb_bus_binding *bindings, size_t binding_count,
+    nvlist_t *config)
+{
+	char base_path[64];
+	char full_path[80];
+	char bus_value[32];
+	scorpi_error_t error;
+	size_t i;
+
+	snprintf(base_path, sizeof(base_path), "pci.0.%llu.0",
+	    (unsigned long long)device->slot);
+	snprintf(full_path, sizeof(full_path), "%s.device", base_path);
+	error = scorpi_config_set_value(config, full_path, device->device);
+	if (error != SCORPI_OK)
+		return (error);
+
+	for (i = 0; i < binding_count; i++) {
+		if (bindings[i].id != NULL && device->id != NULL &&
+		    strcmp(bindings[i].id, device->id) == 0) {
+			snprintf(bus_value, sizeof(bus_value), "%llu",
+			    (unsigned long long)bindings[i].bus);
+			snprintf(full_path, sizeof(full_path), "%s.bus", base_path);
+			error = scorpi_config_set_value(config, full_path, bus_value);
+			if (error != SCORPI_OK)
+				return (error);
+			break;
+		}
+	}
+
+	return (scorpi_device_props_to_config(device, config, base_path, true));
+}
+
+static scorpi_error_t
+scorpi_usb_device_to_config(const struct scorpi_normalized_device *device,
+    struct scorpi_usb_bus_binding *bindings, size_t binding_count,
+    nvlist_t *config)
+{
+	const struct scorpi_normalized_prop *port_prop;
+	struct scorpi_usb_bus_binding *binding;
+	char base_path[64];
+	char full_path[80];
+	uint64_t usb_slot;
+	scorpi_error_t error;
+
+	binding = scorpi_find_usb_bus_binding(bindings, binding_count,
+	    device->parent);
+	if (binding == NULL)
+		return (SCORPI_ERR_VALIDATION);
+
+	port_prop = scorpi_normalized_device_find_prop(device, "port");
+	if (port_prop != NULL && port_prop->kind == SCORPI_PROP_U64)
+		usb_slot = port_prop->value.u64;
+	else
+		usb_slot = binding->next_slot++;
+
+	snprintf(base_path, sizeof(base_path), "usb.%llu.%llu",
+	    (unsigned long long)binding->bus, (unsigned long long)usb_slot);
+	snprintf(full_path, sizeof(full_path), "%s.device", base_path);
+	error = scorpi_config_set_value(config, full_path, device->device);
+	if (error != SCORPI_OK)
+		return (error);
+
+	return (scorpi_device_props_to_config(device, config, base_path, true));
+}
+
+static scorpi_error_t
+scorpi_lpc_device_to_config(const struct scorpi_normalized_device *device,
+    nvlist_t *config)
+{
+	char base_path[32];
+	scorpi_error_t error;
+
+	if (strcmp(device->device, "vm-control") == 0) {
+		const struct scorpi_normalized_prop *path_prop;
+
+		path_prop = scorpi_normalized_device_find_prop(device, "path");
+		if (path_prop == NULL)
+			return (SCORPI_ERR_VALIDATION);
+		if (path_prop->kind != SCORPI_PROP_STRING ||
+		    path_prop->value.string == NULL)
+			return (SCORPI_ERR_VALIDATION);
+		return (scorpi_config_set_value(config, "comm_sock",
+		    path_prop->value.string));
+	}
+
+	if (strcmp(device->device, "tpm") != 0)
+		return (SCORPI_ERR_UNSUPPORTED_DEVICE);
+
+	snprintf(base_path, sizeof(base_path), "tpm");
+	error = scorpi_config_set_value(config, "tpm.device", "tpm");
+	if (error != SCORPI_OK)
+		return (error);
+	return (scorpi_device_props_to_config(device, config, base_path, false));
+}
+
+scorpi_error_t
+scorpi_vm_to_config(const struct scorpi_normalized_vm *vm, nvlist_t **out_config)
+{
+	struct scorpi_usb_bus_binding *bindings;
+	nvlist_t *config;
+	scorpi_error_t error;
+	size_t binding_count, i;
+
+	if (vm == NULL || out_config == NULL)
+		return (SCORPI_ERR_INVALID_ARG);
+	*out_config = NULL;
+
+	config = nvlist_create(0);
+	if (config == NULL)
+		return (SCORPI_ERR_RUNTIME);
+
+	error = scorpi_vm_props_to_config(vm, config);
+	if (error != SCORPI_OK)
+		goto fail;
+
+	error = scorpi_collect_usb_bus_bindings(vm, &bindings, &binding_count);
+	if (error != SCORPI_OK)
+		goto fail;
+
+	for (i = 0; i < vm->device_count; i++) {
+		switch (vm->devices[i].bus) {
+		case SCORPI_BUS_PCI:
+			error = scorpi_pci_device_to_config(&vm->devices[i], bindings,
+			    binding_count, config);
+			break;
+		case SCORPI_BUS_USB:
+			error = scorpi_usb_device_to_config(&vm->devices[i], bindings,
+			    binding_count, config);
+			break;
+		case SCORPI_BUS_LPC:
+			error = scorpi_lpc_device_to_config(&vm->devices[i], config);
+			break;
+		default:
+			error = SCORPI_ERR_UNSUPPORTED_DEVICE;
+			break;
+		}
+		if (error != SCORPI_OK) {
+			free(bindings);
+			goto fail;
+		}
+	}
+
+	free(bindings);
+	*out_config = config;
+	return (SCORPI_OK);
+
+fail:
+	nvlist_destroy(config);
+	return (error);
 }
 
 static bool
