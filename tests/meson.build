@@ -83,3 +83,14 @@ scorpi_vm_add_device_test_executable = executable(
 )
 
 test('scorpi_vm_add_device_test', scorpi_vm_add_device_test_executable)
+
+scorpi_parent_resolution_test_src = files('scorpi_parent_resolution_test.c')
+
+scorpi_parent_resolution_test_executable = executable(
+  'scorpi_parent_resolution_test',
+  scorpi_parent_resolution_test_src,
+  dependencies: scorpi_kit_dep,
+  include_directories: [inc, libscorpi_test_inc],
+)
+
+test('scorpi_parent_resolution_test', scorpi_parent_resolution_test_executable)

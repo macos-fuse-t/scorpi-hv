@@ -204,23 +204,57 @@ scorpi_device_get_id(const scorpi_device_t *dev)
 	return (prop->value.string);
 }
 
-static bool
-scorpi_vm_has_device_id(const scorpi_vm_t *vm, const char *id)
+const scorpi_device_t *
+scorpi_vm_find_device_by_id(const scorpi_vm_t *vm, const char *id)
 {
-	scorpi_device_t *dev;
+	const scorpi_device_t *dev;
 
-	assert(vm != NULL);
-	assert(id != NULL);
+	if (vm == NULL || id == NULL || *id == '\0')
+		return (NULL);
 
 	for (dev = vm->devices; dev != NULL; dev = dev->next) {
 		const char *existing_id;
 
 		existing_id = scorpi_device_get_id(dev);
 		if (existing_id != NULL && strcmp(existing_id, id) == 0)
-			return (true);
+			return (dev);
 	}
 
-	return (false);
+	return (NULL);
+}
+
+scorpi_error_t
+scorpi_vm_resolve_parent(const scorpi_vm_t *vm, const scorpi_device_t *dev,
+    const scorpi_device_t **out_parent)
+{
+	const struct scorpi_prop *parent_prop;
+	const scorpi_device_t *parent;
+	const char *device_id;
+	const char *parent_id;
+
+	if (vm == NULL || dev == NULL || out_parent == NULL)
+		return (SCORPI_ERR_INVALID_ARG);
+	*out_parent = NULL;
+
+	parent_prop = scorpi_device_find_prop(dev, "parent");
+	if (parent_prop == NULL)
+		return (SCORPI_OK);
+	if (parent_prop->kind != SCORPI_PROP_STRING ||
+	    parent_prop->value.string == NULL ||
+	    *parent_prop->value.string == '\0')
+		return (SCORPI_ERR_INVALID_PARENT);
+
+	parent_id = parent_prop->value.string;
+	device_id = scorpi_device_get_id(dev);
+	if (device_id != NULL && strcmp(device_id, parent_id) == 0)
+		return (SCORPI_ERR_INVALID_PARENT);
+
+	parent = scorpi_vm_find_device_by_id(vm, parent_id);
+	if (parent == NULL)
+		return (SCORPI_ERR_INVALID_PARENT);
+
+	*out_parent = parent;
+	return (SCORPI_OK);
 }
 
 static scorpi_error_t
@@ -400,7 +434,7 @@ scorpi_vm_add_device(scorpi_vm_t *vm, scorpi_device_t *dev)
 		return (SCORPI_ERR_INVALID_ARG);
 
 	id = scorpi_device_get_id(dev);
-	if (id != NULL && scorpi_vm_has_device_id(vm, id))
+	if (id != NULL && scorpi_vm_find_device_by_id(vm, id) != NULL)
 		return (SCORPI_ERR_DUPLICATE_ID);
 
 	dev->next = vm->devices;
