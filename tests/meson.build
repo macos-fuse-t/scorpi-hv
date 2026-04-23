@@ -27,3 +27,13 @@ fdt_test_executable = executable(
 test_env = environment()
 test_env.set('TEST_DTB_FILE', meson.current_build_dir() / 'test.dtb')
 test('fdt_test', fdt_test_executable, env: test_env, depends: dtb)
+
+scorpi_header_compile_test_src = files('scorpi_header_compile_test.c')
+
+scorpi_header_compile_test_executable = executable(
+  'scorpi_header_compile_test',
+  scorpi_header_compile_test_src,
+  include_directories: inc,
+)
+
+test('scorpi_header_compile_test', scorpi_header_compile_test_executable)
