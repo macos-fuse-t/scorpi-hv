@@ -11,6 +11,6 @@ scorpi_kit = static_library(
 
 scorpi_kit_dep = declare_dependency(
   include_directories: inc,
-  link_with: scorpi_kit,
-  dependencies: [libnv_dep, libyaml_dep, libutil_dep],
+  link_whole: scorpi_kit,
+  dependencies: [scorpi_runtime_core_dep],
 )

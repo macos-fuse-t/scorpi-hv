@@ -1,0 +1,19 @@
+name: freebsd-yaml-sample
+cpu: 4
+memory: 2G
+console: stdio
+bootrom: ./firmware/u-boot.bin
+
+devices:
+  pci:
+    - device: hostbridge
+      slot: 0
+
+    - device: virtio-net
+      slot: 1
+      backend: slirp
+
+    - device: virtio-blk
+      slot: 2
+      path: ./FreeBSD-14.2-RELEASE-arm64-aarch64-bootonly.iso
+      ro: true

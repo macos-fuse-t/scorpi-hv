@@ -62,7 +62,7 @@ test_missing_required_props(void)
 
 	assert(scorpi_create_vm(&vm) == SCORPI_OK);
 	assert(scorpi_vm_validate(vm) == SCORPI_ERR_VALIDATION);
-	assert(scorpi_start_vm(vm) == SCORPI_ERR_VALIDATION);
+	assert(scorpi_start_vm(vm) == -SCORPI_ERR_VALIDATION);
 	scorpi_destroy_vm(vm);
 }
 

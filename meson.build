@@ -35,11 +35,8 @@ subdir('libnv')
 subdir('libfdt')
 subdir('libutil')
 subdir('mjson')
-subdir('src/libscorpi')
-subdir('tests')
-subdir('util/console')
 
-sources = files(
+runtime_core_sources = files(
     'src/compat.c',
     'src/bootrom.c',
     'src/config.c',
@@ -57,7 +54,6 @@ sources = files(
     'src/mevent.c',
     'src/qemu_fwcfg.c',
     'src/qemu_loader.c',
-    'src/scorpi_cli.c',
     'src/scorpi_runtime_bridge.c',
     'src/rtc_pl031.c',
     'src/uart_pl011.c',
@@ -118,12 +114,32 @@ if host_machine.system() == 'darwin'
     )
 endif
 
-sources += arch_src
+runtime_core_sources += arch_src
+
+scorpi_runtime_core = static_library(
+  'scorpi_runtime_core',
+  runtime_core_sources,
+  dependencies: [libnv_dep, libfdt_dep, libutil_dep, libmjson_dep, zlib_dep, slirp_dep, libwebsockets_dep, threads_dep],
+  include_directories: inc,
+)
+
+scorpi_runtime_core_dep = declare_dependency(
+  include_directories: inc,
+  link_whole: scorpi_runtime_core,
+)
+
+subdir('src/libscorpi')
+subdir('tests')
+subdir('util/console')
+subdir('samples')
 
 scorpi_executable=executable(
   'scorpi', 
-  sources,
-  dependencies: [scorpi_kit_dep, libnv_dep, libfdt_dep, libutil_dep, libmjson_dep, zlib_dep, slirp_dep, libwebsockets_dep, threads_dep],
+  files(
+    'src/scorpi_main.c',
+    'src/scorpi_cli.c',
+  ),
+  dependencies: [scorpi_kit_dep],
   include_directories: inc,
 )
 

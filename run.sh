@@ -19,4 +19,29 @@ else
     echo "Download completed."
 fi
 
-./builddir/scorpi -s 0,hostbridge -o console=stdio -o bootrom=./firmware/u-boot.bin -s 1,virtio-net,slirp  -s 2,virtio-blk,$IMAGE_NAME,ro -m 2G -c 4 vm1
+CONFIG_FILE="$(mktemp /tmp/scorpi-freebsd.XXXXXX.yaml)"
+trap 'rm -f "$CONFIG_FILE"' EXIT
+
+cat > "$CONFIG_FILE" <<EOF
+name: vm1
+cpu: 4
+memory: 2G
+console: stdio
+bootrom: ./firmware/u-boot.bin
+
+devices:
+  pci:
+    - device: hostbridge
+      slot: 0
+
+    - device: virtio-net
+      slot: 1
+      backend: slirp
+
+    - device: virtio-blk
+      slot: 2
+      path: ./$IMAGE_NAME
+      ro: true
+EOF
+
+./builddir/scorpi -f "$CONFIG_FILE"

@@ -83,9 +83,7 @@ scorpi_error_t scorpi_device_set_prop_u64(scorpi_device_t dev,
     const char *name, uint64_t value);
 scorpi_error_t scorpi_vm_add_device(scorpi_vm_t vm, scorpi_device_t dev);
 
-scorpi_error_t scorpi_start_vm(scorpi_vm_t vm);
-scorpi_error_t scorpi_wait_vm(scorpi_vm_t vm, int *exit_code);
-scorpi_error_t scorpi_stop_vm(scorpi_vm_t vm);
+int scorpi_start_vm(scorpi_vm_t vm);
 
 scorpi_error_t scorpi_load_vm_from_yaml(const char *yaml, scorpi_vm_t *out_vm);
 

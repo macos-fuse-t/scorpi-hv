@@ -37,12 +37,9 @@ main(void)
 
 	build_runtime_attempt_vm(&vm);
 
-	assert(scorpi_stop_vm(vm) == SCORPI_ERR_INVALID_ARG);
-	assert(scorpi_start_vm(vm) == SCORPI_OK);
-	assert(scorpi_wait_vm(vm, &exit_code) == SCORPI_OK);
+	exit_code = scorpi_start_vm(vm);
 	assert(exit_code != 0);
-	assert(scorpi_stop_vm(vm) == SCORPI_ERR_INVALID_ARG);
-	assert(scorpi_wait_vm(vm, &exit_code) == SCORPI_OK);
+	assert(scorpi_start_vm(vm) == -SCORPI_ERR_INVALID_ARG);
 
 	scorpi_destroy_vm(vm);
 	return (0);

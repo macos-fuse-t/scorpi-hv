@@ -35,9 +35,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <signal.h>
-#include <sysexits.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <yaml.h>
 
@@ -1945,14 +1942,6 @@ fail:
 	return (error);
 }
 
-__attribute__((weak))
-int
-scorpi_runtime_run_child(const nvlist_t *config)
-{
-	(void)config;
-	return (EX_UNAVAILABLE);
-}
-
 static scorpi_error_t
 scorpi_vm_prepare_runtime_config(const struct scorpi_vm *vm, nvlist_t **out_config)
 {
@@ -2219,15 +2208,9 @@ void
 scorpi_destroy_vm(scorpi_vm_t vm)
 {
 	scorpi_device_t dev, next_dev;
-	int status;
 
 	if (vm == NULL)
 		return;
-
-	if (vm->state == SCORPI_VM_RUNNING) {
-		(void)kill(vm->child_pid, SIGTERM);
-		(void)waitpid(vm->child_pid, &status, 0);
-	}
 
 	for (dev = vm->devices; dev != NULL; dev = next_dev) {
 		next_dev = dev->next;
@@ -2364,85 +2347,28 @@ scorpi_vm_add_device(scorpi_vm_t vm, scorpi_device_t dev)
 	return (SCORPI_OK);
 }
 
-scorpi_error_t
+int
 scorpi_start_vm(scorpi_vm_t vm)
 {
 	nvlist_t *config;
-	pid_t pid;
+	int exit_code;
 	scorpi_error_t error;
 
 	if (vm == NULL)
-		return (SCORPI_ERR_INVALID_ARG);
-	if (vm->state == SCORPI_VM_RUNNING)
-		return (SCORPI_ERR_INVALID_ARG);
+		return (-SCORPI_ERR_INVALID_ARG);
+	if (vm->state != SCORPI_VM_NEW)
+		return (-SCORPI_ERR_INVALID_ARG);
 
 	error = scorpi_vm_prepare_runtime_config(vm, &config);
 	if (error != SCORPI_OK)
-		return (error);
+		return (-error);
 
-	pid = fork();
-	if (pid < 0) {
-		scorpi_config_destroy(config);
-		return (SCORPI_ERR_RUNTIME);
-	}
-
-	if (pid == 0) {
-		int child_exit_code;
-
-		child_exit_code = scorpi_runtime_run_child(config);
-		scorpi_config_destroy(config);
-		_exit(child_exit_code);
-	}
-
+	exit_code = scorpi_runtime_run_child(config);
 	scorpi_config_destroy(config);
-	vm->child_pid = pid;
-	vm->state = SCORPI_VM_RUNNING;
-	vm->exit_code = 0;
-	return (SCORPI_OK);
-}
 
-scorpi_error_t
-scorpi_wait_vm(scorpi_vm_t vm, int *exit_code)
-{
-	int status;
-	pid_t waited;
-
-	if (vm == NULL || exit_code == NULL)
-		return (SCORPI_ERR_INVALID_ARG);
-	if (vm->state == SCORPI_VM_EXITED) {
-		*exit_code = vm->exit_code;
-		return (SCORPI_OK);
-	}
-	if (vm->state != SCORPI_VM_RUNNING)
-		return (SCORPI_ERR_INVALID_ARG);
-
-	waited = waitpid(vm->child_pid, &status, 0);
-	if (waited < 0)
-		return (SCORPI_ERR_RUNTIME);
-
-	if (WIFEXITED(status))
-		vm->exit_code = WEXITSTATUS(status);
-	else if (WIFSIGNALED(status))
-		vm->exit_code = 128 + WTERMSIG(status);
-	else
-		vm->exit_code = 1;
-
+	vm->exit_code = exit_code;
 	vm->state = SCORPI_VM_EXITED;
-	vm->child_pid = 0;
-	*exit_code = vm->exit_code;
-	return (SCORPI_OK);
-}
-
-scorpi_error_t
-scorpi_stop_vm(scorpi_vm_t vm)
-{
-	if (vm == NULL)
-		return (SCORPI_ERR_INVALID_ARG);
-	if (vm->state != SCORPI_VM_RUNNING)
-		return (SCORPI_ERR_INVALID_ARG);
-	if (kill(vm->child_pid, SIGTERM) != 0)
-		return (SCORPI_ERR_RUNTIME);
-	return (SCORPI_OK);
+	return (exit_code);
 }
 
 static bool

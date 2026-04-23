@@ -16,7 +16,6 @@ enum scorpi_prop_kind {
 
 enum scorpi_vm_state {
 	SCORPI_VM_NEW = 0,
-	SCORPI_VM_RUNNING,
 	SCORPI_VM_EXITED,
 };
 
@@ -34,7 +33,6 @@ struct scorpi_prop {
 struct scorpi_vm {
 	struct scorpi_prop *props;
 	struct scorpi_device *devices;
-	pid_t child_pid;
 	int exit_code;
 	enum scorpi_vm_state state;
 };

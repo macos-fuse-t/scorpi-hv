@@ -26,6 +26,32 @@ Currently, Scorpi runs on Mac ARM64 using Apple's Hypervisor Framework. The plan
 2. **EDK2 UEFI** - Full-featured bootloader that provides ACPI support, frame buffer, and a variety of boot device drivers.\
    [Source Code](https://github.com/macos-fuse-t/edk2)
 
+## Samples
+
+The repository includes two FreeBSD ARM64 samples under [samples/README.md](/Users/alexf/work/scorpi/samples/README.md):
+
+- [samples/freebsd_vm.yaml](/Users/alexf/work/scorpi/samples/freebsd_vm.yaml) for `./builddir/scorpi -f ...`
+- [samples/freebsd_api.c](/Users/alexf/work/scorpi/samples/freebsd_api.c) as a single-file `scorpi_kit` launcher
+
+Both samples use the same FreeBSD boot-only ISO referenced by [run.sh](/Users/alexf/work/scorpi/run.sh):
+
+```sh
+./run.sh
+```
+
+Launch the YAML sample with:
+
+```sh
+./builddir/scorpi -f ./samples/freebsd_vm.yaml
+```
+
+Build and run the API sample with:
+
+```sh
+meson compile -C builddir freebsd_api_sample
+./builddir/samples/freebsd_api_sample
+```
+
 ## Running Linux VMs
 
 1. Download an ISO that supports ARM<sub>64</sub> architecture.
@@ -33,9 +59,50 @@ Currently, Scorpi runs on Mac ARM64 using Apple's Hypervisor Framework. The plan
    ```sh
    mkfile -n [size] [img_file]
    ```
-3. Example command to start a VM:
+3. Example YAML configuration:
    ```sh
-   ./builddir/scorpi -s 0,hostbridge -o console=stdio -o bootrom=./firmware/SCORPI_EFI.fd -s 1,xhci -u kbd -u tablet -s 2,virtio-blk,[img_file] -s 3,virtio-blk,[iso_file],ro -s 4,virtio-net,slirp -s 5,virtio-gpu,hdpi=on -m 2G -c 2 -l /tmp/vm_sock vm1
+   cat > linux-vm.yaml <<'EOF'
+   name: vm1
+   cpu: 2
+   memory: 2G
+   console: stdio
+   bootrom: ./firmware/SCORPI_EFI.fd
+
+   devices:
+     pci:
+       - device: hostbridge
+         slot: 0
+
+       - device: xhci
+         slot: 1
+         id: xhci0
+
+       - device: virtio-blk
+         slot: 2
+         path: [img_file]
+
+       - device: virtio-blk
+         slot: 3
+         path: [iso_file]
+         ro: true
+
+       - device: virtio-net
+         slot: 4
+         backend: slirp
+
+       - device: virtio-gpu
+         slot: 5
+         hdpi: on
+
+     usb:
+       - device: kbd
+       - device: tablet
+
+     lpc:
+       - device: vm-control
+         path: /tmp/vm_sock
+   EOF
+   ./builddir/scorpi -f ./linux-vm.yaml
    ```
    To use a graphical viewer, refer to the following reference project: [ScorpiViewer](https://github.com/macos-fuse-t/ScorpiViewer)
 
@@ -51,9 +118,53 @@ Currently, Scorpi runs on Mac ARM64 using Apple's Hypervisor Framework. The plan
    mkdir -p /tmp/scorpi-tpm
    swtpm socket --tpm2 --flags startup-clear --tpmstate dir=/tmp/scorpi-tpm/state --server type=unixio,path=/tmp/scorpi-tpm/swtpm.sock
    ```
-4. Launch Scorpi:
+4. Example YAML configuration and launch:
    ```sh
-   ./builddir/scorpi -s 0,hostbridge -o bootrom=./firmware/SCORPI_EFI.fd -o bootvars=./firmware/SCORPI_VARS.fd -s 1,xhci -u kbd -u tablet -u net,backend=slirp -s 2,ahci-hd,[img_file] -s 3,ahci-cd,[iso] -s 5,virtio-gpu,fb=on -m 4G -c 2 -l cnc,/tmp/vm_sock -l tpm,swtpm,/tmp/scorpi-tpm/swtpm.sock,version=2.0,intf=tis vm1
+   cat > windows-vm.yaml <<'EOF'
+   name: vm1
+   cpu: 2
+   memory: 4G
+   bootrom: ./firmware/SCORPI_EFI.fd
+   bootvars: ./firmware/SCORPI_VARS.fd
+
+   devices:
+     pci:
+       - device: hostbridge
+         slot: 0
+
+       - device: xhci
+         slot: 1
+         id: xhci0
+
+       - device: ahci
+         slot: 2
+         port.0.type: hd
+         port.0.path: [img_file]
+         port.1.type: cd
+         port.1.path: [iso]
+         port.1.ro: true
+
+       - device: virtio-gpu
+         slot: 5
+         fb: on
+
+     usb:
+       - device: kbd
+       - device: tablet
+       - device: net
+         backend: slirp
+
+     lpc:
+       - device: vm-control
+         path: /tmp/vm_sock
+
+       - device: tpm
+         type: swtpm
+         path: /tmp/scorpi-tpm/swtpm.sock
+         version: 2.0
+         intf: tis
+   EOF
+   ./builddir/scorpi -f ./windows-vm.yaml
    ```
 5. Run ScorpiViewer.
 

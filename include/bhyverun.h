@@ -31,6 +31,7 @@
 #define	_BHYVERUN_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #define	VMEXIT_CONTINUE		(0)
 #define VMEXIT_QUIT         (1)

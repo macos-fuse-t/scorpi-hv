@@ -421,7 +421,7 @@ Validation criteria:
 - library-side launch entrypoint compiles
 - no behavior regression in basic startup path
 
-### Task 14: Implement `scorpi_start_vm`, `scorpi_wait_vm`, `scorpi_stop_vm`
+### Task 14: Implement `scorpi_start_vm`
 
 Scope:
 
@@ -434,7 +434,8 @@ Dependencies:
 Implementation notes:
 
 - `scorpi_start_vm()` performs final validation before launch
-- `scorpi_wait_vm()` and `scorpi_stop_vm()` should be consistent with the current event-loop ownership model
+- `scorpi_start_vm()` runs the VM in the caller process
+- `scorpi_start_vm()` returns the VM exit code on success and a negative `SCORPI_ERR_*` value on launch/setup failure
 
 Validation criteria:
 
@@ -442,8 +443,8 @@ Validation criteria:
   - create a VM
   - add minimal devices
   - start it
-  - stop it or observe expected startup failure cleanly
-- lifecycle APIs return `scorpi_error_t`
+  - observe an exit code or expected startup failure cleanly
+- no public `wait` or `stop` lifecycle APIs remain
 
 ### Task 15: Convert `scorpi` CLI to Use `scorpi_kit`
 
@@ -525,7 +526,8 @@ Validation criteria:
 
 Scope:
 
-- document public API and YAML examples
+- document the public API surface
+- use YAML files for user-facing examples
 - update README/BUILD docs if needed
 
 Dependencies:
@@ -535,7 +537,7 @@ Dependencies:
 Validation criteria:
 
 - documentation references the actual public API names
-- at least one API example compiles or is compile-checked
+- user-facing examples use YAML files and `scorpi -f vm.yaml` style launch
 - at least one YAML example is covered by a loader test
 
 ## Task Completion Checklist
