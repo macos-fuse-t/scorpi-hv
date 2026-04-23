@@ -266,12 +266,16 @@ DATA_SET(net_be_set, vmnet_backend);
 int
 netbe_legacy_config(nvlist_t *nvl, const char *opts)
 {
-	char *backend, *cp;
+	char *backend;
+	const char *cp;
 
 	if (opts == NULL)
 		return (0);
 
 	cp = strchr(opts, ',');
+	if (strchr(opts, '=') != NULL && (cp == NULL || strchr(opts, '=') < cp))
+		return (pci_parse_legacy_config(nvl, opts));
+
 	if (cp == NULL) {
 		set_config_value_node(nvl, "backend", opts);
 		return (0);

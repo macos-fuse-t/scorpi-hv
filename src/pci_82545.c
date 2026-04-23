@@ -1848,8 +1848,14 @@ e82545_read_register(struct e82545_softc *sc, uint32_t offset)
 		retval = sc->esc_CTRL;
 		break;
 	case E1000_STATUS:
+		/*
+		 * arm64 guests place RAM above 4GB. Advertise PCI-X/64-bit bus
+		 * capability so the Linux e1000 driver enables 64-bit coherent
+		 * DMA for descriptor rings.
+		 */
 		retval = E1000_STATUS_FD | E1000_STATUS_LU |
-		    E1000_STATUS_SPEED_1000;
+		    E1000_STATUS_SPEED_1000 | E1000_STATUS_BUS64 |
+		    E1000_STATUS_PCIX_MODE | E1000_STATUS_PCIX_SPEED_133;
 		break;
 	case E1000_FCAL:
 		retval = sc->esc_FCAL;
