@@ -11,7 +11,7 @@ int
 main(void)
 {
 	const struct scorpi_prop *prop;
-	scorpi_vm_t *vm;
+	scorpi_vm_t vm;
 	uint64_t ram_bytes;
 
 	assert(scorpi_create_vm(&vm) == SCORPI_OK);

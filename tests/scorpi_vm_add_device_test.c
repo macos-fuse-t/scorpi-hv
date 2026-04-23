@@ -8,9 +8,9 @@
 int
 main(void)
 {
-	scorpi_device_t *dev;
-	scorpi_device_t *dup;
-	scorpi_vm_t *vm;
+	scorpi_device_t dev;
+	scorpi_device_t dup;
+	scorpi_vm_t vm;
 
 	assert(scorpi_create_vm(&vm) == SCORPI_OK);
 	assert(vm != NULL);

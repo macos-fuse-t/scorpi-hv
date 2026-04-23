@@ -178,7 +178,7 @@ scorpi_prop_set_u64(struct scorpi_prop **props, const char *name,
 }
 
 const struct scorpi_prop *
-scorpi_vm_find_prop(const scorpi_vm_t *vm, const char *name)
+scorpi_vm_find_prop(const struct scorpi_vm *vm, const char *name)
 {
 	if (vm == NULL)
 		return (NULL);
@@ -186,7 +186,7 @@ scorpi_vm_find_prop(const scorpi_vm_t *vm, const char *name)
 }
 
 const struct scorpi_prop *
-scorpi_device_find_prop(const scorpi_device_t *dev, const char *name)
+scorpi_device_find_prop(const struct scorpi_device *dev, const char *name)
 {
 	if (dev == NULL)
 		return (NULL);
@@ -194,7 +194,7 @@ scorpi_device_find_prop(const scorpi_device_t *dev, const char *name)
 }
 
 static const char *
-scorpi_device_get_id(const scorpi_device_t *dev)
+scorpi_device_get_id(const struct scorpi_device *dev)
 {
 	const struct scorpi_prop *prop;
 
@@ -204,10 +204,10 @@ scorpi_device_get_id(const scorpi_device_t *dev)
 	return (prop->value.string);
 }
 
-const scorpi_device_t *
-scorpi_vm_find_device_by_id(const scorpi_vm_t *vm, const char *id)
+const struct scorpi_device *
+scorpi_vm_find_device_by_id(const struct scorpi_vm *vm, const char *id)
 {
-	const scorpi_device_t *dev;
+	const struct scorpi_device *dev;
 
 	if (vm == NULL || id == NULL || *id == '\0')
 		return (NULL);
@@ -224,11 +224,11 @@ scorpi_vm_find_device_by_id(const scorpi_vm_t *vm, const char *id)
 }
 
 scorpi_error_t
-scorpi_vm_resolve_parent(const scorpi_vm_t *vm, const scorpi_device_t *dev,
-    const scorpi_device_t **out_parent)
+scorpi_vm_resolve_parent(const struct scorpi_vm *vm, const struct scorpi_device *dev,
+    const struct scorpi_device **out_parent)
 {
 	const struct scorpi_prop *parent_prop;
-	const scorpi_device_t *parent;
+	const struct scorpi_device *parent;
 	const char *device_id;
 	const char *parent_id;
 
@@ -259,9 +259,9 @@ scorpi_vm_resolve_parent(const scorpi_vm_t *vm, const scorpi_device_t *dev,
 
 static scorpi_error_t
 scorpi_create_device_common(const char *device, uint64_t slot, int bus,
-    scorpi_device_t **out_dev)
+    scorpi_device_t *out_dev)
 {
-	scorpi_device_t *dev;
+	scorpi_device_t dev;
 
 	if (device == NULL || *device == '\0' || out_dev == NULL)
 		return (SCORPI_ERR_INVALID_ARG);
@@ -284,9 +284,9 @@ scorpi_create_device_common(const char *device, uint64_t slot, int bus,
 }
 
 scorpi_error_t
-scorpi_create_vm(scorpi_vm_t **out_vm)
+scorpi_create_vm(scorpi_vm_t *out_vm)
 {
-	scorpi_vm_t *vm;
+	scorpi_vm_t vm;
 
 	if (out_vm == NULL)
 		return (SCORPI_ERR_INVALID_ARG);
@@ -301,9 +301,9 @@ scorpi_create_vm(scorpi_vm_t **out_vm)
 }
 
 void
-scorpi_destroy_vm(scorpi_vm_t *vm)
+scorpi_destroy_vm(scorpi_vm_t vm)
 {
-	scorpi_device_t *dev, *next_dev;
+	scorpi_device_t dev, next_dev;
 
 	if (vm == NULL)
 		return;
@@ -318,7 +318,7 @@ scorpi_destroy_vm(scorpi_vm_t *vm)
 }
 
 scorpi_error_t
-scorpi_vm_set_prop_string(scorpi_vm_t *vm, const char *name, const char *value)
+scorpi_vm_set_prop_string(scorpi_vm_t vm, const char *name, const char *value)
 {
 	if (vm == NULL || name == NULL || *name == '\0' || value == NULL)
 		return (SCORPI_ERR_INVALID_ARG);
@@ -327,7 +327,7 @@ scorpi_vm_set_prop_string(scorpi_vm_t *vm, const char *name, const char *value)
 }
 
 scorpi_error_t
-scorpi_vm_set_prop_bool(scorpi_vm_t *vm, const char *name, bool value)
+scorpi_vm_set_prop_bool(scorpi_vm_t vm, const char *name, bool value)
 {
 	if (vm == NULL || name == NULL || *name == '\0')
 		return (SCORPI_ERR_INVALID_ARG);
@@ -336,7 +336,7 @@ scorpi_vm_set_prop_bool(scorpi_vm_t *vm, const char *name, bool value)
 }
 
 scorpi_error_t
-scorpi_vm_set_prop_u64(scorpi_vm_t *vm, const char *name, uint64_t value)
+scorpi_vm_set_prop_u64(scorpi_vm_t vm, const char *name, uint64_t value)
 {
 	if (vm == NULL || name == NULL || *name == '\0')
 		return (SCORPI_ERR_INVALID_ARG);
@@ -345,7 +345,7 @@ scorpi_vm_set_prop_u64(scorpi_vm_t *vm, const char *name, uint64_t value)
 }
 
 scorpi_error_t
-scorpi_vm_set_cpu(scorpi_vm_t *vm, uint64_t cores)
+scorpi_vm_set_cpu(scorpi_vm_t vm, uint64_t cores)
 {
 	if (vm == NULL || cores == 0)
 		return (SCORPI_ERR_INVALID_ARG);
@@ -353,7 +353,7 @@ scorpi_vm_set_cpu(scorpi_vm_t *vm, uint64_t cores)
 }
 
 scorpi_error_t
-scorpi_vm_set_ram(scorpi_vm_t *vm, uint64_t bytes)
+scorpi_vm_set_ram(scorpi_vm_t vm, uint64_t bytes)
 {
 	if (vm == NULL || bytes == 0)
 		return (SCORPI_ERR_INVALID_ARG);
@@ -362,28 +362,28 @@ scorpi_vm_set_ram(scorpi_vm_t *vm, uint64_t bytes)
 
 scorpi_error_t
 scorpi_create_pci_device(const char *device, uint64_t slot,
-    scorpi_device_t **out_dev)
+    scorpi_device_t *out_dev)
 {
 	return (scorpi_create_device_common(device, slot, SCORPI_BUS_PCI,
 	    out_dev));
 }
 
 scorpi_error_t
-scorpi_create_usb_device(const char *device, scorpi_device_t **out_dev)
+scorpi_create_usb_device(const char *device, scorpi_device_t *out_dev)
 {
 	return (scorpi_create_device_common(device, SCORPI_PCI_SLOT_AUTO,
 	    SCORPI_BUS_USB, out_dev));
 }
 
 scorpi_error_t
-scorpi_create_lpc_device(const char *device, scorpi_device_t **out_dev)
+scorpi_create_lpc_device(const char *device, scorpi_device_t *out_dev)
 {
 	return (scorpi_create_device_common(device, SCORPI_PCI_SLOT_AUTO,
 	    SCORPI_BUS_LPC, out_dev));
 }
 
 void
-scorpi_destroy_device(scorpi_device_t *dev)
+scorpi_destroy_device(scorpi_device_t dev)
 {
 	if (dev == NULL)
 		return;
@@ -395,7 +395,7 @@ scorpi_destroy_device(scorpi_device_t *dev)
 }
 
 scorpi_error_t
-scorpi_device_set_prop_string(scorpi_device_t *dev, const char *name,
+scorpi_device_set_prop_string(scorpi_device_t dev, const char *name,
     const char *value)
 {
 	if (dev == NULL || name == NULL || *name == '\0' || value == NULL)
@@ -405,7 +405,7 @@ scorpi_device_set_prop_string(scorpi_device_t *dev, const char *name,
 }
 
 scorpi_error_t
-scorpi_device_set_prop_bool(scorpi_device_t *dev, const char *name, bool value)
+scorpi_device_set_prop_bool(scorpi_device_t dev, const char *name, bool value)
 {
 	if (dev == NULL || name == NULL || *name == '\0')
 		return (SCORPI_ERR_INVALID_ARG);
@@ -414,7 +414,7 @@ scorpi_device_set_prop_bool(scorpi_device_t *dev, const char *name, bool value)
 }
 
 scorpi_error_t
-scorpi_device_set_prop_u64(scorpi_device_t *dev, const char *name,
+scorpi_device_set_prop_u64(scorpi_device_t dev, const char *name,
     uint64_t value)
 {
 	if (dev == NULL || name == NULL || *name == '\0')
@@ -424,7 +424,7 @@ scorpi_device_set_prop_u64(scorpi_device_t *dev, const char *name,
 }
 
 scorpi_error_t
-scorpi_vm_add_device(scorpi_vm_t *vm, scorpi_device_t *dev)
+scorpi_vm_add_device(scorpi_vm_t vm, scorpi_device_t dev)
 {
 	const char *id;
 
@@ -444,7 +444,7 @@ scorpi_vm_add_device(scorpi_vm_t *vm, scorpi_device_t *dev)
 }
 
 scorpi_error_t
-scorpi_start_vm(scorpi_vm_t *vm)
+scorpi_start_vm(scorpi_vm_t vm)
 {
 	if (vm == NULL)
 		return (SCORPI_ERR_INVALID_ARG);
@@ -452,7 +452,7 @@ scorpi_start_vm(scorpi_vm_t *vm)
 }
 
 scorpi_error_t
-scorpi_wait_vm(scorpi_vm_t *vm, int *exit_code)
+scorpi_wait_vm(scorpi_vm_t vm, int *exit_code)
 {
 	if (vm == NULL || exit_code == NULL)
 		return (SCORPI_ERR_INVALID_ARG);
@@ -460,7 +460,7 @@ scorpi_wait_vm(scorpi_vm_t *vm, int *exit_code)
 }
 
 scorpi_error_t
-scorpi_stop_vm(scorpi_vm_t *vm)
+scorpi_stop_vm(scorpi_vm_t vm)
 {
 	if (vm == NULL)
 		return (SCORPI_ERR_INVALID_ARG);
@@ -468,7 +468,7 @@ scorpi_stop_vm(scorpi_vm_t *vm)
 }
 
 scorpi_error_t
-scorpi_load_vm_from_yaml(const char *yaml, scorpi_vm_t **out_vm)
+scorpi_load_vm_from_yaml(const char *yaml, scorpi_vm_t *out_vm)
 {
 	if (yaml == NULL || out_vm == NULL)
 		return (SCORPI_ERR_INVALID_ARG);

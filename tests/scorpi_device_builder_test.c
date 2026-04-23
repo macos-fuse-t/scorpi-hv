@@ -10,10 +10,10 @@ int
 main(void)
 {
 	const struct scorpi_prop *prop;
-	scorpi_device_t *auto_pci;
-	scorpi_device_t *lpc;
-	scorpi_device_t *pci;
-	scorpi_device_t *usb;
+	scorpi_device_t auto_pci;
+	scorpi_device_t lpc;
+	scorpi_device_t pci;
+	scorpi_device_t usb;
 
 	assert(scorpi_create_pci_device("virtio-net", 5, &pci) == SCORPI_OK);
 	assert(pci != NULL);

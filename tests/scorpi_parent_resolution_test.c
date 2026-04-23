@@ -8,12 +8,12 @@
 int
 main(void)
 {
-	const scorpi_device_t *parent;
-	scorpi_device_t *bridge;
-	scorpi_device_t *child;
-	scorpi_device_t *orphan;
-	scorpi_device_t *self;
-	scorpi_vm_t *vm;
+	const struct scorpi_device *parent;
+	scorpi_device_t bridge;
+	scorpi_device_t child;
+	scorpi_device_t orphan;
+	scorpi_device_t self;
+	scorpi_vm_t vm;
 
 	assert(scorpi_create_vm(&vm) == SCORPI_OK);
 	assert(vm != NULL);
