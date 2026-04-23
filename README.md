@@ -28,13 +28,14 @@ Currently, Scorpi runs on Mac ARM64 using Apple's Hypervisor Framework. The plan
 
 ## Build and run
 
-Build and run the scorpi kit and samples with
+Build and run scorpi and samples with
 
 ```sh
+meson setup builddir
 meson compile -C builddir
 ```
 
-Run FreeBSD VM:
+Run a FreeBSD VM:
 
 ```sh
 ./run.sh
