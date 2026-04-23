@@ -28,12 +28,7 @@ Currently, Scorpi runs on Mac ARM64 using Apple's Hypervisor Framework. The plan
 
 ## Samples
 
-The repository includes two FreeBSD ARM64 samples under [samples/README.md](/Users/alexf/work/scorpi/samples/README.md):
-
-- [samples/freebsd_vm.yaml](/Users/alexf/work/scorpi/samples/freebsd_vm.yaml) for `./builddir/scorpi -f ...`
-- [samples/freebsd_api.c](/Users/alexf/work/scorpi/samples/freebsd_api.c) as a single-file `scorpi_kit` launcher
-
-Both samples use the same FreeBSD boot-only ISO referenced by [run.sh](/Users/alexf/work/scorpi/run.sh):
+Launch FreeBSD VM
 
 ```sh
 ./run.sh
