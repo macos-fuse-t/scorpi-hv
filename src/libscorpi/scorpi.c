@@ -49,15 +49,26 @@ scorpi_prop_destroy(struct scorpi_prop *prop)
 	free(prop);
 }
 
-const struct scorpi_prop *
-scorpi_vm_find_prop(const scorpi_vm_t *vm, const char *name)
+static void
+scorpi_prop_list_destroy(struct scorpi_prop *props)
 {
-	struct scorpi_prop *prop;
+	struct scorpi_prop *next, *prop;
 
-	if (vm == NULL || name == NULL)
+	for (prop = props; prop != NULL; prop = next) {
+		next = prop->next;
+		scorpi_prop_destroy(prop);
+	}
+}
+
+static const struct scorpi_prop *
+scorpi_prop_find(const struct scorpi_prop *props, const char *name)
+{
+	const struct scorpi_prop *prop;
+
+	if (name == NULL)
 		return (NULL);
 
-	for (prop = vm->props; prop != NULL; prop = prop->next) {
+	for (prop = props; prop != NULL; prop = prop->next) {
 		if (strcmp(prop->name, name) == 0)
 			return (prop);
 	}
@@ -66,17 +77,13 @@ scorpi_vm_find_prop(const scorpi_vm_t *vm, const char *name)
 }
 
 static struct scorpi_prop *
-scorpi_vm_find_prop_mut(scorpi_vm_t *vm, const char *name);
-
-static struct scorpi_prop *
-scorpi_vm_find_prop_mut(scorpi_vm_t *vm, const char *name)
+scorpi_prop_find_mut(struct scorpi_prop *props, const char *name)
 {
 	struct scorpi_prop *prop;
 
-	assert(vm != NULL);
 	assert(name != NULL);
 
-	for (prop = vm->props; prop != NULL; prop = prop->next) {
+	for (prop = props; prop != NULL; prop = prop->next) {
 		if (strcmp(prop->name, name) == 0)
 			return (prop);
 	}
@@ -85,12 +92,16 @@ scorpi_vm_find_prop_mut(scorpi_vm_t *vm, const char *name)
 }
 
 static scorpi_error_t
-scorpi_vm_ensure_prop(scorpi_vm_t *vm, const char *name,
+scorpi_prop_ensure(struct scorpi_prop **props, const char *name,
     struct scorpi_prop **out_prop)
 {
 	struct scorpi_prop *prop;
 
-	prop = scorpi_vm_find_prop_mut(vm, name);
+	assert(props != NULL);
+	assert(name != NULL);
+	assert(out_prop != NULL);
+
+	prop = scorpi_prop_find_mut(*props, name);
 	if (prop != NULL) {
 		if (prop->kind == SCORPI_PROP_STRING) {
 			free(prop->value.string);
@@ -110,10 +121,106 @@ scorpi_vm_ensure_prop(scorpi_vm_t *vm, const char *name,
 		return (SCORPI_ERR_RUNTIME);
 	}
 
-	prop->next = vm->props;
-	vm->props = prop;
+	prop->next = *props;
+	*props = prop;
 	*out_prop = prop;
 	return (SCORPI_OK);
+}
+
+static scorpi_error_t
+scorpi_prop_set_string(struct scorpi_prop **props, const char *name,
+    const char *value)
+{
+	struct scorpi_prop *prop;
+	scorpi_error_t error;
+
+	error = scorpi_prop_ensure(props, name, &prop);
+	if (error != SCORPI_OK)
+		return (error);
+
+	prop->kind = SCORPI_PROP_STRING;
+	prop->value.string = strdup(value);
+	if (prop->value.string == NULL)
+		return (SCORPI_ERR_RUNTIME);
+
+	return (SCORPI_OK);
+}
+
+static scorpi_error_t
+scorpi_prop_set_bool(struct scorpi_prop **props, const char *name, bool value)
+{
+	struct scorpi_prop *prop;
+	scorpi_error_t error;
+
+	error = scorpi_prop_ensure(props, name, &prop);
+	if (error != SCORPI_OK)
+		return (error);
+
+	prop->kind = SCORPI_PROP_BOOL;
+	prop->value.boolean = value;
+	return (SCORPI_OK);
+}
+
+static scorpi_error_t
+scorpi_prop_set_u64(struct scorpi_prop **props, const char *name,
+    uint64_t value)
+{
+	struct scorpi_prop *prop;
+	scorpi_error_t error;
+
+	error = scorpi_prop_ensure(props, name, &prop);
+	if (error != SCORPI_OK)
+		return (error);
+
+	prop->kind = SCORPI_PROP_U64;
+	prop->value.u64 = value;
+	return (SCORPI_OK);
+}
+
+const struct scorpi_prop *
+scorpi_vm_find_prop(const scorpi_vm_t *vm, const char *name)
+{
+	if (vm == NULL)
+		return (NULL);
+	return (scorpi_prop_find(vm->props, name));
+}
+
+const struct scorpi_prop *
+scorpi_device_find_prop(const scorpi_device_t *dev, const char *name)
+{
+	if (dev == NULL)
+		return (NULL);
+	return (scorpi_prop_find(dev->props, name));
+}
+
+static const char *
+scorpi_device_get_id(const scorpi_device_t *dev)
+{
+	const struct scorpi_prop *prop;
+
+	prop = scorpi_device_find_prop(dev, "id");
+	if (prop == NULL || prop->kind != SCORPI_PROP_STRING)
+		return (NULL);
+	return (prop->value.string);
+}
+
+static bool
+scorpi_vm_has_device_id(const scorpi_vm_t *vm, const char *id)
+{
+	scorpi_device_t *dev;
+
+	assert(vm != NULL);
+	assert(id != NULL);
+
+	for (dev = vm->devices; dev != NULL; dev = dev->next) {
+		const char *existing_id;
+
+		existing_id = scorpi_device_get_id(dev);
+		if (existing_id != NULL && strcmp(existing_id, id) == 0)
+			return (true);
+	}
+
+	return (false);
 }
 
 static scorpi_error_t
@@ -162,75 +269,45 @@ scorpi_create_vm(scorpi_vm_t **out_vm)
 void
 scorpi_destroy_vm(scorpi_vm_t *vm)
 {
-	struct scorpi_prop *prop, *next;
+	scorpi_device_t *dev, *next_dev;
 
 	if (vm == NULL)
 		return;
 
-	for (prop = vm->props; prop != NULL; prop = next) {
-		next = prop->next;
-		scorpi_prop_destroy(prop);
+	for (dev = vm->devices; dev != NULL; dev = next_dev) {
+		next_dev = dev->next;
+		dev->attached = false;
+		scorpi_destroy_device(dev);
 	}
+	scorpi_prop_list_destroy(vm->props);
 	free(vm);
 }
 
 scorpi_error_t
 scorpi_vm_set_prop_string(scorpi_vm_t *vm, const char *name, const char *value)
 {
-	struct scorpi_prop *prop;
-	scorpi_error_t error;
-
 	if (vm == NULL || name == NULL || *name == '\0' || value == NULL)
 		return (SCORPI_ERR_INVALID_ARG);
 
-	error = scorpi_vm_ensure_prop(vm, name, &prop);
-	if (error != SCORPI_OK)
-		return (error);
-
-	prop->kind = SCORPI_PROP_STRING;
-	prop->value.string = strdup(value);
-	if (prop->value.string == NULL)
-		return (SCORPI_ERR_RUNTIME);
-
-	return (SCORPI_OK);
+	return (scorpi_prop_set_string(&vm->props, name, value));
 }
 
 scorpi_error_t
 scorpi_vm_set_prop_bool(scorpi_vm_t *vm, const char *name, bool value)
 {
-	struct scorpi_prop *prop;
-	scorpi_error_t error;
-
-	(void)value;
 	if (vm == NULL || name == NULL || *name == '\0')
 		return (SCORPI_ERR_INVALID_ARG);
 
-	error = scorpi_vm_ensure_prop(vm, name, &prop);
-	if (error != SCORPI_OK)
-		return (error);
-
-	prop->kind = SCORPI_PROP_BOOL;
-	prop->value.boolean = value;
-	return (SCORPI_OK);
+	return (scorpi_prop_set_bool(&vm->props, name, value));
 }
 
 scorpi_error_t
 scorpi_vm_set_prop_u64(scorpi_vm_t *vm, const char *name, uint64_t value)
 {
-	struct scorpi_prop *prop;
-	scorpi_error_t error;
-
-	(void)value;
 	if (vm == NULL || name == NULL || *name == '\0')
 		return (SCORPI_ERR_INVALID_ARG);
 
-	error = scorpi_vm_ensure_prop(vm, name, &prop);
-	if (error != SCORPI_OK)
-		return (error);
-
-	prop->kind = SCORPI_PROP_U64;
-	prop->value.u64 = value;
-	return (SCORPI_OK);
+	return (scorpi_prop_set_u64(&vm->props, name, value));
 }
 
 scorpi_error_t
@@ -276,7 +353,10 @@ scorpi_destroy_device(scorpi_device_t *dev)
 {
 	if (dev == NULL)
 		return;
+	if (dev->attached)
+		return;
 	free(dev->device);
+	scorpi_prop_list_destroy(dev->props);
 	free(dev);
 }
 
@@ -286,34 +366,47 @@ scorpi_device_set_prop_string(scorpi_device_t *dev, const char *name,
 {
 	if (dev == NULL || name == NULL || *name == '\0' || value == NULL)
 		return (SCORPI_ERR_INVALID_ARG);
-	return (SCORPI_ERR_UNSUPPORTED);
+
+	return (scorpi_prop_set_string(&dev->props, name, value));
 }
 
 scorpi_error_t
 scorpi_device_set_prop_bool(scorpi_device_t *dev, const char *name, bool value)
 {
-	(void)value;
 	if (dev == NULL || name == NULL || *name == '\0')
 		return (SCORPI_ERR_INVALID_ARG);
-	return (SCORPI_ERR_UNSUPPORTED);
+
+	return (scorpi_prop_set_bool(&dev->props, name, value));
 }
 
 scorpi_error_t
 scorpi_device_set_prop_u64(scorpi_device_t *dev, const char *name,
     uint64_t value)
 {
-	(void)value;
 	if (dev == NULL || name == NULL || *name == '\0')
 		return (SCORPI_ERR_INVALID_ARG);
-	return (SCORPI_ERR_UNSUPPORTED);
+
+	return (scorpi_prop_set_u64(&dev->props, name, value));
 }
 
 scorpi_error_t
 scorpi_vm_add_device(scorpi_vm_t *vm, scorpi_device_t *dev)
 {
+	const char *id;
+
 	if (vm == NULL || dev == NULL)
 		return (SCORPI_ERR_INVALID_ARG);
-	return (SCORPI_ERR_UNSUPPORTED);
+	if (dev->attached)
+		return (SCORPI_ERR_INVALID_ARG);
+
+	id = scorpi_device_get_id(dev);
+	if (id != NULL && scorpi_vm_has_device_id(vm, id))
+		return (SCORPI_ERR_DUPLICATE_ID);
+
+	dev->next = vm->devices;
+	dev->attached = true;
+	vm->devices = dev;
+	return (SCORPI_OK);
 }
 
 scorpi_error_t

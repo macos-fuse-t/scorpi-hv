@@ -24,13 +24,19 @@ struct scorpi_prop {
 
 struct scorpi_vm {
 	struct scorpi_prop *props;
+	struct scorpi_device *devices;
 };
 
 struct scorpi_device {
+	struct scorpi_device *next;
 	char *device;
+	struct scorpi_prop *props;
 	uint64_t slot;
 	int bus;
+	bool attached;
 };
 
 const struct scorpi_prop *scorpi_vm_find_prop(const scorpi_vm_t *vm,
+    const char *name);
+const struct scorpi_prop *scorpi_device_find_prop(const scorpi_device_t *dev,
     const char *name);

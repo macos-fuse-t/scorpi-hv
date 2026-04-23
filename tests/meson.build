@@ -61,3 +61,25 @@ scorpi_vm_builder_test_executable = executable(
 )
 
 test('scorpi_vm_builder_test', scorpi_vm_builder_test_executable)
+
+scorpi_device_builder_test_src = files('scorpi_device_builder_test.c')
+
+scorpi_device_builder_test_executable = executable(
+  'scorpi_device_builder_test',
+  scorpi_device_builder_test_src,
+  dependencies: scorpi_kit_dep,
+  include_directories: [inc, libscorpi_test_inc],
+)
+
+test('scorpi_device_builder_test', scorpi_device_builder_test_executable)
+
+scorpi_vm_add_device_test_src = files('scorpi_vm_add_device_test.c')
+
+scorpi_vm_add_device_test_executable = executable(
+  'scorpi_vm_add_device_test',
+  scorpi_vm_add_device_test_src,
+  dependencies: scorpi_kit_dep,
+  include_directories: [inc, libscorpi_test_inc],
+)
+
+test('scorpi_vm_add_device_test', scorpi_vm_add_device_test_executable)
