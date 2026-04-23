@@ -22,12 +22,14 @@ arch = host_machine.cpu_family()
 
 inc = include_directories(
     'include',
+    'libyaml/include',
     'libnv',
     'libfdt',
     'libutil',
     'mjson',
 )
 
+subdir('libyaml')
 subdir('libnv')
 subdir('libfdt')
 subdir('libutil')
