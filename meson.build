@@ -34,6 +34,7 @@ subdir('libnv')
 subdir('libfdt')
 subdir('libutil')
 subdir('mjson')
+subdir('src/libscorpi')
 subdir('tests')
 subdir('util/console')
 
