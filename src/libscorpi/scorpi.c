@@ -960,6 +960,107 @@ scorpi_import_device_props(const nvlist_t *config, scorpi_device_t dev,
 	return (SCORPI_OK);
 }
 
+static bool
+scorpi_legacy_ahci_device_type(const char *device_name, const char **type)
+{
+	if (device_name == NULL || type == NULL)
+		return (false);
+	if (strcmp(device_name, "ahci-hd") == 0) {
+		*type = "hd";
+		return (true);
+	}
+	if (strcmp(device_name, "ahci-cd") == 0) {
+		*type = "cd";
+		return (true);
+	}
+	return (false);
+}
+
+static scorpi_error_t
+scorpi_import_ahci_device(const nvlist_t *func_node, uint64_t slot,
+    scorpi_vm_t vm)
+{
+	void *cookie;
+	const char *controller_name, *port_name, *prop_name;
+	const nvlist_t *port_node, *ports_node;
+	scorpi_device_t dev;
+	int controller_type, port_type, prop_type;
+	void *prop_cookie;
+	char prop_path[128];
+	scorpi_error_t error;
+
+	ports_node = scorpi_config_find_node(func_node, "port");
+	if (ports_node == NULL)
+		return (SCORPI_ERR_UNSUPPORTED);
+
+	error = scorpi_create_pci_device("ahci", slot, &dev);
+	if (error != SCORPI_OK)
+		return (error);
+
+	cookie = NULL;
+	while ((controller_name = nvlist_next(func_node, &controller_type,
+	    &cookie)) != NULL) {
+		if (scorpi_prop_name_matches(controller_name, "device") ||
+		    scorpi_prop_name_matches(controller_name, "port"))
+			continue;
+		if (controller_type != NV_TYPE_STRING) {
+			scorpi_destroy_device(dev);
+			return (SCORPI_ERR_UNSUPPORTED);
+		}
+		error = scorpi_device_set_inferred_prop(dev, controller_name,
+		    nvlist_get_string(func_node, controller_name));
+		if (error != SCORPI_OK) {
+			scorpi_destroy_device(dev);
+			return (error);
+		}
+	}
+
+	cookie = NULL;
+	while ((port_name = nvlist_next(ports_node, &port_type,
+	    &cookie)) != NULL) {
+		if (port_type != NV_TYPE_NVLIST) {
+			scorpi_destroy_device(dev);
+			return (SCORPI_ERR_UNSUPPORTED);
+		}
+
+		port_node = nvlist_get_nvlist(ports_node, port_name);
+		prop_cookie = NULL;
+		while ((prop_name = nvlist_next(port_node, &prop_type,
+		    &prop_cookie)) != NULL) {
+			if (prop_type != NV_TYPE_STRING) {
+				scorpi_destroy_device(dev);
+				return (SCORPI_ERR_UNSUPPORTED);
+			}
+			if (snprintf(prop_path, sizeof(prop_path), "port.%s.%s",
+			    port_name, prop_name) >= (int)sizeof(prop_path)) {
+				scorpi_destroy_device(dev);
+				return (SCORPI_ERR_RUNTIME);
+			}
+			error = scorpi_device_set_inferred_prop(dev, prop_path,
+			    nvlist_get_string(port_node, prop_name));
+			if (error != SCORPI_OK) {
+				scorpi_destroy_device(dev);
+				return (error);
+			}
+		}
+	}
+
+	error = scorpi_vm_add_device(vm, dev);
+	if (error != SCORPI_OK) {
+		scorpi_destroy_device(dev);
+		return (error);
+	}
+
+	return (SCORPI_OK);
+}
+
+static scorpi_error_t
+scorpi_import_compatible_ahci_device(const nvlist_t *func_node, uint64_t slot,
+    scorpi_vm_t vm)
+{
+	return (scorpi_import_ahci_device(func_node, slot, vm));
+}
+
 static scorpi_error_t
 scorpi_assign_imported_xhci_id(struct scorpi_imported_xhci *xhci)
 {
@@ -1028,6 +1129,53 @@ scorpi_parse_config_memory(const char *value, uint64_t *memory_size)
 		return (SCORPI_ERR_INVALID_ARG);
 	if (expand_number(value, memory_size) != 0)
 		return (SCORPI_ERR_VALIDATION);
+	return (SCORPI_OK);
+}
+
+static bool
+scorpi_skip_imported_vm_scalar(const char *name)
+{
+	static const char *const skipped[] = {
+		"name",
+		"uuid",
+		"cpus",
+		"cores",
+		"sockets",
+		"threads",
+		"comm_sock",
+	};
+	size_t i;
+
+	if (name == NULL)
+		return (true);
+
+	for (i = 0; i < sizeof(skipped) / sizeof(skipped[0]); i++) {
+		if (strcmp(name, skipped[i]) == 0)
+			return (true);
+	}
+
+	return (false);
+}
+
+static scorpi_error_t
+scorpi_import_generic_vm_scalars(const nvlist_t *config, scorpi_vm_t vm)
+{
+	void *cookie;
+	const char *name;
+	int type;
+	scorpi_error_t error;
+
+	cookie = NULL;
+	while ((name = nvlist_next(config, &type, &cookie)) != NULL) {
+		if (type != NV_TYPE_STRING || scorpi_skip_imported_vm_scalar(name))
+			continue;
+
+		error = scorpi_vm_set_inferred_prop(vm, name,
+		    nvlist_get_string(config, name));
+		if (error != SCORPI_OK)
+			return (error);
+	}
+
 	return (SCORPI_OK);
 }
 
@@ -1153,6 +1301,10 @@ scorpi_import_vm_scalars(const nvlist_t *config, scorpi_vm_t vm)
 		}
 	}
 
+	error = scorpi_import_generic_vm_scalars(config, vm);
+	if (error != SCORPI_OK)
+		return (error);
+
 	return (SCORPI_OK);
 }
 
@@ -1207,6 +1359,14 @@ scorpi_import_pci_devices(const nvlist_t *pci_root, scorpi_vm_t vm,
 				if (value == NULL)
 					return (SCORPI_ERR_VALIDATION);
 				device_name = value;
+
+				if (strcmp(device_name, "ahci") == 0) {
+					error = scorpi_import_compatible_ahci_device(
+					    func_node, slot, vm);
+					if (error != SCORPI_OK)
+						return (error);
+					continue;
+				}
 
 				error = scorpi_create_pci_device(device_name, slot, &dev);
 				if (error != SCORPI_OK)
@@ -1596,6 +1756,8 @@ scorpi_pci_device_to_config(const struct scorpi_normalized_device *device,
     struct scorpi_usb_bus_binding *bindings, size_t binding_count,
     nvlist_t *config)
 {
+	const char *ahci_type;
+	const struct scorpi_normalized_prop *bus_prop;
 	char base_path[64];
 	char full_path[80];
 	char bus_value[32];
@@ -1604,21 +1766,60 @@ scorpi_pci_device_to_config(const struct scorpi_normalized_device *device,
 
 	snprintf(base_path, sizeof(base_path), "pci.0.%llu.0",
 	    (unsigned long long)device->slot);
+	if (scorpi_legacy_ahci_device_type(device->device, &ahci_type)) {
+		char port_path[96];
+
+		snprintf(full_path, sizeof(full_path), "%s.device", base_path);
+		error = scorpi_config_set_value(config, full_path, "ahci");
+		if (error != SCORPI_OK)
+			return (error);
+
+		bus_prop = scorpi_normalized_device_find_prop(device, "bus");
+		if (bus_prop != NULL && bus_prop->kind == SCORPI_PROP_U64) {
+			snprintf(bus_value, sizeof(bus_value), "%llu",
+			    (unsigned long long)bus_prop->value.u64);
+			snprintf(full_path, sizeof(full_path), "%s.bus", base_path);
+			error = scorpi_config_set_value(config, full_path, bus_value);
+			if (error != SCORPI_OK)
+				return (error);
+		}
+
+		snprintf(port_path, sizeof(port_path), "%s.port.0", base_path);
+		snprintf(full_path, sizeof(full_path), "%s.type", port_path);
+		error = scorpi_config_set_value(config, full_path, ahci_type);
+		if (error != SCORPI_OK)
+			return (error);
+		return (scorpi_device_props_to_config(device, config, port_path,
+		    true));
+	}
+
 	snprintf(full_path, sizeof(full_path), "%s.device", base_path);
 	error = scorpi_config_set_value(config, full_path, device->device);
 	if (error != SCORPI_OK)
 		return (error);
 
-	for (i = 0; i < binding_count; i++) {
-		if (bindings[i].id != NULL && device->id != NULL &&
-		    strcmp(bindings[i].id, device->id) == 0) {
-			snprintf(bus_value, sizeof(bus_value), "%llu",
-			    (unsigned long long)bindings[i].bus);
-			snprintf(full_path, sizeof(full_path), "%s.bus", base_path);
-			error = scorpi_config_set_value(config, full_path, bus_value);
-			if (error != SCORPI_OK)
-				return (error);
-			break;
+	bus_prop = scorpi_normalized_device_find_prop(device, "bus");
+	if (bus_prop != NULL && bus_prop->kind == SCORPI_PROP_U64) {
+		snprintf(bus_value, sizeof(bus_value), "%llu",
+		    (unsigned long long)bus_prop->value.u64);
+		snprintf(full_path, sizeof(full_path), "%s.bus", base_path);
+		error = scorpi_config_set_value(config, full_path, bus_value);
+		if (error != SCORPI_OK)
+			return (error);
+	} else if (binding_count > 1) {
+		for (i = 0; i < binding_count; i++) {
+			if (bindings[i].id != NULL && device->id != NULL &&
+			    strcmp(bindings[i].id, device->id) == 0) {
+				snprintf(bus_value, sizeof(bus_value), "%llu",
+				    (unsigned long long)bindings[i].bus);
+				snprintf(full_path, sizeof(full_path), "%s.bus",
+				    base_path);
+				error = scorpi_config_set_value(config, full_path,
+				    bus_value);
+				if (error != SCORPI_OK)
+					return (error);
+				break;
+			}
 		}
 	}
 

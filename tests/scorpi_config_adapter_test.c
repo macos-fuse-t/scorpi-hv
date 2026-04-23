@@ -9,6 +9,7 @@
 static void
 build_vm_variant_a(scorpi_vm_t *out_vm)
 {
+	scorpi_device_t ahci;
 	scorpi_device_t tpm;
 	scorpi_device_t usb;
 	scorpi_device_t vm_control;
@@ -22,7 +23,21 @@ build_vm_variant_a(scorpi_vm_t *out_vm)
 
 	assert(scorpi_create_pci_device("xhci", 1, &xhci) == SCORPI_OK);
 	assert(scorpi_device_set_prop_string(xhci, "id", "xhci0") == SCORPI_OK);
+	assert(scorpi_device_set_prop_u64(xhci, "bus", 0) == SCORPI_OK);
 	assert(scorpi_vm_add_device(vm, xhci) == SCORPI_OK);
+
+	assert(scorpi_create_pci_device("ahci", 2, &ahci) == SCORPI_OK);
+	assert(scorpi_device_set_prop_string(ahci, "port.0.type", "hd") ==
+	    SCORPI_OK);
+	assert(scorpi_device_set_prop_string(ahci, "port.0.path",
+	    "/tmp/disk.img") == SCORPI_OK);
+	assert(scorpi_device_set_prop_string(ahci, "port.1.type", "cd") ==
+	    SCORPI_OK);
+	assert(scorpi_device_set_prop_string(ahci, "port.1.path",
+	    "/tmp/boot.iso") == SCORPI_OK);
+	assert(scorpi_device_set_prop_bool(ahci, "port.1.ro", true) ==
+	    SCORPI_OK);
+	assert(scorpi_vm_add_device(vm, ahci) == SCORPI_OK);
 
 	assert(scorpi_create_usb_device("tablet", &usb) == SCORPI_OK);
 	assert(scorpi_device_set_prop_string(usb, "parent", "xhci0") ==
@@ -52,6 +67,7 @@ build_vm_variant_a(scorpi_vm_t *out_vm)
 static void
 build_vm_variant_b(scorpi_vm_t *out_vm)
 {
+	scorpi_device_t ahci;
 	scorpi_device_t tpm;
 	scorpi_device_t usb;
 	scorpi_device_t vm_control;
@@ -79,6 +95,19 @@ build_vm_variant_b(scorpi_vm_t *out_vm)
 	    "/tmp/vm.sock") == SCORPI_OK);
 	assert(scorpi_vm_add_device(vm, vm_control) == SCORPI_OK);
 
+	assert(scorpi_create_pci_device("ahci", 2, &ahci) == SCORPI_OK);
+	assert(scorpi_device_set_prop_bool(ahci, "port.1.ro", true) ==
+	    SCORPI_OK);
+	assert(scorpi_device_set_prop_string(ahci, "port.1.path",
+	    "/tmp/boot.iso") == SCORPI_OK);
+	assert(scorpi_device_set_prop_string(ahci, "port.1.type", "cd") ==
+	    SCORPI_OK);
+	assert(scorpi_device_set_prop_string(ahci, "port.0.path",
+	    "/tmp/disk.img") == SCORPI_OK);
+	assert(scorpi_device_set_prop_string(ahci, "port.0.type", "hd") ==
+	    SCORPI_OK);
+	assert(scorpi_vm_add_device(vm, ahci) == SCORPI_OK);
+
 	assert(scorpi_create_usb_device("tablet", &usb) == SCORPI_OK);
 	assert(scorpi_device_set_prop_u64(usb, "port", 7) == SCORPI_OK);
 	assert(scorpi_device_set_prop_string(usb, "parent", "xhci0") ==
@@ -87,6 +116,7 @@ build_vm_variant_b(scorpi_vm_t *out_vm)
 
 	assert(scorpi_create_pci_device("xhci", 1, &xhci) == SCORPI_OK);
 	assert(scorpi_device_set_prop_string(xhci, "id", "xhci0") == SCORPI_OK);
+	assert(scorpi_device_set_prop_u64(xhci, "bus", 0) == SCORPI_OK);
 	assert(scorpi_vm_add_device(vm, xhci) == SCORPI_OK);
 
 	*out_vm = vm;
@@ -123,6 +153,18 @@ main(void)
 	    "xhci") == 0);
 	assert(strcmp(scorpi_config_get_value(config_a, "pci.0.1.0.bus"),
 	    "0") == 0);
+	assert(strcmp(scorpi_config_get_value(config_a, "pci.0.2.0.device"),
+	    "ahci") == 0);
+	assert(strcmp(scorpi_config_get_value(config_a, "pci.0.2.0.port.0.type"),
+	    "hd") == 0);
+	assert(strcmp(scorpi_config_get_value(config_a, "pci.0.2.0.port.0.path"),
+	    "/tmp/disk.img") == 0);
+	assert(strcmp(scorpi_config_get_value(config_a, "pci.0.2.0.port.1.type"),
+	    "cd") == 0);
+	assert(strcmp(scorpi_config_get_value(config_a, "pci.0.2.0.port.1.path"),
+	    "/tmp/boot.iso") == 0);
+	assert(strcmp(scorpi_config_get_value(config_a, "pci.0.2.0.port.1.ro"),
+	    "true") == 0);
 	assert(strcmp(scorpi_config_get_value(config_a, "usb.0.7.device"),
 	    "tablet") == 0);
 	assert(strcmp(scorpi_config_get_value(config_a, "comm_sock"),

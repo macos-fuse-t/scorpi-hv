@@ -29,7 +29,19 @@ build_api_vm(scorpi_vm_t *out_vm)
 	    SCORPI_OK);
 	assert(scorpi_vm_add_device(vm, dev) == SCORPI_OK);
 
-	assert(scorpi_create_pci_device("virtio-net", 3, &dev) == SCORPI_OK);
+	assert(scorpi_create_pci_device("ahci", 3, &dev) == SCORPI_OK);
+	assert(scorpi_device_set_prop_string(dev, "port.0.type", "hd") ==
+	    SCORPI_OK);
+	assert(scorpi_device_set_prop_string(dev, "port.0.path", "/tmp/boot.img") ==
+	    SCORPI_OK);
+	assert(scorpi_device_set_prop_string(dev, "port.1.type", "cd") ==
+	    SCORPI_OK);
+	assert(scorpi_device_set_prop_string(dev, "port.1.path", "/tmp/boot.iso") ==
+	    SCORPI_OK);
+	assert(scorpi_device_set_prop_bool(dev, "port.1.ro", true) == SCORPI_OK);
+	assert(scorpi_vm_add_device(vm, dev) == SCORPI_OK);
+
+	assert(scorpi_create_pci_device("virtio-net", 4, &dev) == SCORPI_OK);
 	assert(scorpi_device_set_prop_string(dev, "mac", "52:54:00:12:34:56") ==
 	    SCORPI_OK);
 	assert(scorpi_device_set_prop_string(dev, "backend", "slirp") ==
@@ -72,8 +84,15 @@ main(void)
 	    "    - device: virtio-blk\n"
 	    "      slot: 2\n"
 	    "      path: /tmp/disk.img\n"
-	    "    - device: virtio-net\n"
+	    "    - device: ahci\n"
 	    "      slot: 3\n"
+	    "      port.0.type: hd\n"
+	    "      port.0.path: /tmp/boot.img\n"
+	    "      port.1.type: cd\n"
+	    "      port.1.path: /tmp/boot.iso\n"
+	    "      port.1.ro: true\n"
+	    "    - device: virtio-net\n"
+	    "      slot: 4\n"
 	    "      mac: 52:54:00:12:34:56\n"
 	    "      backend: slirp\n"
 	    "  lpc:\n"
