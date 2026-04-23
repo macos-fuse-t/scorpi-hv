@@ -48,3 +48,16 @@ scorpi_error_contract_test_executable = executable(
 )
 
 test('scorpi_error_contract_test', scorpi_error_contract_test_executable)
+
+libscorpi_test_inc = include_directories('../src/libscorpi')
+
+scorpi_vm_builder_test_src = files('scorpi_vm_builder_test.c')
+
+scorpi_vm_builder_test_executable = executable(
+  'scorpi_vm_builder_test',
+  scorpi_vm_builder_test_src,
+  dependencies: scorpi_kit_dep,
+  include_directories: [inc, libscorpi_test_inc],
+)
+
+test('scorpi_vm_builder_test', scorpi_vm_builder_test_executable)
