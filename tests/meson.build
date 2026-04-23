@@ -37,3 +37,14 @@ scorpi_header_compile_test_executable = executable(
 )
 
 test('scorpi_header_compile_test', scorpi_header_compile_test_executable)
+
+scorpi_error_contract_test_src = files('scorpi_error_contract_test.c')
+
+scorpi_error_contract_test_executable = executable(
+  'scorpi_error_contract_test',
+  scorpi_error_contract_test_src,
+  dependencies: scorpi_kit_dep,
+  include_directories: inc,
+)
+
+test('scorpi_error_contract_test', scorpi_error_contract_test_executable)
