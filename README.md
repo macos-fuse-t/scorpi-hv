@@ -26,25 +26,24 @@ Currently, Scorpi runs on Mac ARM64 using Apple's Hypervisor Framework. The plan
 2. **EDK2 UEFI** - Full-featured bootloader that provides ACPI support, frame buffer, and a variety of boot device drivers.\
    [Source Code](https://github.com/macos-fuse-t/edk2)
 
-## Samples
+## Build and run
 
-Launch FreeBSD VM
+Build and run the scorpi kit and samples with
+
+```sh
+meson compile -C builddir
+```
+
+Run FreeBSD VM:
 
 ```sh
 ./run.sh
 ```
 
-Launch the YAML sample with:
+Or launch it with the YAML config:
 
 ```sh
 ./builddir/scorpi -f ./samples/freebsd_vm.yaml
-```
-
-Build and run the API sample with:
-
-```sh
-meson compile -C builddir freebsd_api_sample
-./builddir/samples/freebsd_api_sample
 ```
 
 ## Running Linux VMs
