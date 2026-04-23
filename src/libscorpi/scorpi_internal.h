@@ -73,6 +73,7 @@ const struct scorpi_device *scorpi_vm_find_device_by_id(
     const char *id);
 scorpi_error_t scorpi_vm_resolve_parent(const struct scorpi_vm *vm,
     const struct scorpi_device *dev, const struct scorpi_device **out_parent);
+scorpi_error_t scorpi_vm_validate(const struct scorpi_vm *vm);
 scorpi_error_t scorpi_vm_normalize(const struct scorpi_vm *vm,
     struct scorpi_normalized_vm **out_vm);
 void scorpi_normalized_vm_destroy(struct scorpi_normalized_vm *vm);

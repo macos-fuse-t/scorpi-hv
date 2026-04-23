@@ -19,7 +19,7 @@ main(void)
 	assert(scorpi_create_usb_device("", &dev) == SCORPI_ERR_INVALID_ARG);
 	assert(scorpi_load_vm_from_yaml(NULL, &vm) == SCORPI_ERR_INVALID_ARG);
 
-	assert(scorpi_start_vm(vm) == SCORPI_ERR_UNSUPPORTED);
+	assert(scorpi_start_vm(vm) == SCORPI_ERR_VALIDATION);
 	assert(scorpi_wait_vm(vm, NULL) == SCORPI_ERR_INVALID_ARG);
 
 	scorpi_destroy_vm(vm);

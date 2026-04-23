@@ -116,3 +116,30 @@ scorpi_yaml_loader_test_executable = executable(
 )
 
 test('scorpi_yaml_loader_test', scorpi_yaml_loader_test_executable)
+
+scorpi_yaml_normalization_rules_test_src = files(
+  'scorpi_yaml_normalization_rules_test.c'
+)
+
+scorpi_yaml_normalization_rules_test_executable = executable(
+  'scorpi_yaml_normalization_rules_test',
+  scorpi_yaml_normalization_rules_test_src,
+  dependencies: scorpi_kit_dep,
+  include_directories: [inc, libscorpi_test_inc],
+)
+
+test(
+  'scorpi_yaml_normalization_rules_test',
+  scorpi_yaml_normalization_rules_test_executable
+)
+
+scorpi_vm_validation_test_src = files('scorpi_vm_validation_test.c')
+
+scorpi_vm_validation_test_executable = executable(
+  'scorpi_vm_validation_test',
+  scorpi_vm_validation_test_src,
+  dependencies: scorpi_kit_dep,
+  include_directories: [inc, libscorpi_test_inc],
+)
+
+test('scorpi_vm_validation_test', scorpi_vm_validation_test_executable)
