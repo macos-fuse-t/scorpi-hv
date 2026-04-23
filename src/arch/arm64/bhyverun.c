@@ -111,7 +111,7 @@ bhyve_usage(int code)
 	    "       -k: key=value flat config file\n"
 	    "       -m: memory size\n"
 	    "       -M: enable experimental GIC MBI/MSI support\n"
-	    "       -l: device config, e.g. cnc,/path/to/socket or tpm,swtpm,/path/to/tpm.socket\n"
+	    "       -l: device config, e.g. vm-control,/path/to/socket or tpm,swtpm,/path/to/tpm.socket\n"
 	    "       -o: set config 'var' to 'value'\n"
 	    "       -p: pin 'vcpu' to 'hostcpu'\n"
 	    "       -S: guest memory cannot be swapped\n"
@@ -138,7 +138,7 @@ bhyve_parse_lpc_device_config(const char *opt)
 	if (name == NULL || *name == '\0')
 		errx(EX_USAGE, "invalid -l config '%s'", opt);
 
-	if (strcmp(name, "cnc") == 0) {
+	if (strcmp(name, "cnc") == 0 || strcmp(name, "vm-control") == 0) {
 		path = strsep(&next, ",");
 		if (path == NULL || *path == '\0' || next != NULL)
 			errx(EX_USAGE, "invalid cnc config '%s'", opt);

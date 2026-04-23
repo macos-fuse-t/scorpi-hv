@@ -66,6 +66,7 @@ const char *get_config_value(const char *path);
 
 /* Initializes the tree to an empty state. */
 void	init_config(void);
+const nvlist_t *get_config_tree(void);
 
 /*
  * Creates an existing configuration node via a dot-separated OID

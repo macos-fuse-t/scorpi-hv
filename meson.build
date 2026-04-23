@@ -27,6 +27,7 @@ inc = include_directories(
     'libfdt',
     'libutil',
     'mjson',
+    'src/libscorpi',
 )
 
 subdir('libyaml')
@@ -121,7 +122,7 @@ sources += arch_src
 scorpi_executable=executable(
   'scorpi', 
   sources,
-  dependencies: [libnv_dep, libfdt_dep, libutil_dep, libmjson_dep, zlib_dep, slirp_dep, libwebsockets_dep, threads_dep],
+  dependencies: [scorpi_kit_dep, libnv_dep, libfdt_dep, libutil_dep, libmjson_dep, zlib_dep, slirp_dep, libwebsockets_dep, threads_dep],
   include_directories: inc,
 )
 

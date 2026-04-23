@@ -861,6 +861,584 @@ scorpi_config_destroy(nvlist_t *config)
 	nvlist_destroy(config);
 }
 
+struct scorpi_imported_xhci {
+	scorpi_device_t dev;
+	uint64_t usb_bus;
+	unsigned int pci_bus;
+	unsigned int slot;
+	unsigned int func;
+};
+
+static bool
+scorpi_parse_bool_string(const char *value, bool *out_value)
+{
+	if (value == NULL || out_value == NULL)
+		return (false);
+	if (strcmp(value, "true") == 0) {
+		*out_value = true;
+		return (true);
+	}
+	if (strcmp(value, "false") == 0) {
+		*out_value = false;
+		return (true);
+	}
+	return (false);
+}
+
+static bool
+scorpi_parse_u64_string(const char *value, uint64_t *out_value)
+{
+	char *endptr;
+	unsigned long long parsed;
+
+	if (value == NULL || out_value == NULL)
+		return (false);
+
+	errno = 0;
+	parsed = strtoull(value, &endptr, 10);
+	if (errno != 0 || endptr == value || *endptr != '\0')
+		return (false);
+
+	*out_value = (uint64_t)parsed;
+	return (true);
+}
+
+static scorpi_error_t
+scorpi_vm_set_inferred_prop(scorpi_vm_t vm, const char *name, const char *value)
+{
+	bool bool_value;
+	uint64_t u64_value;
+
+	if (scorpi_parse_bool_string(value, &bool_value))
+		return (scorpi_vm_set_prop_bool(vm, name, bool_value));
+	if (scorpi_parse_u64_string(value, &u64_value))
+		return (scorpi_vm_set_prop_u64(vm, name, u64_value));
+	return (scorpi_vm_set_prop_string(vm, name, value));
+}
+
+static scorpi_error_t
+scorpi_device_set_inferred_prop(scorpi_device_t dev, const char *name,
+    const char *value)
+{
+	bool bool_value;
+	uint64_t u64_value;
+
+	if (scorpi_parse_bool_string(value, &bool_value))
+		return (scorpi_device_set_prop_bool(dev, name, bool_value));
+	if (scorpi_parse_u64_string(value, &u64_value))
+		return (scorpi_device_set_prop_u64(dev, name, u64_value));
+	return (scorpi_device_set_prop_string(dev, name, value));
+}
+
+static bool
+scorpi_prop_name_matches(const char *name, const char *skip_name)
+{
+	return (skip_name != NULL && strcmp(name, skip_name) == 0);
+}
+
+static scorpi_error_t
+scorpi_import_device_props(const nvlist_t *config, scorpi_device_t dev,
+    const char *skip_name1, const char *skip_name2)
+{
+	void *cookie;
+	const char *name;
+	int type;
+	scorpi_error_t error;
+
+	cookie = NULL;
+	while ((name = nvlist_next(config, &type, &cookie)) != NULL) {
+		if (scorpi_prop_name_matches(name, skip_name1) ||
+		    scorpi_prop_name_matches(name, skip_name2))
+			continue;
+		if (type != NV_TYPE_STRING)
+			return (SCORPI_ERR_UNSUPPORTED);
+		error = scorpi_device_set_inferred_prop(dev, name,
+		    nvlist_get_string(config, name));
+		if (error != SCORPI_OK)
+			return (error);
+	}
+	return (SCORPI_OK);
+}
+
+static scorpi_error_t
+scorpi_assign_imported_xhci_id(struct scorpi_imported_xhci *xhci)
+{
+	char id[64];
+	const struct scorpi_prop *prop;
+
+	if (xhci == NULL || xhci->dev == NULL)
+		return (SCORPI_ERR_INVALID_ARG);
+
+	prop = scorpi_device_find_prop(xhci->dev, "id");
+	if (prop != NULL)
+		return (SCORPI_OK);
+
+	snprintf(id, sizeof(id), "__xhci_%u_%u_%u", xhci->pci_bus, xhci->slot,
+	    xhci->func);
+	return (scorpi_device_set_prop_string(xhci->dev, "id", id));
+}
+
+static const char *
+scorpi_imported_xhci_id(const struct scorpi_imported_xhci *xhci)
+{
+	const struct scorpi_prop *prop;
+
+	if (xhci == NULL || xhci->dev == NULL)
+		return (NULL);
+
+	prop = scorpi_device_find_prop(xhci->dev, "id");
+	if (prop == NULL || prop->kind != SCORPI_PROP_STRING)
+		return (NULL);
+	return (prop->value.string);
+}
+
+static scorpi_error_t
+scorpi_add_imported_xhci(struct scorpi_imported_xhci **xhcis, size_t *count,
+    const struct scorpi_imported_xhci *xhci)
+{
+	struct scorpi_imported_xhci *new_xhcis;
+
+	new_xhcis = realloc(*xhcis, (*count + 1) * sizeof(*new_xhcis));
+	if (new_xhcis == NULL)
+		return (SCORPI_ERR_RUNTIME);
+
+	new_xhcis[*count] = *xhci;
+	*xhcis = new_xhcis;
+	(*count)++;
+	return (SCORPI_OK);
+}
+
+static struct scorpi_imported_xhci *
+scorpi_find_imported_xhci_by_usb_bus(struct scorpi_imported_xhci *xhcis,
+	size_t count, uint64_t usb_bus)
+{
+	size_t i;
+
+	for (i = 0; i < count; i++) {
+		if (xhcis[i].usb_bus == usb_bus)
+			return (&xhcis[i]);
+	}
+	return (NULL);
+}
+
+static scorpi_error_t
+scorpi_parse_config_memory(const char *value, uint64_t *memory_size)
+{
+	if (value == NULL || memory_size == NULL)
+		return (SCORPI_ERR_INVALID_ARG);
+	if (expand_number(value, memory_size) != 0)
+		return (SCORPI_ERR_VALIDATION);
+	return (SCORPI_OK);
+}
+
+static scorpi_error_t
+scorpi_import_vm_scalars(const nvlist_t *config, scorpi_vm_t vm)
+{
+	const nvlist_t *gic, *memory;
+	const char *memory_size, *name, *uuid, *value;
+	uint64_t cpu_count, ram_bytes;
+	scorpi_error_t error;
+
+	name = scorpi_config_get_value(config, "name");
+	if (name != NULL) {
+		error = scorpi_vm_set_prop_string(vm, "name", name);
+		if (error != SCORPI_OK)
+			return (error);
+	}
+
+	uuid = scorpi_config_get_value(config, "uuid");
+	if (uuid != NULL) {
+		error = scorpi_vm_set_prop_string(vm, "uuid", uuid);
+		if (error != SCORPI_OK)
+			return (error);
+	}
+
+	value = scorpi_config_get_value(config, "threads");
+	if (value != NULL && strcmp(value, "1") != 0)
+		return (SCORPI_ERR_UNSUPPORTED);
+	value = scorpi_config_get_value(config, "sockets");
+	if (value != NULL && strcmp(value, "1") != 0)
+		return (SCORPI_ERR_UNSUPPORTED);
+
+	value = scorpi_config_get_value(config, "cpus");
+	if (value != NULL) {
+		if (!scorpi_parse_u64_string(value, &cpu_count) || cpu_count == 0)
+			return (SCORPI_ERR_VALIDATION);
+		error = scorpi_vm_set_cpu(vm, cpu_count);
+		if (error != SCORPI_OK)
+			return (error);
+	} else {
+		value = scorpi_config_get_value(config, "cores");
+		if (value != NULL) {
+			if (!scorpi_parse_u64_string(value, &cpu_count) ||
+			    cpu_count == 0)
+				return (SCORPI_ERR_VALIDATION);
+			error = scorpi_vm_set_cpu(vm, cpu_count);
+			if (error != SCORPI_OK)
+				return (error);
+		} else {
+			error = scorpi_vm_set_cpu(vm, 1);
+			if (error != SCORPI_OK)
+				return (error);
+		}
+	}
+
+	value = scorpi_config_get_value(config, "cores");
+	if (value != NULL && scorpi_parse_u64_string(value, &cpu_count)) {
+		const struct scorpi_prop *cpu_prop;
+
+		cpu_prop = scorpi_vm_find_prop(vm, "cpu.cores");
+		if (cpu_prop == NULL || cpu_prop->kind != SCORPI_PROP_U64 ||
+		    cpu_prop->value.u64 != cpu_count)
+			return (SCORPI_ERR_UNSUPPORTED);
+	}
+
+	memory_size = scorpi_config_get_value(config, "memory.size");
+	if (memory_size == NULL)
+		return (SCORPI_ERR_VALIDATION);
+	error = scorpi_parse_config_memory(memory_size, &ram_bytes);
+	if (error != SCORPI_OK)
+		return (error);
+	error = scorpi_vm_set_ram(vm, ram_bytes);
+	if (error != SCORPI_OK)
+		return (error);
+
+	memory = scorpi_config_find_node(config, "memory");
+	if (memory != NULL) {
+		value = scorpi_config_get_value(memory, "wired");
+		if (value != NULL) {
+			error = scorpi_vm_set_inferred_prop(vm, "memory.wired",
+			    value);
+			if (error != SCORPI_OK)
+				return (error);
+		}
+		value = scorpi_config_get_value(memory, "guest_in_core");
+		if (value != NULL) {
+			error = scorpi_vm_set_inferred_prop(vm,
+			    "memory.guest_in_core", value);
+			if (error != SCORPI_OK)
+				return (error);
+		}
+	}
+
+	value = scorpi_config_get_value(config, "virtio_msix");
+	if (value != NULL) {
+		error = scorpi_vm_set_inferred_prop(vm, "virtio_msix", value);
+		if (error != SCORPI_OK)
+			return (error);
+	}
+
+	value = scorpi_config_get_value(config, "acpi_tables");
+	if (value != NULL) {
+		error = scorpi_vm_set_inferred_prop(vm, "acpi_tables", value);
+		if (error != SCORPI_OK)
+			return (error);
+	}
+
+	value = scorpi_config_get_value(config, "acpi_tables_in_memory");
+	if (value != NULL) {
+		error = scorpi_vm_set_inferred_prop(vm, "acpi_tables_in_memory",
+		    value);
+		if (error != SCORPI_OK)
+			return (error);
+	}
+
+	gic = scorpi_config_find_node(config, "gic");
+	if (gic != NULL) {
+		value = scorpi_config_get_value(gic, "msi");
+		if (value != NULL) {
+			error = scorpi_vm_set_inferred_prop(vm, "gic.msi", value);
+			if (error != SCORPI_OK)
+				return (error);
+		}
+	}
+
+	return (SCORPI_OK);
+}
+
+static scorpi_error_t
+scorpi_import_pci_devices(const nvlist_t *pci_root, scorpi_vm_t vm,
+    struct scorpi_imported_xhci **out_xhcis, size_t *out_xhci_count)
+{
+	struct scorpi_imported_xhci imported_xhci;
+	const nvlist_t *bus_node, *func_node, *slot_node;
+	scorpi_device_t dev;
+	void *bus_cookie, *func_cookie, *slot_cookie;
+	const char *bus_name, *device_name, *func_name, *slot_name, *value;
+	int bus_type, func_type, slot_type;
+	scorpi_error_t error;
+	uint64_t pci_bus, slot, func, usb_bus, next_usb_bus;
+
+	*out_xhcis = NULL;
+	*out_xhci_count = 0;
+	next_usb_bus = 0;
+
+	if (pci_root == NULL)
+		return (SCORPI_OK);
+
+	bus_cookie = NULL;
+	while ((bus_name = nvlist_next(pci_root, &bus_type, &bus_cookie)) != NULL) {
+		if (bus_type != NV_TYPE_NVLIST ||
+		    !scorpi_parse_u64_string(bus_name, &pci_bus))
+			return (SCORPI_ERR_UNSUPPORTED);
+		if (pci_bus != 0)
+			return (SCORPI_ERR_UNSUPPORTED);
+
+		bus_node = nvlist_get_nvlist(pci_root, bus_name);
+		slot_cookie = NULL;
+		while ((slot_name = nvlist_next(bus_node, &slot_type,
+		    &slot_cookie)) != NULL) {
+			if (slot_type != NV_TYPE_NVLIST ||
+			    !scorpi_parse_u64_string(slot_name, &slot))
+				return (SCORPI_ERR_UNSUPPORTED);
+
+			slot_node = nvlist_get_nvlist(bus_node, slot_name);
+			func_cookie = NULL;
+			while ((func_name = nvlist_next(slot_node, &func_type,
+			    &func_cookie)) != NULL) {
+				if (func_type != NV_TYPE_NVLIST ||
+				    !scorpi_parse_u64_string(func_name, &func))
+					return (SCORPI_ERR_UNSUPPORTED);
+				if (func != 0)
+					return (SCORPI_ERR_UNSUPPORTED);
+
+				func_node = nvlist_get_nvlist(slot_node, func_name);
+				value = scorpi_config_get_value(func_node, "device");
+				if (value == NULL)
+					return (SCORPI_ERR_VALIDATION);
+				device_name = value;
+
+				error = scorpi_create_pci_device(device_name, slot, &dev);
+				if (error != SCORPI_OK)
+					return (error);
+
+				error = scorpi_import_device_props(func_node, dev,
+				    "device", NULL);
+				if (error != SCORPI_OK) {
+					scorpi_destroy_device(dev);
+					return (error);
+				}
+
+				error = scorpi_vm_add_device(vm, dev);
+				if (error != SCORPI_OK) {
+					scorpi_destroy_device(dev);
+					return (error);
+				}
+
+				if (strcmp(device_name, "xhci") != 0)
+					continue;
+
+				value = scorpi_config_get_value(func_node, "bus");
+				if (value != NULL && scorpi_parse_u64_string(value,
+				    &usb_bus)) {
+					if (usb_bus >= next_usb_bus)
+						next_usb_bus = usb_bus + 1;
+				} else {
+					usb_bus = next_usb_bus++;
+				}
+
+				imported_xhci.dev = dev;
+				imported_xhci.usb_bus = usb_bus;
+				imported_xhci.pci_bus = (unsigned int)pci_bus;
+				imported_xhci.slot = (unsigned int)slot;
+				imported_xhci.func = (unsigned int)func;
+				error = scorpi_add_imported_xhci(out_xhcis,
+				    out_xhci_count, &imported_xhci);
+				if (error != SCORPI_OK)
+					return (error);
+			}
+		}
+	}
+
+	return (SCORPI_OK);
+}
+
+static scorpi_error_t
+scorpi_import_usb_devices(const nvlist_t *usb_root, scorpi_vm_t vm,
+    struct scorpi_imported_xhci *xhcis, size_t xhci_count)
+{
+	const nvlist_t *bus_node, *slot_node;
+	scorpi_device_t dev;
+	struct scorpi_imported_xhci *parent_xhci;
+	void *bus_cookie, *slot_cookie;
+	const char *bus_name, *device_name, *slot_name;
+	int bus_type, slot_type;
+	scorpi_error_t error;
+	uint64_t usb_bus, usb_slot;
+
+	if (usb_root == NULL)
+		return (SCORPI_OK);
+	if (xhci_count == 0)
+		return (SCORPI_ERR_VALIDATION);
+
+	bus_cookie = NULL;
+	while ((bus_name = nvlist_next(usb_root, &bus_type, &bus_cookie)) != NULL) {
+		if (bus_type != NV_TYPE_NVLIST ||
+		    !scorpi_parse_u64_string(bus_name, &usb_bus))
+			return (SCORPI_ERR_UNSUPPORTED);
+
+		bus_node = nvlist_get_nvlist(usb_root, bus_name);
+		slot_cookie = NULL;
+		while ((slot_name = nvlist_next(bus_node, &slot_type,
+		    &slot_cookie)) != NULL) {
+			if (slot_type != NV_TYPE_NVLIST ||
+			    !scorpi_parse_u64_string(slot_name, &usb_slot))
+				return (SCORPI_ERR_UNSUPPORTED);
+
+			slot_node = nvlist_get_nvlist(bus_node, slot_name);
+			device_name = scorpi_config_get_value(slot_node, "device");
+			if (device_name == NULL)
+				return (SCORPI_ERR_VALIDATION);
+
+			error = scorpi_create_usb_device(device_name, &dev);
+			if (error != SCORPI_OK)
+				return (error);
+
+			error = scorpi_import_device_props(slot_node, dev, "device",
+			    NULL);
+			if (error != SCORPI_OK) {
+				scorpi_destroy_device(dev);
+				return (error);
+			}
+
+			error = scorpi_device_set_prop_u64(dev, "port", usb_slot);
+			if (error != SCORPI_OK) {
+				scorpi_destroy_device(dev);
+				return (error);
+			}
+
+			if (xhci_count == 1) {
+				if (xhcis[0].usb_bus != usb_bus) {
+					scorpi_destroy_device(dev);
+					return (SCORPI_ERR_INVALID_PARENT);
+				}
+			} else {
+				const char *parent_id;
+
+				parent_xhci = scorpi_find_imported_xhci_by_usb_bus(
+				    xhcis, xhci_count, usb_bus);
+				if (parent_xhci == NULL) {
+					scorpi_destroy_device(dev);
+					return (SCORPI_ERR_INVALID_PARENT);
+				}
+				error = scorpi_assign_imported_xhci_id(parent_xhci);
+				if (error != SCORPI_OK) {
+					scorpi_destroy_device(dev);
+					return (error);
+				}
+				parent_id = scorpi_imported_xhci_id(parent_xhci);
+				if (parent_id == NULL) {
+					scorpi_destroy_device(dev);
+					return (SCORPI_ERR_RUNTIME);
+				}
+				error = scorpi_device_set_prop_string(dev, "parent",
+				    parent_id);
+				if (error != SCORPI_OK) {
+					scorpi_destroy_device(dev);
+					return (error);
+				}
+			}
+
+			error = scorpi_vm_add_device(vm, dev);
+			if (error != SCORPI_OK) {
+				scorpi_destroy_device(dev);
+				return (error);
+			}
+		}
+	}
+
+	return (SCORPI_OK);
+}
+
+static scorpi_error_t
+scorpi_import_lpc_devices(const nvlist_t *config, scorpi_vm_t vm)
+{
+	const nvlist_t *tpm;
+	scorpi_device_t dev;
+	const char *path;
+	scorpi_error_t error;
+
+	path = scorpi_config_get_value(config, "comm_sock");
+	if (path != NULL) {
+		error = scorpi_create_lpc_device("vm-control", &dev);
+		if (error != SCORPI_OK)
+			return (error);
+		error = scorpi_device_set_prop_string(dev, "path", path);
+		if (error != SCORPI_OK) {
+			scorpi_destroy_device(dev);
+			return (error);
+		}
+		error = scorpi_vm_add_device(vm, dev);
+		if (error != SCORPI_OK) {
+			scorpi_destroy_device(dev);
+			return (error);
+		}
+	}
+
+	tpm = scorpi_config_find_node(config, "tpm");
+	if (tpm == NULL)
+		return (SCORPI_OK);
+
+	error = scorpi_create_lpc_device("tpm", &dev);
+	if (error != SCORPI_OK)
+		return (error);
+	error = scorpi_import_device_props(tpm, dev, "device", NULL);
+	if (error != SCORPI_OK) {
+		scorpi_destroy_device(dev);
+		return (error);
+	}
+	error = scorpi_vm_add_device(vm, dev);
+	if (error != SCORPI_OK) {
+		scorpi_destroy_device(dev);
+		return (error);
+	}
+	return (SCORPI_OK);
+}
+
+scorpi_error_t
+scorpi_load_vm_from_config_tree(const nvlist_t *config, scorpi_vm_t *out_vm)
+{
+	struct scorpi_imported_xhci *xhcis;
+	scorpi_vm_t vm;
+	scorpi_error_t error;
+	size_t xhci_count;
+
+	if (config == NULL || out_vm == NULL)
+		return (SCORPI_ERR_INVALID_ARG);
+	*out_vm = NULL;
+
+	error = scorpi_create_vm(&vm);
+	if (error != SCORPI_OK)
+		return (error);
+
+	xhcis = NULL;
+	xhci_count = 0;
+
+	error = scorpi_import_vm_scalars(config, vm);
+	if (error != SCORPI_OK)
+		goto fail;
+	error = scorpi_import_pci_devices(scorpi_config_find_node(config, "pci"),
+	    vm, &xhcis, &xhci_count);
+	if (error != SCORPI_OK)
+		goto fail;
+	error = scorpi_import_usb_devices(scorpi_config_find_node(config, "usb"),
+	    vm, xhcis, xhci_count);
+	if (error != SCORPI_OK)
+		goto fail;
+	error = scorpi_import_lpc_devices(config, vm);
+	if (error != SCORPI_OK)
+		goto fail;
+
+	free(xhcis);
+	*out_vm = vm;
+	return (SCORPI_OK);
+
+fail:
+	free(xhcis);
+	scorpi_destroy_vm(vm);
+	return (error);
+}
+
 struct scorpi_usb_bus_binding {
 	const char *id;
 	uint64_t bus;

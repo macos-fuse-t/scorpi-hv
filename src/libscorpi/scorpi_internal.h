@@ -100,3 +100,5 @@ const nvlist_t *scorpi_config_find_node(const nvlist_t *config,
 const char *scorpi_config_get_value(const nvlist_t *config, const char *path);
 bool scorpi_config_equal(const nvlist_t *lhs, const nvlist_t *rhs);
 int scorpi_runtime_run_child(const nvlist_t *config);
+scorpi_error_t scorpi_load_vm_from_config_tree(const nvlist_t *config,
+    scorpi_vm_t *out_vm);

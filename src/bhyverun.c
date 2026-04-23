@@ -85,6 +85,7 @@
 #endif
 #include "cnc.h"
 #include "compat.h"
+#include "scorpi_internal.h"
 #include "tpm_device.h"
 #include "vmexit.h"
 #include "vmgenc.h"
@@ -843,6 +844,42 @@ bhyve_run_configured_vm(void)
 	return (4);
 }
 
+static int
+bhyve_run_via_scorpi_kit(void)
+{
+	const nvlist_t *config;
+	scorpi_vm_t vm;
+	int exit_code;
+	scorpi_error_t error;
+
+	config = get_config_tree();
+	error = scorpi_load_vm_from_config_tree(config, &vm);
+	if (error == SCORPI_ERR_UNSUPPORTED)
+		return (bhyve_run_configured_vm());
+	if (error != SCORPI_OK) {
+		fprintf(stderr, "scorpi_kit: failed to translate CLI config (%d)\n",
+		    error);
+		return (1);
+	}
+
+	error = scorpi_start_vm(vm);
+	if (error != SCORPI_OK) {
+		fprintf(stderr, "scorpi_kit: failed to start VM (%d)\n", error);
+		scorpi_destroy_vm(vm);
+		return (1);
+	}
+
+	error = scorpi_wait_vm(vm, &exit_code);
+	if (error != SCORPI_OK) {
+		fprintf(stderr, "scorpi_kit: failed to wait for VM (%d)\n", error);
+		scorpi_destroy_vm(vm);
+		return (1);
+	}
+
+	scorpi_destroy_vm(vm);
+	return (exit_code);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -859,5 +896,5 @@ main(int argc, char *argv[])
 	else if (argc == 0 && get_config_value("name") == NULL)
 		bhyve_usage(1);
 
-	return (bhyve_run_configured_vm());
+	return (bhyve_run_via_scorpi_kit());
 }

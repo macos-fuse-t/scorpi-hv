@@ -165,3 +165,14 @@ scorpi_vm_lifecycle_test_executable = executable(
 )
 
 test('scorpi_vm_lifecycle_test', scorpi_vm_lifecycle_test_executable)
+
+scorpi_cli_config_parity_test_src = files('scorpi_cli_config_parity_test.c')
+
+scorpi_cli_config_parity_test_executable = executable(
+  'scorpi_cli_config_parity_test',
+  scorpi_cli_config_parity_test_src,
+  dependencies: [scorpi_kit_dep, libnv_dep],
+  include_directories: [inc, libscorpi_test_inc],
+)
+
+test('scorpi_cli_config_parity_test', scorpi_cli_config_parity_test_executable)

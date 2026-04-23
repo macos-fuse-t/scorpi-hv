@@ -79,6 +79,12 @@ init_config(void)
 		err(4, "Failed to create configuration root nvlist");
 }
 
+const nvlist_t *
+get_config_tree(void)
+{
+	return (config_root);
+}
+
 static nvlist_t *
 _lookup_config_node(nvlist_t *parent, const char *path, bool create)
 {
