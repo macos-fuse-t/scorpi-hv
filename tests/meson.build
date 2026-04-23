@@ -94,3 +94,25 @@ scorpi_parent_resolution_test_executable = executable(
 )
 
 test('scorpi_parent_resolution_test', scorpi_parent_resolution_test_executable)
+
+scorpi_vm_normalization_test_src = files('scorpi_vm_normalization_test.c')
+
+scorpi_vm_normalization_test_executable = executable(
+  'scorpi_vm_normalization_test',
+  scorpi_vm_normalization_test_src,
+  dependencies: scorpi_kit_dep,
+  include_directories: [inc, libscorpi_test_inc],
+)
+
+test('scorpi_vm_normalization_test', scorpi_vm_normalization_test_executable)
+
+scorpi_yaml_loader_test_src = files('scorpi_yaml_loader_test.c')
+
+scorpi_yaml_loader_test_executable = executable(
+  'scorpi_yaml_loader_test',
+  scorpi_yaml_loader_test_src,
+  dependencies: scorpi_kit_dep,
+  include_directories: [inc, libscorpi_test_inc],
+)
+
+test('scorpi_yaml_loader_test', scorpi_yaml_loader_test_executable)
