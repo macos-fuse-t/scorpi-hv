@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #include "nv.h"
 #include "scorpi.h"
@@ -11,6 +12,12 @@ enum scorpi_prop_kind {
 	SCORPI_PROP_STRING = 0,
 	SCORPI_PROP_BOOL,
 	SCORPI_PROP_U64,
+};
+
+enum scorpi_vm_state {
+	SCORPI_VM_NEW = 0,
+	SCORPI_VM_RUNNING,
+	SCORPI_VM_EXITED,
 };
 
 struct scorpi_prop {
@@ -27,6 +34,9 @@ struct scorpi_prop {
 struct scorpi_vm {
 	struct scorpi_prop *props;
 	struct scorpi_device *devices;
+	pid_t child_pid;
+	int exit_code;
+	enum scorpi_vm_state state;
 };
 
 struct scorpi_device {
@@ -89,3 +99,4 @@ const nvlist_t *scorpi_config_find_node(const nvlist_t *config,
     const char *path);
 const char *scorpi_config_get_value(const nvlist_t *config, const char *path);
 bool scorpi_config_equal(const nvlist_t *lhs, const nvlist_t *rhs);
+int scorpi_runtime_run_child(const nvlist_t *config);

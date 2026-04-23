@@ -154,3 +154,14 @@ scorpi_config_adapter_test_executable = executable(
 )
 
 test('scorpi_config_adapter_test', scorpi_config_adapter_test_executable)
+
+scorpi_vm_lifecycle_test_src = files('scorpi_vm_lifecycle_test.c')
+
+scorpi_vm_lifecycle_test_executable = executable(
+  'scorpi_vm_lifecycle_test',
+  scorpi_vm_lifecycle_test_src,
+  dependencies: scorpi_kit_dep,
+  include_directories: [inc, libscorpi_test_inc],
+)
+
+test('scorpi_vm_lifecycle_test', scorpi_vm_lifecycle_test_executable)

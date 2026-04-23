@@ -178,7 +178,6 @@ test_valid_configuration(void)
 	add_valid_lpc_devices(vm);
 
 	assert(scorpi_vm_validate(vm) == SCORPI_OK);
-	assert(scorpi_start_vm(vm) == SCORPI_ERR_UNSUPPORTED);
 	scorpi_destroy_vm(vm);
 }
 

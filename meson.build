@@ -56,6 +56,7 @@ sources = files(
     'src/mevent.c',
     'src/qemu_fwcfg.c',
     'src/qemu_loader.c',
+    'src/scorpi_runtime_bridge.c',
     'src/rtc_pl031.c',
     'src/uart_pl011.c',
     'src/uart_backend.c',

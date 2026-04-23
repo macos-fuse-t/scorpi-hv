@@ -123,6 +123,7 @@ bool	get_config_bool_node_default(const nvlist_t *parent, const char *name,
     bool def);
 void	set_config_bool(const char *path, bool value);
 void	set_config_bool_node(nvlist_t *parent, const char *name, bool value);
+void	merge_config_tree(const nvlist_t *src);
 
 void	dump_config(void);
 

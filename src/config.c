@@ -36,6 +36,41 @@
 
 static nvlist_t *config_root;
 
+static void
+merge_config_tree_into_node(nvlist_t *dst, const nvlist_t *src)
+{
+	const char *name;
+	const nvlist_t *src_child;
+	nvlist_t *dst_child;
+	void *cookie;
+	int type;
+
+	cookie = NULL;
+	while ((name = nvlist_next(src, &type, &cookie)) != NULL) {
+		if (type == NV_TYPE_NVLIST) {
+			src_child = nvlist_get_nvlist(src, name);
+			if (nvlist_exists_nvlist(dst, name))
+				dst_child = __DECONST(nvlist_t *,
+				    nvlist_get_nvlist(dst, name));
+			else {
+				dst_child = nvlist_create(0);
+				if (dst_child == NULL)
+					errx(4, "Failed to allocate memory");
+				nvlist_move_nvlist(dst, name, dst_child);
+			}
+			merge_config_tree_into_node(dst_child, src_child);
+			continue;
+		}
+
+		assert(type == NV_TYPE_STRING);
+		if (nvlist_exists_string(dst, name))
+			nvlist_free_string(dst, name);
+		else if (nvlist_exists(dst, name))
+			nvlist_free(dst, name);
+		nvlist_add_string(dst, name, nvlist_get_string(src, name));
+	}
+}
+
 void
 init_config(void)
 {
@@ -446,4 +481,14 @@ void
 dump_config(void)
 {
 	dump_tree("", config_root);
+}
+
+void
+merge_config_tree(const nvlist_t *src)
+{
+	if (config_root == NULL)
+		init_config();
+	if (src == NULL)
+		return;
+	merge_config_tree_into_node(config_root, src);
 }
