@@ -540,6 +540,36 @@ Validation criteria:
 - user-facing examples use YAML files and `scorpi -f vm.yaml` style launch
 - at least one YAML example is covered by a loader test
 
+### Task 19: Package `scorpi_kit` as a Single Installable Library
+
+Scope:
+
+- produce a single distributable `scorpi_kit` library artifact
+- install public headers
+- generate a `pkg-config` file
+
+Dependencies:
+
+- Task 18
+
+Implementation notes:
+
+- consumers should link only against `scorpi_kit`
+- internal runtime layering must not leak into the public dependency model
+- installation should include:
+  - library artifact
+  - `include/scorpi.h`
+  - `lib/pkgconfig/scorpi-kit.pc`
+
+Validation criteria:
+
+- Meson builds a single public `scorpi_kit` library target used by `scorpi` and samples
+- `meson install --destdir ...` installs:
+  - `libscorpi_kit`
+  - `scorpi.h`
+  - `scorpi-kit.pc`
+- `pkg-config --cflags --libs scorpi-kit` resolves successfully from the staged install tree
+
 ## Task Completion Checklist
 
 Use this checklist for every task:

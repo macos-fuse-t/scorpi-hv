@@ -1,4 +1,6 @@
-project('scorpi', 'c', default_options: ['c_std=c11'])
+project('scorpi', 'c',
+  version: '0.1.0',
+  default_options: ['c_std=c11'])
 
 add_project_arguments('-Wno-pointer-sign', language: 'c')
 
@@ -115,18 +117,6 @@ if host_machine.system() == 'darwin'
 endif
 
 runtime_core_sources += arch_src
-
-scorpi_runtime_core = static_library(
-  'scorpi_runtime_core',
-  runtime_core_sources,
-  dependencies: [libnv_dep, libfdt_dep, libutil_dep, libmjson_dep, zlib_dep, slirp_dep, libwebsockets_dep, threads_dep],
-  include_directories: inc,
-)
-
-scorpi_runtime_core_dep = declare_dependency(
-  include_directories: inc,
-  link_whole: scorpi_runtime_core,
-)
 
 subdir('src/libscorpi')
 subdir('tests')
