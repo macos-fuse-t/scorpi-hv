@@ -72,6 +72,7 @@ static int unet_debug = 0;
 #define UNET_MTU_SIZE	 1514
 #define UNET_NTB_MAX_SIZE 65536
 #define UNET_NTB_MAX_FRAMES 32
+#define UNET_NTB_MAX_IN_DGRAMS 8
 
 enum {
 	UMSTR_LANG,
@@ -1051,11 +1052,16 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 	int idx, i;
 	int err = USB_ERR_SHORT_XFER;
 	struct iovec iov[USB_MAX_XFER_BLOCKS];
+	int data_idx[USB_MAX_XFER_BLOCKS];
+	struct iovec riov_store[USB_MAX_XFER_BLOCKS];
+	uint8_t header[sizeof(struct usb_ncm16_hdr) +
+	    sizeof(struct usb_ncm16_dpt) +
+	    ((UNET_NTB_MAX_IN_DGRAMS + 1) * sizeof(struct usb_ncm16_dp))];
 	int iovcnt;
 	struct usb_ncm16_hdr *ntb;
 	struct usb_ncm16_dpt *dpt;
 	struct usb_ncm16_dp *dp;
-	size_t len, total_len, plen;
+	size_t len, total_len, remaining;
 	struct iovec *riov;
 	int riov_len, hdr_len, pkt;
 
@@ -1072,8 +1078,10 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 		}
 
 		if (data->buf != NULL && data->blen != 0) {
-			iov->iov_base = data->buf;
-			iov->iov_len = data->blen;
+			iov[iovcnt].iov_base = data->buf;
+			iov[iovcnt].iov_len = data->blen;
+			data_idx[iovcnt] = idx;
+			iovcnt++;
 			DPRINTF(("xfer block size %d, %d out of %d\n",
 			    data->blen, i, xfer->ndata));
 		} else {
@@ -1081,68 +1089,85 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 			assert(0);
 		}
 		idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
+	}
 
-		ntb = (struct usb_ncm16_hdr *)iov->iov_base;
-		dpt = (struct usb_ncm16_dpt *)(ntb + 1);
-		dp = (struct usb_ncm16_dp *)(dpt + 1);
+	if (iovcnt == 0)
+		return (err);
 
-		riov = iov;
-		riov_len = 1;
-		hdr_len = sizeof(struct usb_ncm16_hdr) +
-		    sizeof(struct usb_ncm16_dpt) +
-		    8 * sizeof(struct usb_ncm16_dp) + 4;
-		riov = iov_trim(riov, &riov_len, hdr_len);
-		if (riov == NULL) {
-			WPRINTF(
-			    ("unet_process_bulk_in: not enough header space"));
-			WPRINTF(("xfer block size %d, %d out of %d\n",
-			    data->blen, i, xfer->ndata));
-			assert(0);
-			return (err);
-		}
+	hdr_len = sizeof(struct usb_ncm16_hdr) + sizeof(struct usb_ncm16_dpt) +
+	    ((UNET_NTB_MAX_IN_DGRAMS + 1) * sizeof(struct usb_ncm16_dp));
+	memcpy(riov_store, iov, sizeof(struct iovec) * iovcnt);
+	riov = riov_store;
+	riov_len = iovcnt;
+	riov = iov_trim(riov, &riov_len, hdr_len);
+	if (riov == NULL) {
+		WPRINTF(("unet_process_bulk_in: not enough header space"));
+		return (err);
+	}
 
-		total_len = hdr_len;
-		pkt = 0;
-		while (riov && riov->iov_len > UNET_MTU_SIZE && pkt < 8) {
-			len = netbe_recv(sc->vsc_be, riov, riov_len);
-			if (len <= 0)
-				break;
+	memset(header, 0, sizeof(header));
+	ntb = (struct usb_ncm16_hdr *)header;
+	dpt = (struct usb_ncm16_dpt *)(ntb + 1);
+	dp = (struct usb_ncm16_dp *)(dpt + 1);
 
-			USETW(dp[pkt].wFrameIndex, total_len);
-			USETW(dp[pkt].wFrameLength, len);
-			total_len += len;
-
-			riov = iov_trim(riov, &riov_len, len);
-			pkt++;
-		}
-
-		if (total_len == hdr_len)
+	total_len = hdr_len;
+	pkt = 0;
+	while (riov != NULL && count_iov(riov, riov_len) >= UNET_MTU_SIZE &&
+	    pkt < UNET_NTB_MAX_IN_DGRAMS) {
+		len = netbe_recv(sc->vsc_be, riov, riov_len);
+		if (len <= 0)
 			break;
 
-		plen = data->blen;
-		len = hdr_len;
-		data->bdone = plen;
-		data->blen = 0;
+		USETW(dp[pkt].wFrameIndex, total_len);
+		USETW(dp[pkt].wFrameLength, len);
+		total_len += len;
+
+		riov = iov_trim(riov, &riov_len, len);
+		pkt++;
+	}
+
+	if (pkt == 0) {
+		USB_DATA_SET_ERRCODE(&xfer->data[xfer->head], USB_NAK);
+		return (USB_ERR_CANCELLED);
+	}
+
+	ntb->dwSignature[0] = 'N';
+	ntb->dwSignature[1] = 'C';
+	ntb->dwSignature[2] = 'M';
+	ntb->dwSignature[3] = 'H';
+	USETW(ntb->wHeaderLength, sizeof(*ntb));
+	USETW(ntb->wBlockLength, total_len);
+	USETW(ntb->wSequence, sc->seq++);
+	USETW(ntb->wDptIndex, sizeof(*ntb));
+
+	dpt->dwSignature[0] = 'N';
+	dpt->dwSignature[1] = 'C';
+	dpt->dwSignature[2] = 'M';
+	dpt->dwSignature[3] = '0';
+	USETW(dpt->wNextNdpIndex, 0);
+	USETW(dpt->wLength, sizeof(*dpt) + ((pkt + 1) * sizeof(*dp)));
+	USETW(dp[pkt].wFrameIndex, 0);
+	USETW(dp[pkt].wFrameLength, 0);
+
+	buf_to_iov(header, hdr_len, iov, iovcnt, 0);
+
+	remaining = total_len;
+	for (i = 0; i < iovcnt; i++) {
+		size_t chunk;
+
+		data = &xfer->data[data_idx[i]];
+		chunk = MIN((size_t)data->blen, remaining);
+		data->bdone += chunk;
+		data->blen -= chunk;
 		data->processed = 1;
+		remaining -= chunk;
+		if (remaining == 0)
+			break;
+	}
 
-		USETW(dp[pkt].wFrameIndex, 0);
-		USETW(dp[pkt].wFrameLength, 0);
-
-		ntb->dwSignature[0] = 'N';
-		ntb->dwSignature[1] = 'C';
-		ntb->dwSignature[2] = 'M';
-		ntb->dwSignature[3] = 'H';
-		USETW(ntb->wHeaderLength, sizeof(*ntb));
-		USETW(ntb->wBlockLength, total_len);
-		USETW(ntb->wSequence, sc->seq++);
-		USETW(ntb->wDptIndex, sizeof(*ntb));
-
-		dpt->dwSignature[0] = 'N';
-		dpt->dwSignature[1] = 'C';
-		dpt->dwSignature[2] = 'M';
-		dpt->dwSignature[3] = '0';
-		USETW(dpt->wNextNdpIndex, 0);
-		USETW(dpt->wLength, sizeof(*dpt) + (4 * pkt) + 4);
+	for (i++; i < iovcnt; i++) {
+		data = &xfer->data[data_idx[i]];
+		data->processed = 1;
 	}
 
 	return (err);
