@@ -2534,6 +2534,15 @@ pci_ahci_init(struct pci_devinst *pi, nvlist_t *nvl)
 			goto open_fail;
 		}
 
+		value = get_config_value_node(port_nvl, "id");
+		if (value != NULL) {
+			ret = pci_emul_add_boot_device_id(pi, value, type, p);
+			if (ret) {
+				sc->ports = p;
+				goto open_fail;
+			}
+		}
+
 		sc->port[p].bctx = bctxt;
 		sc->port[p].pr_sc = sc;
 		sc->port[p].port = p;

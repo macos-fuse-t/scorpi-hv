@@ -33,6 +33,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #include <libfdt.h>
@@ -60,6 +61,20 @@
 static void *fdtroot;
 static uint32_t gic_phandle = 0;
 static uint32_t apb_pclk_phandle;
+
+static const char *
+get_scorpi_firmware_param(const char *name)
+{
+	char key[64];
+	const char *value;
+
+	snprintf(key, sizeof(key), "scorpi.%s", name);
+	value = get_config_value(key);
+	if (value != NULL)
+		return (value);
+
+	return (get_config_value(name));
+}
 
 static uint32_t
 assign_phandle(void *fdt)
@@ -146,6 +161,30 @@ fdt_init(struct vmctx *ctx, int ncpu, void *fdtaddr, vm_size_t fdtsize)
 	bootargs = get_config_value("fdt.bootargs");
 	if (bootargs != NULL)
 		fdt_property_string(fdt, "bootargs", bootargs);
+	{
+		const char *value;
+		char *bootmap;
+		size_t bootmap_len;
+
+		value = get_scorpi_firmware_param("boot-order");
+		if (value != NULL)
+			fdt_property_string(fdt, "scorpi,boot-order", value);
+
+		value = get_scorpi_firmware_param("boot-timeout");
+		if (value != NULL)
+			fdt_property_string(fdt, "scorpi,timeout", value);
+
+		value = get_scorpi_firmware_param("secure-boot");
+		if (value != NULL)
+			fdt_property_string(fdt, "scorpi,secure-boot", value);
+
+		bootmap = pci_emul_get_boot_device_map(&bootmap_len);
+		if (bootmap != NULL) {
+			fdt_property(fdt, "scorpi,boot-map", bootmap,
+			    bootmap_len + 1);
+			free(bootmap);
+		}
+	}
 	fdt_end_node(fdt);
 
 	fdt_begin_node(fdt, "memory");

@@ -129,6 +129,16 @@ struct boot_device {
 static TAILQ_HEAD(boot_list, boot_device) boot_devices = TAILQ_HEAD_INITIALIZER(
     boot_devices);
 
+struct boot_device_id {
+	TAILQ_ENTRY(boot_device_id) chain;
+	struct pci_devinst *pdi;
+	char *id;
+	char *type;
+	int port;
+};
+static TAILQ_HEAD(boot_id_list, boot_device_id) boot_device_ids =
+    TAILQ_HEAD_INITIALIZER(boot_device_ids);
+
 static void pci_lintr_route(struct pci_devinst *pi);
 static void pci_lintr_update(struct pci_devinst *pi);
 
@@ -1042,6 +1052,91 @@ pci_emul_add_boot_device(struct pci_devinst *pi, int bootindex)
 	return (0);
 }
 
+static bool
+pci_emul_valid_boot_id(const char *id)
+{
+	const char *cp;
+
+	if (id == NULL || id[0] == '\0')
+		return (false);
+
+	for (cp = id; *cp != '\0'; cp++) {
+		if (*cp == ',' || *cp == '=' || *cp == '\n' || *cp == '\r' ||
+		    *cp == ':' || *cp == '@')
+			return (false);
+	}
+
+	return (true);
+}
+
+int
+pci_emul_add_boot_device_id(struct pci_devinst *const pi, const char *id,
+    const char *type, int port)
+{
+	struct boot_device_id *device;
+
+	if (!pci_emul_valid_boot_id(id))
+		errx(4, "Invalid boot device id for %s", pi->pi_name);
+
+	TAILQ_FOREACH(device, &boot_device_ids, chain) {
+		if (strcmp(device->id, id) == 0) {
+			errx(4,
+			    "Duplicate boot device id \"%s\" for %s and %s",
+			    id, pi->pi_name, device->pdi->pi_name);
+		}
+	}
+
+	device = calloc(1, sizeof(*device));
+	if (device == NULL)
+		return (ENOMEM);
+
+	device->id = strdup(id);
+	device->type = strdup(type != NULL ? type : "unknown");
+	if (device->id == NULL || device->type == NULL) {
+		free(device->id);
+		free(device->type);
+		free(device);
+		return (ENOMEM);
+	}
+
+	device->pdi = pi;
+	device->port = port;
+	TAILQ_INSERT_TAIL(&boot_device_ids, device, chain);
+
+	return (0);
+}
+
+char *
+pci_emul_get_boot_device_map(size_t *len)
+{
+	struct boot_device_id *device;
+	FILE *fp;
+	char *map;
+
+	if (len == NULL)
+		return (NULL);
+	*len = 0;
+
+	if (TAILQ_EMPTY(&boot_device_ids))
+		return (NULL);
+
+	fp = open_memstream(&map, len);
+	if (fp == NULL)
+		return (NULL);
+
+	TAILQ_FOREACH(device, &boot_device_ids, chain) {
+		fprintf(fp, "id=%s,bus=%u,slot=%u,func=%u,type=%s",
+		    device->id, device->pdi->pi_bus, device->pdi->pi_slot,
+		    device->pdi->pi_func, device->type);
+		if (device->port >= 0)
+			fprintf(fp, ",port=%d", device->port);
+		fputc('\n', fp);
+	}
+	fclose(fp);
+
+	return (map);
+}
+
 #define CAP_START_OFFSET 0x40
 int
 pci_emul_add_capability(struct pci_devinst *pi, u_char *capdata, int caplen)
@@ -1509,6 +1604,7 @@ init_pci(struct vmctx *ctx)
 	pci_emul_memlim64 = pci_emul_membase64 + PCI_EMUL_MEMSIZE64;
 
 	TAILQ_INIT(&boot_devices);
+	TAILQ_INIT(&boot_device_ids);
 
 	for (bus = 0; bus < MAXBUSES; bus++) {
 		snprintf(node_name, sizeof(node_name), "pci.%d", bus);

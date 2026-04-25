@@ -452,7 +452,7 @@ pci_vtblk_init(struct pci_devinst *pi, nvlist_t *nvl)
 {
 	char bident[sizeof("XXX:XXX")];
 	struct blockif_ctxt *bctxt;
-	const char *path, *serial;
+	const char *id, *path, *serial;
 	MD5_CTX mdctx;
 	u_char digest[16];
 	struct pci_vtblk_softc *sc;
@@ -472,6 +472,12 @@ pci_vtblk_init(struct pci_devinst *pi, nvlist_t *nvl)
 
 	if (blockif_add_boot_device(pi, bctxt)) {
 		perror("Invalid boot device");
+		return (1);
+	}
+
+	id = get_config_value_node(nvl, "id");
+	if (id != NULL && pci_emul_add_boot_device_id(pi, id, "hd", -1)) {
+		perror("Invalid boot device id");
 		return (1);
 	}
 

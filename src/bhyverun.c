@@ -587,20 +587,100 @@ do_open(const char *vmname)
 	return (ctx);
 }
 
-bool
-bhyve_parse_config_option(const char *option)
+static bool
+bhyve_config_option_is_efi_key(const char *key, size_t key_len)
+{
+	return ((key_len == strlen("boot-order") &&
+	    strncmp(key, "boot-order", key_len) == 0) ||
+	    (key_len == strlen("boot-timeout") &&
+	    strncmp(key, "boot-timeout", key_len) == 0) ||
+	    (key_len == strlen("secure-boot") &&
+	    strncmp(key, "secure-boot", key_len) == 0));
+}
+
+static bool
+bhyve_validate_efi_config_option(const char *key, size_t key_len,
+    const char *value)
+{
+	const char *cp;
+
+	if (key_len == strlen("boot-order") &&
+	    strncmp(key, "boot-order", key_len) == 0) {
+		if (value[0] == ':' || value[strlen(value) - 1] == ':')
+			return (false);
+		for (cp = value; *cp != '\0'; cp++) {
+			if (*cp == ':' && cp[1] == ':')
+				return (false);
+		}
+		return (true);
+	}
+
+	if (key_len == strlen("boot-timeout") &&
+	    strncmp(key, "boot-timeout", key_len) == 0) {
+		for (cp = value; *cp != '\0'; cp++) {
+			if (*cp < '0' || *cp > '9')
+				return (false);
+		}
+		return (true);
+	}
+
+	return (key_len == strlen("secure-boot") &&
+	    strncmp(key, "secure-boot", key_len) == 0 &&
+	    (strcmp(value, "on") == 0 || strcmp(value, "off") == 0));
+}
+
+static bool
+bhyve_parse_config_token(const char *option)
 {
 	const char *value;
 	char *path;
+	size_t key_len;
 
 	value = strchr(option, '=');
 	if (value == NULL || value[1] == '\0')
 		return (false);
-	path = strndup(option, value - option);
-	if (path == NULL)
-		err(4, "Failed to allocate memory");
+	key_len = (size_t)(value - option);
+	if (key_len == 0)
+		return (false);
+
+	if (bhyve_config_option_is_efi_key(option, key_len)) {
+		if (!bhyve_validate_efi_config_option(option, key_len,
+		    value + 1))
+			return (false);
+		path = calloc(strlen("scorpi.") + key_len + 1, 1);
+		if (path == NULL)
+			err(4, "Failed to allocate memory");
+		snprintf(path, strlen("scorpi.") + key_len + 1, "scorpi.%.*s",
+		    (int)key_len, option);
+	} else {
+		path = strndup(option, key_len);
+		if (path == NULL)
+			err(4, "Failed to allocate memory");
+	}
+
 	set_config_value(path, value + 1);
 	free(path);
+	return (true);
+}
+
+bool
+bhyve_parse_config_option(const char *option)
+{
+	char *params, *tok, *work;
+
+	if (strchr(option, ',') == NULL)
+		return (bhyve_parse_config_token(option));
+
+	work = params = strdup(option);
+	if (params == NULL)
+		err(4, "Failed to allocate memory");
+	while ((tok = strsep(&work, ",")) != NULL) {
+		if (!bhyve_parse_config_token(tok)) {
+			free(params);
+			return (false);
+		}
+	}
+	free(params);
 	return (true);
 }
 
