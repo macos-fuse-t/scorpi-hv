@@ -41,6 +41,7 @@
 
 struct sco_create_options {
 	const char *path;
+	const char *base_uri;
 	uint64_t virtual_size;
 	uint32_t cluster_size;
 	uint32_t logical_sector_size;
@@ -151,9 +152,26 @@ build_root_page(uint8_t buf[SCO_METADATA_PAGE_SIZE], uint32_t entry_count,
 }
 
 static void
+build_base_descriptor(uint8_t *buf, uint32_t size, const char *base_uri)
+{
+	uint32_t crc;
+	size_t uri_len;
+
+	memset(buf, 0, size);
+	uri_len = strlen(base_uri);
+	le32enc(buf + 0x0000, size);
+	le32enc(buf + 0x0004, SCO_CHECKSUM_CRC32C);
+	le32enc(buf + 0x0010, (uint32_t)uri_len);
+	memcpy(buf + 0x0050, base_uri, uri_len);
+	crc = crc32c(buf, size);
+	le32enc(buf + 0x0008, crc);
+}
+
+static void
 build_superblock(uint8_t buf[SCO_SUPERBLOCK_SIZE],
     const struct sco_create_options *opts, const uint8_t uuid[16],
     uint64_t cluster_count, uint64_t data_area_offset,
+    uint64_t base_descriptor_offset, uint32_t base_descriptor_length,
     uint64_t map_root_offset, uint32_t map_root_length)
 {
 	uint32_t crc;
@@ -171,6 +189,8 @@ build_superblock(uint8_t buf[SCO_SUPERBLOCK_SIZE],
 	le64enc(buf + 0x0038, cluster_count);
 	le64enc(buf + 0x0040, SCO_METADATA_AREA_OFFSET);
 	le64enc(buf + 0x0048, data_area_offset);
+	le64enc(buf + 0x0050, base_descriptor_offset);
+	le32enc(buf + 0x0058, base_descriptor_length);
 	le64enc(buf + 0x0060, map_root_offset);
 	le32enc(buf + 0x0068, map_root_length);
 	le32enc(buf + 0x006c, SCO_MAP_ENTRY_SIZE);
@@ -184,9 +204,10 @@ static int
 create_sco(const struct sco_create_options *opts)
 {
 	uint8_t page[SCO_METADATA_PAGE_SIZE], uuid[16];
+	uint8_t *base_descriptor;
 	uint64_t cluster_count, map_page_count, root_page_count;
-	uint64_t data_area_offset, metadata_end;
-	uint32_t root_entries, map_root_length;
+	uint64_t base_descriptor_offset, data_area_offset, metadata_end;
+	uint32_t base_descriptor_length, root_entries, map_root_length;
 	uint64_t i, remaining_root_entries;
 	int fd, error;
 
@@ -212,6 +233,14 @@ create_sco(const struct sco_create_options *opts)
 	    SCO_MAP_ENTRIES_PER_PAGE;
 	map_root_length = (uint32_t)(root_page_count * SCO_METADATA_PAGE_SIZE);
 	metadata_end = SCO_METADATA_AREA_OFFSET + map_root_length;
+	base_descriptor_offset = 0;
+	base_descriptor_length = 0;
+	if (opts->base_uri != NULL) {
+		base_descriptor_offset = metadata_end;
+		base_descriptor_length = (uint32_t)align_up_u64(0x50 +
+		    strlen(opts->base_uri), SCO_METADATA_PAGE_SIZE);
+		metadata_end += base_descriptor_length;
+	}
 	data_area_offset = align_up_u64(metadata_end, opts->cluster_size);
 
 	error = fill_uuid(uuid);
@@ -226,6 +255,7 @@ create_sco(const struct sco_create_options *opts)
 	if (error != 0)
 		goto out;
 	build_superblock(page, opts, uuid, cluster_count, data_area_offset,
+	    base_descriptor_offset, base_descriptor_length,
 	    SCO_METADATA_AREA_OFFSET, map_root_length);
 	error = write_exact(fd, SCO_SUPERBLOCK_A_OFFSET, page, sizeof(page));
 	if (error != 0)
@@ -246,6 +276,20 @@ create_sco(const struct sco_create_options *opts)
 		if (error != 0)
 			goto out;
 		remaining_root_entries -= root_entries;
+	}
+	if (opts->base_uri != NULL) {
+		base_descriptor = calloc(1, base_descriptor_length);
+		if (base_descriptor == NULL) {
+			error = ENOMEM;
+			goto out;
+		}
+		build_base_descriptor(base_descriptor, base_descriptor_length,
+		    opts->base_uri);
+		error = write_exact(fd, base_descriptor_offset,
+		    base_descriptor, base_descriptor_length);
+		free(base_descriptor);
+		if (error != 0)
+			goto out;
 	}
 	if (ftruncate(fd, (off_t)data_area_offset) != 0) {
 		error = errno;
@@ -356,15 +400,43 @@ usage(void)
 {
 	fprintf(stderr,
 	    "usage:\n"
-	    "  scorpi-image create --format sco --size bytes|Nmb|Ngb path\n"
+	    "  scorpi-image create --format sco --size bytes|Nmb|Ngb path [base]\n"
 	    "  scorpi-image info path\n"
 	    "  scorpi-image check path\n");
+}
+
+static int
+make_file_uri(const char *base, char **urip)
+{
+	const char *prefix;
+	char *uri;
+	size_t len;
+
+	if (base == NULL || base[0] == '\0' || urip == NULL)
+		return (EINVAL);
+	if (strncmp(base, "file:", 5) == 0) {
+		uri = strdup(base);
+		if (uri == NULL)
+			return (ENOMEM);
+		*urip = uri;
+		return (0);
+	}
+
+	prefix = base[0] == '/' ? "file://" : "file:";
+	len = strlen(prefix) + strlen(base) + 1;
+	uri = malloc(len);
+	if (uri == NULL)
+		return (ENOMEM);
+	snprintf(uri, len, "%s%s", prefix, base);
+	*urip = uri;
+	return (0);
 }
 
 static int
 cmd_create(int argc, char **argv)
 {
 	struct sco_create_options opts;
+	char *base_uri;
 	const char *format;
 	int i, error;
 
@@ -373,25 +445,40 @@ cmd_create(int argc, char **argv)
 		.logical_sector_size = 512,
 		.physical_sector_size = 4096,
 	};
+	base_uri = NULL;
 	format = NULL;
 	for (i = 2; i < argc; i++) {
 		if (strcmp(argv[i], "--format") == 0 && i + 1 < argc) {
 			format = argv[++i];
 		} else if (strcmp(argv[i], "--size") == 0 && i + 1 < argc) {
 			error = expand_number(argv[++i], &opts.virtual_size);
-			if (error != 0)
-				return (errno != 0 ? errno : EINVAL);
+			if (error != 0) {
+				error = errno != 0 ? errno : EINVAL;
+				goto out;
+			}
 		} else if (argv[i][0] == '-') {
-			return (EINVAL);
+			error = EINVAL;
+			goto out;
 		} else if (opts.path == NULL) {
 			opts.path = argv[i];
+		} else if (opts.base_uri == NULL) {
+			error = make_file_uri(argv[i], &base_uri);
+			if (error != 0)
+				goto out;
+			opts.base_uri = base_uri;
 		} else {
-			return (EINVAL);
+			error = EINVAL;
+			goto out;
 		}
 	}
-	if (format == NULL || strcmp(format, "sco") != 0)
-		return (EINVAL);
-	return (create_sco(&opts));
+	if (format == NULL || strcmp(format, "sco") != 0) {
+		error = EINVAL;
+		goto out;
+	}
+	error = create_sco(&opts);
+out:
+	free(base_uri);
+	return (error);
 }
 
 int

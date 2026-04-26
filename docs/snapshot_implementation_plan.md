@@ -640,7 +640,8 @@ Implementation notes:
   - `create`
   - `info`
   - `check`
-- `create` should support `.sco` output and virtual size
+- `create` should support `.sco` output, virtual size, and optional
+  positional base image
 - `create` should use a fixed v1 cluster size for now
 - `--size` should accept raw bytes and `mb`/`gb` suffixes
 - `info` should use the same parser/probing path as runtime image opening
@@ -654,6 +655,8 @@ Validation criteria:
 
 - `meson compile` builds the `scorpi-image` executable
 - `scorpi-image create` creates a valid `.sco` image
+- `scorpi-image create ... path [base]` records a base URI when base is
+  present
 - `scorpi-image info` reports format, virtual size, sector sizes, cluster size,
   readonly or sealed state, and base URI when present
 - `scorpi-image check` rejects corrupt `.sco` metadata
