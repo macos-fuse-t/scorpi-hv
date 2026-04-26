@@ -90,6 +90,7 @@ struct blockif_ctxt {
 	int bc_psectoff;
 	int bc_closing;
 	int bc_paused;
+	int bc_trace;
 	pthread_t bc_btid[BLOCKIF_NUMTHR];
 	pthread_mutex_t bc_mtx;
 	pthread_cond_t bc_cond;
@@ -104,6 +105,13 @@ struct blockif_ctxt {
 	TAILQ_HEAD(, blockif_elem) bc_busyq;
 	struct blockif_elem bc_reqs[BLOCKIF_MAXREQ];
 	int bc_bootindex;
+	uint64_t bc_trace_read_reqs;
+	uint64_t bc_trace_read_iovs;
+	uint64_t bc_trace_read_bytes;
+	uint64_t bc_trace_write_reqs;
+	uint64_t bc_trace_write_iovs;
+	uint64_t bc_trace_write_bytes;
+	uint64_t bc_trace_flush_reqs;
 };
 
 static pthread_once_t blockif_once = PTHREAD_ONCE_INIT;
@@ -116,6 +124,68 @@ struct blockif_sig_elem {
 };
 
 static struct blockif_sig_elem *blockif_bse_head;
+
+static uint64_t
+blockif_trace_add(uint64_t *counter, uint64_t value)
+{
+	return (__atomic_add_fetch(counter, value, __ATOMIC_RELAXED));
+}
+
+static uint64_t
+blockif_trace_load(const uint64_t *counter)
+{
+	return (__atomic_load_n(counter, __ATOMIC_RELAXED));
+}
+
+static void
+blockif_trace_report(struct blockif_ctxt *bc, const char *where)
+{
+	if (bc == NULL || !bc->bc_trace)
+		return;
+	fprintf(stderr,
+	    "BLOCKIF_TRACE[%s]: reads=%llu read_iovs=%llu read_bytes=%llu "
+	    "writes=%llu write_iovs=%llu write_bytes=%llu flushes=%llu\n",
+	    where,
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_read_reqs),
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_read_iovs),
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_read_bytes),
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_write_reqs),
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_write_iovs),
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_write_bytes),
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_flush_reqs));
+}
+
+static inline void
+blockif_trace_read_req(struct blockif_ctxt *bc, const struct blockif_req *br)
+{
+	if (!bc->bc_trace)
+		return;
+	blockif_trace_add(&bc->bc_trace_read_reqs, 1);
+	blockif_trace_add(&bc->bc_trace_read_iovs, br->br_iovcnt);
+	blockif_trace_add(&bc->bc_trace_read_bytes, br->br_resid);
+}
+
+static inline void
+blockif_trace_write_req(struct blockif_ctxt *bc, const struct blockif_req *br)
+{
+	uint64_t calls;
+
+	if (!bc->bc_trace)
+		return;
+	calls = blockif_trace_add(&bc->bc_trace_write_reqs, 1);
+	blockif_trace_add(&bc->bc_trace_write_iovs, br->br_iovcnt);
+	blockif_trace_add(&bc->bc_trace_write_bytes, br->br_resid);
+	if ((calls % 1000) == 0)
+		blockif_trace_report(bc, "write");
+}
+
+static inline void
+blockif_trace_flush_req(struct blockif_ctxt *bc)
+{
+	if (!bc->bc_trace)
+		return;
+	blockif_trace_add(&bc->bc_trace_flush_reqs, 1);
+}
 
 static int
 blockif_enqueue(struct blockif_ctxt *bc, struct blockif_req *breq,
@@ -214,6 +284,7 @@ blockif_read_iov(struct blockif_ctxt *bc, struct blockif_req *br)
 	int error, i;
 
 	offset = br->br_offset;
+	blockif_trace_read_req(bc, br);
 	for (i = 0; i < br->br_iovcnt && br->br_resid > 0; i++) {
 		len = MIN((size_t)br->br_resid, br->br_iov[i].iov_len);
 		if (len == 0)
@@ -239,6 +310,7 @@ blockif_write_iov(struct blockif_ctxt *bc, struct blockif_req *br)
 		return (EROFS);
 
 	offset = br->br_offset;
+	blockif_trace_write_req(bc, br);
 	for (i = 0; i < br->br_iovcnt && br->br_resid > 0; i++) {
 		len = MIN((size_t)br->br_resid, br->br_iov[i].iov_len);
 		if (len == 0)
@@ -272,6 +344,7 @@ blockif_proc(struct blockif_ctxt *bc, struct blockif_elem *be,
 		err = blockif_write_iov(bc, br);
 		break;
 	case BOP_FLUSH:
+		blockif_trace_flush_req(bc);
 		err = blockif_flush_bc(bc);
 		break;
 	case BOP_DELETE:
@@ -585,6 +658,7 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	bc->bc_sectsz = sectsz;
 	bc->bc_psectsz = psectsz;
 	bc->bc_psectoff = psectoff;
+	bc->bc_trace = getenv("SCORPI_BLOCKIF_TRACE") != NULL;
 	pthread_mutex_init(&bc->bc_mtx, NULL);
 	pthread_cond_init(&bc->bc_cond, NULL);
 	bc->bc_paused = 0;
@@ -843,6 +917,7 @@ blockif_close(struct blockif_ctxt *bc)
 	 * Release resources
 	 */
 	bc->bc_magic = 0;
+	blockif_trace_report(bc, "close");
 	scorpi_image_chain_close(bc->bc_image_chain);
 	free(bc);
 
