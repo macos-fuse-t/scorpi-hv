@@ -478,6 +478,10 @@ Validation performed:
 
 ### Task 11: Implement `.sco` Base Descriptor
 
+Status:
+
+- Done
+
 Scope:
 
 - parse base descriptor
@@ -502,6 +506,11 @@ Validation criteria:
 - `.sco` with `file:` base resolves base
 - unsupported base URI scheme is rejected
 - base identity mismatch is rejected when identity fields are present
+
+Validation performed:
+
+- `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_resolver_test scorpi_image_uri_test scorpi_image_open_test`
+- `meson compile -C builddir`
 
 ### Task 12: Implement `.sco` Allocation Map Read Path
 
@@ -580,7 +589,45 @@ Validation criteria:
 - generated fixtures pass parser tests
 - corrupt fixtures fail as expected
 
-### Task 15: Implement `.sco` Writable Top Support
+### Task 15: Add `scorpi_image` CLI Tool
+
+Scope:
+
+- add a Meson executable target for a user-facing `scorpi_image` utility
+- support creating `.sco` images from command-line arguments
+- support inspecting image metadata without launching a VM
+- keep snapshot graph, compaction, repository, push, and pull behavior outside
+  this tool
+
+Dependencies:
+
+- Task 14
+
+Implementation notes:
+
+- initial subcommands should be small and deterministic:
+  - `create`
+  - `info`
+  - `check`
+- `create` should support `.sco` output, virtual size, cluster size, readonly
+  or sealed mode where applicable, and optional base image URI
+- `info` should use the same parser/probing path as runtime image opening
+- raw input should remain explicit because raw has no magic
+- the tool may reuse the test fixture creation code, but it should be built as
+  a real executable target rather than a test-only helper
+- this tool does not replace the parent management system; it only creates and
+  inspects local image files
+
+Validation criteria:
+
+- `meson compile` builds the `scorpi_image` executable
+- `scorpi_image create` creates a valid `.sco` image
+- `scorpi_image info` reports format, virtual size, sector sizes, cluster size,
+  readonly or sealed state, and base URI when present
+- `scorpi_image check` rejects corrupt `.sco` metadata
+- generated images can be opened by the runtime image backend tests
+
+### Task 16: Implement `.sco` Writable Top Support
 
 Scope:
 
@@ -607,7 +654,7 @@ Validation criteria:
 - writes do not modify parent images
 - readonly/sealed top rejects writes
 
-### Task 16: Implement Whole-Cluster Materialization
+### Task 17: Implement Whole-Cluster Materialization
 
 Scope:
 
@@ -616,7 +663,7 @@ Scope:
 
 Dependencies:
 
-- Task 15
+- Task 16
 
 Implementation notes:
 
@@ -630,7 +677,7 @@ Validation criteria:
 - partial write with no parent zero-fills unwritten ranges
 - write crossing cluster boundary materializes each affected cluster correctly
 
-### Task 17: Implement `.sco` Discard And Zero State
+### Task 18: Implement `.sco` Discard And Zero State
 
 Scope:
 
@@ -640,7 +687,7 @@ Scope:
 
 Dependencies:
 
-- Task 15
+- Task 16
 
 Implementation notes:
 
@@ -655,7 +702,7 @@ Validation criteria:
 - partial discard preserves non-discarded bytes correctly
 - `blockif_candelete()` reflects backend capability
 
-### Task 18: Implement Crash-Safe `.sco` Metadata Commit
+### Task 19: Implement Crash-Safe `.sco` Metadata Commit
 
 Scope:
 
@@ -665,7 +712,7 @@ Scope:
 
 Dependencies:
 
-- Task 15
+- Task 16
 
 Implementation notes:
 
@@ -682,7 +729,7 @@ Validation criteria:
 - open selects newest valid generation
 - old valid generation remains usable after interrupted write
 
-### Task 19: Add `.sco` Flush Semantics
+### Task 20: Add `.sco` Flush Semantics
 
 Scope:
 
@@ -691,7 +738,7 @@ Scope:
 
 Dependencies:
 
-- Task 18
+- Task 19
 
 Implementation notes:
 
@@ -705,7 +752,7 @@ Validation criteria:
 - flush errors are returned to block request completion
 - tests cover no-space or injected flush failure where practical
 
-### Task 20: Add Resolved Chain Diagnostics
+### Task 21: Add Resolved Chain Diagnostics
 
 Scope:
 
@@ -737,7 +784,7 @@ Validation criteria:
 - tests verify diagnostics for `.sco -> raw`
 - unsupported feature errors include enough context to identify the layer
 
-### Task 21: Add Readonly Qcow2 Backend
+### Task 22: Add Readonly Qcow2 Backend
 
 Scope:
 
@@ -767,7 +814,7 @@ Validation criteria:
 - unsupported qcow2 feature is rejected
 - qcow2 cannot be opened writable
 
-### Task 22: Add Block Drain/Pause Primitives
+### Task 23: Add Block Drain/Pause Primitives
 
 Scope:
 
@@ -792,7 +839,7 @@ Validation criteria:
 - drain reports completion when queues are empty
 - resume allows requests again
 
-### Task 23: Add Disk Reopen/Rebind Primitive
+### Task 24: Add Disk Reopen/Rebind Primitive
 
 Scope:
 
@@ -802,7 +849,7 @@ Scope:
 
 Dependencies:
 
-- Task 22
+- Task 23
 - Task 7
 - Task 13
 
@@ -819,7 +866,7 @@ Validation criteria:
 - successful reopen observes new parent chain
 - post-reopen reads and writes use new chain
 
-### Task 24: Integrate Reopen With Control/Library Boundary
+### Task 25: Integrate Reopen With Control/Library Boundary
 
 Scope:
 
@@ -829,7 +876,7 @@ Scope:
 
 Dependencies:
 
-- Task 23
+- Task 24
 
 Implementation notes:
 
@@ -843,7 +890,7 @@ Validation criteria:
 - API does not accept snapshot names or graph refs
 - errors are reported without process termination
 
-### Task 25: Add Parent Image Store Design
+### Task 26: Add Parent Image Store Design
 
 Scope:
 
@@ -866,7 +913,7 @@ Validation criteria:
 - design defines active VM root ownership
 - design defines locking and recovery model
 
-### Task 26: Implement Parent Commit/Snapshot Prototype
+### Task 27: Implement Parent Commit/Snapshot Prototype
 
 Scope:
 
@@ -877,8 +924,8 @@ Scope:
 
 Dependencies:
 
-- Task 24
 - Task 25
+- Task 26
 
 Implementation notes:
 
@@ -892,7 +939,7 @@ Validation criteria:
 - VM config does not need to list backing chain
 - live prototype can pause/flush/reopen using runtime primitives
 
-### Task 27: Add Parent Storage Accounting
+### Task 28: Add Parent Storage Accounting
 
 Scope:
 
@@ -902,7 +949,7 @@ Scope:
 
 Dependencies:
 
-- Task 25
+- Task 26
 
 Implementation notes:
 
@@ -916,7 +963,7 @@ Validation criteria:
 - parent can identify large active layers
 - parent can identify candidate private tails for compaction
 
-### Task 28: Implement Offline Compaction Prototype
+### Task 29: Implement Offline Compaction Prototype
 
 Scope:
 
@@ -925,7 +972,7 @@ Scope:
 
 Dependencies:
 
-- Task 27
+- Task 28
 
 Implementation notes:
 
@@ -939,7 +986,7 @@ Validation criteria:
 - original layers remain unchanged
 - parent refs update only after successful new layer creation
 
-### Task 29: Add Garbage Collection
+### Task 30: Add Garbage Collection
 
 Scope:
 
@@ -948,8 +995,8 @@ Scope:
 
 Dependencies:
 
-- Task 25
-- Task 28
+- Task 26
+- Task 29
 
 Implementation notes:
 
@@ -962,7 +1009,7 @@ Validation criteria:
 - reachable layer is preserved
 - in-progress operations protect temporary files
 
-### Task 30: Add Repository Manifest Design
+### Task 31: Add Repository Manifest Design
 
 Scope:
 
@@ -971,7 +1018,7 @@ Scope:
 
 Dependencies:
 
-- Task 25
+- Task 26
 
 Implementation notes:
 
@@ -985,7 +1032,7 @@ Validation criteria:
 - tag vs digest semantics are documented
 - parent URI handling remains compatible with local materialization
 
-### Task 31: Add Push/Pull Prototype
+### Task 32: Add Push/Pull Prototype
 
 Scope:
 
@@ -995,7 +1042,7 @@ Scope:
 
 Dependencies:
 
-- Task 30
+- Task 31
 
 Implementation notes:
 
@@ -1015,17 +1062,17 @@ Start with the runtime foundation:
 
 1. Tasks 1-8: backend abstraction, raw backend, chain resolver, validation,
    read resolver.
-2. Tasks 9-14: `.sco` readonly parser, map reads, fixtures.
-3. Tasks 15-19: `.sco` writable top, materialization, discard, crash safety,
+2. Tasks 9-15: `.sco` readonly parser, map reads, fixtures, CLI creation.
+3. Tasks 16-20: `.sco` writable top, materialization, discard, crash safety,
    flush.
-4. Task 21: readonly qcow2.
-5. Tasks 22-24: live drain/reopen primitives.
+4. Task 22: readonly qcow2.
+5. Tasks 23-25: live drain/reopen primitives.
 
 Then move to parent-managed behavior:
 
-1. Tasks 25-27: parent graph and accounting.
-2. Tasks 28-29: compaction and GC.
-3. Tasks 30-31: repository manifests and push/pull.
+1. Tasks 26-28: parent graph and accounting.
+2. Tasks 29-30: compaction and GC.
+3. Tasks 31-32: repository manifests and push/pull.
 
 ## First Milestone Recommendation
 

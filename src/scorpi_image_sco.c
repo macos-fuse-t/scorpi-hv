@@ -31,6 +31,7 @@
 #define	SCO_MIN_FILE_SIZE		0x00010000ULL
 #define	SCO_MIN_CLUSTER_SIZE		0x00010000U
 #define	SCO_MAX_CLUSTER_SIZE		0x00400000U
+#define	SCO_BASE_DESCRIPTOR_MIN_SIZE	0x00000050U
 #define	SCO_CHECKSUM_CRC32C		1
 #define	SCO_MAP_ENTRY_SIZE		16
 
@@ -67,6 +68,12 @@ struct sco_image {
 	int fd;
 	bool readonly;
 	struct sco_superblock_decoded sb;
+	bool has_base;
+	char *base_uri;
+	uint8_t base_uuid[16];
+	bool has_base_uuid;
+	uint8_t base_digest[32];
+	bool has_base_digest;
 };
 
 static uint32_t
@@ -332,6 +339,89 @@ sco_select_superblock(int fd, bool readonly, const uint8_t file_id_uuid[16],
 }
 
 static int
+sco_read_base_descriptor(struct sco_image *sco)
+{
+	uint8_t *buf;
+	uint32_t descriptor_size, checksum_type, expected_crc;
+	uint32_t flags, base_uri_length, reserved0;
+	uint32_t has_base_uuid, has_base_digest;
+	size_t padding_offset;
+	char *base_uri;
+	int error;
+
+	if (sco->sb.base_descriptor_offset == 0)
+		return (0);
+
+	buf = malloc(sco->sb.base_descriptor_length);
+	if (buf == NULL)
+		return (ENOMEM);
+	error = read_exact(sco->fd, sco->sb.base_descriptor_offset, buf,
+	    sco->sb.base_descriptor_length);
+	if (error != 0) {
+		free(buf);
+		return (error);
+	}
+
+	descriptor_size = le32dec(buf + 0x0000);
+	checksum_type = le32dec(buf + 0x0004);
+	expected_crc = le32dec(buf + 0x0008);
+	flags = le32dec(buf + 0x000c);
+	base_uri_length = le32dec(buf + 0x0010);
+	reserved0 = le32dec(buf + 0x0014);
+	has_base_uuid = le32dec(buf + 0x0048);
+	has_base_digest = le32dec(buf + 0x004c);
+
+	if (descriptor_size != sco->sb.base_descriptor_length ||
+	    descriptor_size < SCO_BASE_DESCRIPTOR_MIN_SIZE ||
+	    (descriptor_size % SCO_METADATA_PAGE_SIZE) != 0 ||
+	    checksum_type != SCO_CHECKSUM_CRC32C ||
+	    flags != 0 || reserved0 != 0 ||
+	    has_base_uuid > 1 || has_base_digest > 1 ||
+	    base_uri_length == 0 ||
+	    base_uri_length > descriptor_size - SCO_BASE_DESCRIPTOR_MIN_SIZE) {
+		free(buf);
+		return (EINVAL);
+	}
+	if (!crc32c_valid(buf, descriptor_size, 0x0008, expected_crc)) {
+		free(buf);
+		return (EINVAL);
+	}
+	padding_offset = SCO_BASE_DESCRIPTOR_MIN_SIZE + base_uri_length;
+	if (!reserved_zero(buf, padding_offset, descriptor_size -
+	    padding_offset)) {
+		free(buf);
+		return (EINVAL);
+	}
+	if (base_uri_length < 5 ||
+	    memcmp(buf + SCO_BASE_DESCRIPTOR_MIN_SIZE, "file:", 5) != 0) {
+		free(buf);
+		return (ENOTSUP);
+	}
+
+	base_uri = calloc(1, (size_t)base_uri_length + 1);
+	if (base_uri == NULL) {
+		free(buf);
+		return (ENOMEM);
+	}
+	memcpy(base_uri, buf + SCO_BASE_DESCRIPTOR_MIN_SIZE,
+	    base_uri_length);
+
+	sco->has_base = true;
+	sco->base_uri = base_uri;
+	if (has_base_uuid != 0) {
+		memcpy(sco->base_uuid, buf + 0x0018, sizeof(sco->base_uuid));
+		sco->has_base_uuid = true;
+	}
+	if (has_base_digest != 0) {
+		memcpy(sco->base_digest, buf + 0x0028,
+		    sizeof(sco->base_digest));
+		sco->has_base_digest = true;
+	}
+	free(buf);
+	return (0);
+}
+
+static int
 sco_probe(int fd, uint32_t *score)
 {
 	char magic[SCO_MAGIC_SIZE];
@@ -382,6 +472,12 @@ sco_open(const char *path __attribute__((unused)), int fd, bool readonly,
 		free(sco);
 		return (error);
 	}
+	error = sco_read_base_descriptor(sco);
+	if (error != 0) {
+		free(sco->base_uri);
+		free(sco);
+		return (error);
+	}
 	*statep = sco;
 	return (0);
 }
@@ -403,11 +499,27 @@ sco_get_info(void *statep, struct scorpi_image_info *info)
 		.readonly = sco->readonly,
 		.sealed = (sco->sb.readonly_compatible_features &
 		    SCO_RO_COMPAT_SEALED) != 0,
+		.has_image_uuid = true,
 		.has_image_digest = sco->sb.has_image_digest,
+		.has_base = sco->has_base,
+		.has_base_uuid = sco->has_base_uuid,
+		.has_base_digest = sco->has_base_digest,
 	};
+	memcpy(info->image_uuid, sco->sb.image_uuid, sizeof(info->image_uuid));
 	if (sco->sb.has_image_digest)
 		memcpy(info->image_digest, sco->sb.image_digest,
 		    sizeof(info->image_digest));
+	if (sco->has_base) {
+		info->base_uri = strdup(sco->base_uri);
+		if (info->base_uri == NULL)
+			return (ENOMEM);
+	}
+	if (sco->has_base_uuid)
+		memcpy(info->base_uuid, sco->base_uuid,
+		    sizeof(info->base_uuid));
+	if (sco->has_base_digest)
+		memcpy(info->base_digest, sco->base_digest,
+		    sizeof(info->base_digest));
 	return (0);
 }
 
@@ -463,6 +575,7 @@ sco_close(void *statep)
 	error = 0;
 	if (sco->fd >= 0 && close(sco->fd) != 0)
 		error = errno;
+	free(sco->base_uri);
 	free(sco);
 	return (error);
 }

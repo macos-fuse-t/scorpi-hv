@@ -85,8 +85,11 @@ scorpi_image_sco_test_executable = executable(
   'scorpi_image_sco_test',
   files(
     'scorpi_image_sco_test.c',
+    '../src/scorpi_image_chain.c',
     '../src/scorpi_image.c',
+    '../src/scorpi_image_raw.c',
     '../src/scorpi_image_sco.c',
+    '../src/scorpi_image_uri.c',
   ),
   include_directories: [inc, include_directories('../src')],
 )

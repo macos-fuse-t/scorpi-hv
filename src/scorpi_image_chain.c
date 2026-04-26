@@ -204,6 +204,15 @@ scorpi_image_chain_validate(const struct scorpi_image_chain *chain,
 		if (i > 0 && !info->readonly && !info->sealed)
 			return (EROFS);
 		if (i + 1 < chain->image_count &&
+		    info->has_base_uuid) {
+			if (!chain->images[i + 1]->info.has_image_uuid)
+				return (EINVAL);
+			if (memcmp(info->base_uuid,
+			    chain->images[i + 1]->info.image_uuid,
+			    sizeof(info->base_uuid)) != 0)
+				return (EINVAL);
+		}
+		if (i + 1 < chain->image_count &&
 		    info->has_base_digest) {
 			if (!chain->images[i + 1]->info.has_image_digest)
 				return (EINVAL);
