@@ -1151,6 +1151,17 @@ sco_metadata_page_used(struct sco_image *sco, uint64_t offset)
 	return (sco->metadata_page_used[index] != 0);
 }
 
+static void
+sco_metadata_allocator_reset(struct sco_image *sco)
+{
+	if (sco == NULL)
+		return;
+	free(sco->metadata_page_used);
+	sco->metadata_page_used = NULL;
+	sco->metadata_page_count = 0;
+	sco->metadata_alloc_cursor = 0;
+}
+
 static int
 sco_metadata_allocator_init(struct sco_image *sco)
 {
@@ -1233,10 +1244,7 @@ sco_metadata_allocator_init(struct sco_image *sco)
 
 	return (0);
 fail:
-	free(sco->metadata_page_used);
-	sco->metadata_page_used = NULL;
-	sco->metadata_page_count = 0;
-	sco->metadata_alloc_cursor = 0;
+	sco_metadata_allocator_reset(sco);
 	return (error);
 }
 
@@ -1528,7 +1536,7 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 	uint64_t trace_start, trace_end;
 	size_t root_page_index, root_page_count;
 	uint32_t entry_count, map_page_crc32c;
-	int error;
+	int bitmap_error, error;
 
 	if (sco == NULL)
 		return (EINVAL);
@@ -1643,14 +1651,19 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 		next_sb.incompatible_features |= SCO_INCOMPAT_ZERO_DISCARD;
 	error = sco_commit_superblock(sco, &next_sb);
 	if (error == 0) {
-		(void)sco_metadata_mark_page(sco, new_map_page_offset, true);
-		(void)sco_metadata_mark_range(sco, new_root_offset,
-		    old_root_length, true);
-		if (old_map_page_offset != 0)
-			(void)sco_metadata_mark_page(sco, old_map_page_offset,
-			    false);
-		(void)sco_metadata_mark_range(sco, old_root_offset,
-		    old_root_length, false);
+		bitmap_error = sco_metadata_mark_page(sco, new_map_page_offset,
+		    true);
+		if (bitmap_error == 0)
+			bitmap_error = sco_metadata_mark_range(sco,
+			    new_root_offset, old_root_length, true);
+		if (bitmap_error == 0 && old_map_page_offset != 0)
+			bitmap_error = sco_metadata_mark_page(sco,
+			    old_map_page_offset, false);
+		if (bitmap_error == 0)
+			bitmap_error = sco_metadata_mark_range(sco,
+			    old_root_offset, old_root_length, false);
+		if (bitmap_error != 0)
+			sco_metadata_allocator_reset(sco);
 		(void)sco_metadata_cache_store(sco, new_map_page_offset,
 		    page, map_page_crc32c, entry_count, first_cluster_index);
 		(void)sco_metadata_cache_store_root_run(sco, new_root_offset,
