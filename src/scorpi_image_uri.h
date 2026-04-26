@@ -18,16 +18,16 @@ struct scorpi_image_uri_policy {
 	const char *allowed_root;
 };
 
-struct scorpi_image_parent_location {
+struct scorpi_image_base_location {
 	enum scorpi_image_uri_scheme scheme;
 	char *original_uri;
 	char *resolved_path;
 };
 
-int	scorpi_image_parent_location_resolve(const char *child_path,
-	    const char *parent_uri, const struct scorpi_image_uri_policy *policy,
-	    struct scorpi_image_parent_location **locationp);
-void	scorpi_image_parent_location_free(
-	    struct scorpi_image_parent_location *location);
+int	scorpi_image_base_location_resolve(const char *image_path,
+	    const char *base_uri, const struct scorpi_image_uri_policy *policy,
+	    struct scorpi_image_base_location **locationp);
+void	scorpi_image_base_location_free(
+	    struct scorpi_image_base_location *location);
 
 #endif /* _SCORPI_IMAGE_URI_H_ */

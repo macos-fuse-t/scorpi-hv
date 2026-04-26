@@ -15,14 +15,14 @@
 
 #include "scorpi_image_chain.h"
 
-struct parent_test_state {
+struct base_test_state {
 	int fd;
 	bool readonly;
-	char *parent_uri;
+	char *base_uri;
 };
 
 static int
-parent_test_probe(int fd, uint32_t *score)
+base_test_probe(int fd, uint32_t *score)
 {
 	char magic[5];
 
@@ -36,10 +36,10 @@ parent_test_probe(int fd, uint32_t *score)
 }
 
 static char *
-read_parent_uri(int fd)
+read_base_uri(int fd)
 {
 	char buf[512];
-	char *line, *next, *value, *end, *parent;
+	char *line, *next, *value, *end, *base;
 	ssize_t n;
 
 	n = pread(fd, buf, sizeof(buf) - 1, 0);
@@ -51,14 +51,14 @@ read_parent_uri(int fd)
 		next = strchr(line, '\n');
 		if (next != NULL)
 			*next++ = '\0';
-		if (strncmp(line, "parent=", 7) == 0) {
-			value = line + 7;
+		if (strncmp(line, "base=", 5) == 0) {
+			value = line + 5;
 			end = value + strlen(value);
 			while (end > value && (end[-1] == '\r' || end[-1] == ' '))
 				*--end = '\0';
-			parent = strdup(value);
-			assert(parent != NULL);
-			return (parent);
+			base = strdup(value);
+			assert(base != NULL);
+			return (base);
 		}
 		line = next;
 	}
@@ -66,25 +66,25 @@ read_parent_uri(int fd)
 }
 
 static int
-parent_test_open(const char *path __attribute__((unused)), int fd,
+base_test_open(const char *path __attribute__((unused)), int fd,
     bool readonly, void **statep)
 {
-	struct parent_test_state *state;
+	struct base_test_state *state;
 
 	state = calloc(1, sizeof(*state));
 	if (state == NULL)
 		return (ENOMEM);
 	state->fd = fd;
 	state->readonly = readonly;
-	state->parent_uri = read_parent_uri(fd);
+	state->base_uri = read_base_uri(fd);
 	*statep = state;
 	return (0);
 }
 
 static int
-parent_test_get_info(void *statep, struct scorpi_image_info *info)
+base_test_get_info(void *statep, struct scorpi_image_info *info)
 {
-	struct parent_test_state *state;
+	struct base_test_state *state;
 
 	state = statep;
 	memset(info, 0, sizeof(*info));
@@ -94,17 +94,17 @@ parent_test_get_info(void *statep, struct scorpi_image_info *info)
 	info->physical_sector_size = 4096;
 	info->cluster_size = 65536;
 	info->readonly = state->readonly;
-	info->has_parent = state->parent_uri != NULL;
-	if (state->parent_uri != NULL) {
-		info->parent_uri = strdup(state->parent_uri);
-		if (info->parent_uri == NULL)
+	info->has_base = state->base_uri != NULL;
+	if (state->base_uri != NULL) {
+		info->base_uri = strdup(state->base_uri);
+		if (info->base_uri == NULL)
 			return (ENOMEM);
 	}
 	return (0);
 }
 
 static int
-parent_test_map(void *state __attribute__((unused)),
+base_test_map(void *state __attribute__((unused)),
     uint64_t offset __attribute__((unused)),
     uint64_t length __attribute__((unused)),
     struct scorpi_image_extent *extent __attribute__((unused)))
@@ -113,7 +113,7 @@ parent_test_map(void *state __attribute__((unused)),
 }
 
 static int
-parent_test_read(void *state __attribute__((unused)),
+base_test_read(void *state __attribute__((unused)),
     void *buf __attribute__((unused)), uint64_t offset __attribute__((unused)),
     size_t len __attribute__((unused)))
 {
@@ -121,7 +121,7 @@ parent_test_read(void *state __attribute__((unused)),
 }
 
 static int
-parent_test_write(void *state __attribute__((unused)),
+base_test_write(void *state __attribute__((unused)),
     const void *buf __attribute__((unused)),
     uint64_t offset __attribute__((unused)),
     size_t len __attribute__((unused)))
@@ -130,7 +130,7 @@ parent_test_write(void *state __attribute__((unused)),
 }
 
 static int
-parent_test_discard(void *state __attribute__((unused)),
+base_test_discard(void *state __attribute__((unused)),
     uint64_t offset __attribute__((unused)),
     uint64_t length __attribute__((unused)))
 {
@@ -138,36 +138,36 @@ parent_test_discard(void *state __attribute__((unused)),
 }
 
 static int
-parent_test_flush(void *state __attribute__((unused)))
+base_test_flush(void *state __attribute__((unused)))
 {
 	return (0);
 }
 
 static int
-parent_test_close(void *statep)
+base_test_close(void *statep)
 {
-	struct parent_test_state *state;
+	struct base_test_state *state;
 
 	state = statep;
 	if (state == NULL)
 		return (0);
 	assert(close(state->fd) == 0);
-	free(state->parent_uri);
+	free(state->base_uri);
 	free(state);
 	return (0);
 }
 
-static const struct scorpi_image_ops parent_test_backend = {
-	.name = "test-parent-chain",
-	.probe = parent_test_probe,
-	.open = parent_test_open,
-	.get_info = parent_test_get_info,
-	.map = parent_test_map,
-	.read = parent_test_read,
-	.write = parent_test_write,
-	.discard = parent_test_discard,
-	.flush = parent_test_flush,
-	.close = parent_test_close,
+static const struct scorpi_image_ops base_test_backend = {
+	.name = "test-base-chain",
+	.probe = base_test_probe,
+	.open = base_test_open,
+	.get_info = base_test_get_info,
+	.map = base_test_map,
+	.read = base_test_read,
+	.write = base_test_write,
+	.discard = base_test_discard,
+	.flush = base_test_flush,
+	.close = base_test_close,
 };
 
 static void
@@ -230,18 +230,18 @@ test_raw_depth_one(const char *dir)
 }
 
 static void
-test_simple_parent_chain(const char *dir)
+test_simple_base_chain(const char *dir)
 {
 	const struct scorpi_image_info *info;
 	struct scorpi_image_chain_open_options options;
 	struct scorpi_image_chain *chain;
-	char child[MAXPATHLEN], parent[MAXPATHLEN];
+	char child[MAXPATHLEN], base[MAXPATHLEN];
 	int fd;
 
 	make_path(child, sizeof(child), dir, "child.ptst");
-	make_path(parent, sizeof(parent), dir, "parent.ptst");
-	write_file(parent, "PTST\n");
-	write_file(child, "PTST\nparent=file:parent.ptst\n");
+	make_path(base, sizeof(base), dir, "base.ptst");
+	write_file(base, "PTST\n");
+	write_file(child, "PTST\nbase=file:base.ptst\n");
 
 	options = (struct scorpi_image_chain_open_options){
 		.raw_fallback = false,
@@ -264,13 +264,13 @@ test_simple_parent_chain(const char *dir)
 }
 
 static void
-test_missing_parent(const char *dir)
+test_missing_base(const char *dir)
 {
 	struct scorpi_image_chain_open_options options;
 	char child[MAXPATHLEN];
 
-	make_path(child, sizeof(child), dir, "missing-child.ptst");
-	write_file(child, "PTST\nparent=file:missing.ptst\n");
+	make_path(child, sizeof(child), dir, "base-missing-child.ptst");
+	write_file(child, "PTST\nbase=file:missing.ptst\n");
 
 	options = (struct scorpi_image_chain_open_options){
 		.raw_fallback = false,
@@ -286,8 +286,8 @@ test_cycle(const char *dir)
 
 	make_path(a, sizeof(a), dir, "cycle-a.ptst");
 	make_path(b, sizeof(b), dir, "cycle-b.ptst");
-	write_file(a, "PTST\nparent=file:cycle-b.ptst\n");
-	write_file(b, "PTST\nparent=file:cycle-a.ptst\n");
+	write_file(a, "PTST\nbase=file:cycle-b.ptst\n");
+	write_file(b, "PTST\nbase=file:cycle-a.ptst\n");
 
 	options = (struct scorpi_image_chain_open_options){
 		.raw_fallback = false,
@@ -304,8 +304,8 @@ test_max_depth(const char *dir)
 	make_path(a, sizeof(a), dir, "depth-a.ptst");
 	make_path(b, sizeof(b), dir, "depth-b.ptst");
 	make_path(c, sizeof(c), dir, "depth-c.ptst");
-	write_file(a, "PTST\nparent=file:depth-b.ptst\n");
-	write_file(b, "PTST\nparent=file:depth-c.ptst\n");
+	write_file(a, "PTST\nbase=file:depth-b.ptst\n");
+	write_file(b, "PTST\nbase=file:depth-c.ptst\n");
 	write_file(c, "PTST\n");
 
 	options = (struct scorpi_image_chain_open_options){
@@ -321,14 +321,14 @@ main(void)
 	char dir[] = "/tmp/scorpi-chain-resolver-XXXXXX";
 
 	assert(mkdtemp(dir) != NULL);
-	assert(scorpi_image_backend_register(&parent_test_backend) == 0);
+	assert(scorpi_image_backend_register(&base_test_backend) == 0);
 
 	test_raw_depth_one(dir);
-	test_simple_parent_chain(dir);
-	test_missing_parent(dir);
+	test_simple_base_chain(dir);
+	test_missing_base(dir);
 	test_cycle(dir);
 	test_max_depth(dir);
 
-	assert(scorpi_image_backend_unregister("test-parent-chain") == 0);
+	assert(scorpi_image_backend_unregister("test-base-chain") == 0);
 	return (0);
 }

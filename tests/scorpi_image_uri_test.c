@@ -1,4 +1,4 @@
-/* Parent location URI parser coverage for snapshot support. */
+/* Base location URI parser coverage for snapshot support. */
 
 #include <sys/errno.h>
 #include <sys/stat.h>
@@ -20,22 +20,22 @@ static void
 expect_resolved(const char *child, const char *uri,
     const struct scorpi_image_uri_policy *policy, const char *expected)
 {
-	struct scorpi_image_parent_location *location;
+	struct scorpi_image_base_location *location;
 
 	location = NULL;
-	assert(scorpi_image_parent_location_resolve(child, uri, policy,
+	assert(scorpi_image_base_location_resolve(child, uri, policy,
 	    &location) == 0);
 	assert(location != NULL);
 	assert(location->scheme == SCORPI_IMAGE_URI_FILE);
 	assert(strcmp(location->original_uri, uri) == 0);
 	assert(strcmp(location->resolved_path, expected) == 0);
-	scorpi_image_parent_location_free(location);
+	scorpi_image_base_location_free(location);
 }
 
 int
 main(void)
 {
-	struct scorpi_image_parent_location *location;
+	struct scorpi_image_base_location *location;
 	struct scorpi_image_uri_policy policy;
 	char root[] = "/tmp/scorpi-uri-test-XXXXXX";
 	char vm_dir[256], base_dir[256], child[256], expected[256];
@@ -59,7 +59,7 @@ main(void)
 	expect_resolved(child, uri, NULL, expected);
 
 	location = NULL;
-	assert(scorpi_image_parent_location_resolve(child,
+	assert(scorpi_image_base_location_resolve(child,
 	    "https://example.invalid/base.sco", NULL, &location) == ENOTSUP);
 	assert(location == NULL);
 
@@ -68,7 +68,7 @@ main(void)
 		.allowed_root = NULL,
 	};
 	snprintf(uri, sizeof(uri), "file://%s/base/base.sco", root);
-	assert(scorpi_image_parent_location_resolve(child, uri, &policy,
+	assert(scorpi_image_base_location_resolve(child, uri, &policy,
 	    &location) == EACCES);
 	assert(location == NULL);
 
@@ -76,11 +76,11 @@ main(void)
 		.allow_absolute_file_uri = true,
 		.allowed_root = vm_dir,
 	};
-	assert(scorpi_image_parent_location_resolve(child, "file:snap-003.sco",
+	assert(scorpi_image_base_location_resolve(child, "file:snap-003.sco",
 	    &policy, &location) == 0);
-	scorpi_image_parent_location_free(location);
+	scorpi_image_base_location_free(location);
 	location = NULL;
-	assert(scorpi_image_parent_location_resolve(child, "file:../base/base.sco",
+	assert(scorpi_image_base_location_resolve(child, "file:../base/base.sco",
 	    &policy, &location) == EACCES);
 	assert(location == NULL);
 

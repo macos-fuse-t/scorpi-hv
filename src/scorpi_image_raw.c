@@ -68,7 +68,7 @@ raw_get_info(void *state, struct scorpi_image_info *info)
 		.cluster_size = 0,
 		.readonly = raw->readonly,
 		.sealed = raw->readonly,
-		.has_parent = false,
+		.has_base = false,
 	};
 	return (0);
 }

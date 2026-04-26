@@ -7,6 +7,8 @@
 #ifndef _SCORPI_IMAGE_H_
 #define _SCORPI_IMAGE_H_
 
+#include <sys/types.h>
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -32,10 +34,10 @@ struct scorpi_image_info {
 	uint32_t cluster_size;
 	bool readonly;
 	bool sealed;
-	bool has_parent;
-	char *parent_uri;
-	uint8_t parent_digest[32];
-	bool has_parent_digest;
+	bool has_base;
+	char *base_uri;
+	uint8_t base_digest[32];
+	bool has_base_digest;
 };
 
 struct scorpi_image_extent {
@@ -57,6 +59,17 @@ struct scorpi_image_ops {
 	int (*discard)(void *state, uint64_t offset, uint64_t length);
 	int (*flush)(void *state);
 	int (*close)(void *state);
+};
+
+struct scorpi_image {
+	const struct scorpi_image_ops *ops;
+	void *state;
+	struct scorpi_image_info info;
+	char *path;
+	dev_t dev;
+	ino_t ino;
+	bool has_file_id;
+	struct scorpi_image *base;
 };
 
 int	scorpi_image_backend_register(const struct scorpi_image_ops *ops);

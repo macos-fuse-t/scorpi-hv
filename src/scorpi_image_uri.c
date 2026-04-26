@@ -147,11 +147,11 @@ normalize_policy_root(const char *root, char **normalizedp)
 }
 
 int
-scorpi_image_parent_location_resolve(const char *child_path,
-    const char *parent_uri, const struct scorpi_image_uri_policy *policy,
-    struct scorpi_image_parent_location **locationp)
+scorpi_image_base_location_resolve(const char *image_path,
+    const char *base_uri, const struct scorpi_image_uri_policy *policy,
+    struct scorpi_image_base_location **locationp)
 {
-	struct scorpi_image_parent_location *location;
+	struct scorpi_image_base_location *location;
 	struct scorpi_image_uri_policy default_policy;
 	char abs_child[MAXPATHLEN], base_dir[MAXPATHLEN], joined[MAXPATHLEN];
 	char *normalized, *normalized_root;
@@ -159,7 +159,7 @@ scorpi_image_parent_location_resolve(const char *child_path,
 	bool absolute_uri;
 	int error;
 
-	if (child_path == NULL || parent_uri == NULL || locationp == NULL)
+	if (image_path == NULL || base_uri == NULL || locationp == NULL)
 		return (EINVAL);
 
 	default_policy = (struct scorpi_image_uri_policy){
@@ -169,10 +169,10 @@ scorpi_image_parent_location_resolve(const char *child_path,
 	if (policy == NULL)
 		policy = &default_policy;
 
-	if (strncmp(parent_uri, "file:", 5) != 0)
+	if (strncmp(base_uri, "file:", 5) != 0)
 		return (ENOTSUP);
 
-	rest = parent_uri + 5;
+	rest = base_uri + 5;
 	if (rest[0] == '\0')
 		return (EINVAL);
 	if (strncmp(rest, "///", 3) == 0) {
@@ -192,7 +192,7 @@ scorpi_image_parent_location_resolve(const char *child_path,
 		if (strlcpy(joined, file_path, sizeof(joined)) >= sizeof(joined))
 			return (ENAMETOOLONG);
 	} else {
-		error = make_absolute_path(child_path, abs_child,
+		error = make_absolute_path(image_path, abs_child,
 		    sizeof(abs_child));
 		if (error != 0)
 			return (error);
@@ -231,7 +231,7 @@ scorpi_image_parent_location_resolve(const char *child_path,
 		return (ENOMEM);
 	}
 	location->scheme = SCORPI_IMAGE_URI_FILE;
-	location->original_uri = strdup(parent_uri);
+	location->original_uri = strdup(base_uri);
 	if (location->original_uri == NULL) {
 		free(location);
 		free(normalized);
@@ -243,7 +243,7 @@ scorpi_image_parent_location_resolve(const char *child_path,
 }
 
 void
-scorpi_image_parent_location_free(struct scorpi_image_parent_location *location)
+scorpi_image_base_location_free(struct scorpi_image_base_location *location)
 {
 	if (location == NULL)
 		return;

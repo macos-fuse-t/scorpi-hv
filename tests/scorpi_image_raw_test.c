@@ -59,7 +59,7 @@ main(void)
 	assert(info.virtual_size == sizeof(buf));
 	assert(info.logical_sector_size == 512);
 	assert(!info.readonly);
-	assert(!info.has_parent);
+	assert(!info.has_base);
 
 	assert(raw->map(state, 0, sizeof(buf), &extent) == 0);
 	assert(extent.offset == 0);
