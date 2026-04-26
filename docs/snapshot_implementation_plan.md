@@ -514,6 +514,10 @@ Validation performed:
 
 ### Task 12: Implement `.sco` Allocation Map Read Path
 
+Status:
+
+- Done
+
 Scope:
 
 - parse map root
@@ -539,6 +543,11 @@ Validation criteria:
 - zero cluster returns zeroes
 - discarded cluster returns zeroes
 - corrupt map page is rejected
+
+Validation performed:
+
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson compile -C builddir`
 
 ### Task 13: Implement `.sco` Read-Through Chains
 

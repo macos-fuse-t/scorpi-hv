@@ -34,6 +34,10 @@
 #define	SCO_BASE_DESCRIPTOR_MIN_SIZE	0x00000050U
 #define	SCO_CHECKSUM_CRC32C		1
 #define	SCO_MAP_ENTRY_SIZE		16
+#define	SCO_MAP_PAGE_HEADER_SIZE		0x00000018U
+#define	SCO_MAP_ENTRIES_PER_PAGE \
+	((SCO_METADATA_PAGE_SIZE - SCO_MAP_PAGE_HEADER_SIZE) / \
+	SCO_MAP_ENTRY_SIZE)
 
 #define	SCO_INCOMPAT_ALLOC_MAP_V1	(1U << 0)
 #define	SCO_INCOMPAT_ZERO_DISCARD	(1U << 1)
@@ -43,6 +47,11 @@
 #define	SCO_RO_COMPAT_SUPPORTED		SCO_RO_COMPAT_SEALED
 #define	SCO_COMPAT_IMAGE_DIGEST		(1U << 0)
 #define	SCO_COMPAT_SUPPORTED		SCO_COMPAT_IMAGE_DIGEST
+
+#define	SCO_MAP_STATE_ABSENT		0
+#define	SCO_MAP_STATE_PRESENT		1
+#define	SCO_MAP_STATE_ZERO		2
+#define	SCO_MAP_STATE_DISCARDED		3
 
 struct sco_superblock_decoded {
 	uint64_t generation;
@@ -67,6 +76,7 @@ struct sco_superblock_decoded {
 struct sco_image {
 	int fd;
 	bool readonly;
+	uint64_t file_size;
 	struct sco_superblock_decoded sb;
 	bool has_base;
 	char *base_uri;
@@ -74,6 +84,11 @@ struct sco_image {
 	bool has_base_uuid;
 	uint8_t base_digest[32];
 	bool has_base_digest;
+};
+
+struct sco_lookup {
+	struct scorpi_image_extent extent;
+	uint64_t physical_offset;
 };
 
 static uint32_t
@@ -421,6 +436,201 @@ sco_read_base_descriptor(struct sco_image *sco)
 	return (0);
 }
 
+static uint64_t
+sco_cluster_stored_length(const struct sco_image *sco, uint64_t cluster_index)
+{
+	uint64_t cluster_offset, remaining;
+
+	cluster_offset = cluster_index * sco->sb.cluster_size;
+	remaining = sco->sb.virtual_size - cluster_offset;
+	if (remaining < sco->sb.cluster_size)
+		return (remaining);
+	return (sco->sb.cluster_size);
+}
+
+static int
+sco_validate_map_page_header(uint8_t page[SCO_METADATA_PAGE_SIZE],
+    uint32_t expected_crc, uint32_t *entry_countp, uint64_t *first_indexp)
+{
+	uint32_t page_size, checksum_type, page_crc, entry_count;
+
+	page_size = le32dec(page + 0x0000);
+	checksum_type = le32dec(page + 0x0004);
+	page_crc = le32dec(page + 0x0008);
+	entry_count = le32dec(page + 0x000c);
+	if (page_size != SCO_METADATA_PAGE_SIZE ||
+	    checksum_type != SCO_CHECKSUM_CRC32C ||
+	    page_crc != expected_crc ||
+	    entry_count > SCO_MAP_ENTRIES_PER_PAGE)
+		return (EINVAL);
+	if (!crc32c_valid(page, SCO_METADATA_PAGE_SIZE, 0x0008, page_crc))
+		return (EINVAL);
+	*entry_countp = entry_count;
+	*first_indexp = le64dec(page + 0x0010);
+	return (0);
+}
+
+static int
+sco_find_root_entry(struct sco_image *sco, uint64_t root_index,
+    uint64_t *map_page_offsetp, uint32_t *map_page_crc32cp)
+{
+	uint8_t page[SCO_METADATA_PAGE_SIZE];
+	uint64_t page_offset, first_root_index, last_root_index;
+	uint64_t root_page_count, i, entry_index;
+	uint32_t entry_count, expected_crc, flags;
+	int error;
+
+	root_page_count = sco->sb.map_root_length / SCO_METADATA_PAGE_SIZE;
+	for (i = 0; i < root_page_count; i++) {
+		page_offset = sco->sb.map_root_offset +
+		    i * SCO_METADATA_PAGE_SIZE;
+		error = read_exact(sco->fd, page_offset, page, sizeof(page));
+		if (error != 0)
+			return (error);
+		expected_crc = le32dec(page + 0x0008);
+		error = sco_validate_map_page_header(page, expected_crc,
+		    &entry_count, &first_root_index);
+		if (error != 0)
+			return (error);
+		if (!reserved_zero(page,
+		    SCO_MAP_PAGE_HEADER_SIZE + entry_count * SCO_MAP_ENTRY_SIZE,
+		    SCO_METADATA_PAGE_SIZE - SCO_MAP_PAGE_HEADER_SIZE -
+		    entry_count * SCO_MAP_ENTRY_SIZE))
+			return (EINVAL);
+		last_root_index = first_root_index + entry_count;
+		if (last_root_index < first_root_index)
+			return (EINVAL);
+		if (root_index < first_root_index || root_index >=
+		    last_root_index)
+			continue;
+		entry_index = root_index - first_root_index;
+		page_offset = SCO_MAP_PAGE_HEADER_SIZE +
+		    entry_index * SCO_MAP_ENTRY_SIZE;
+		flags = le32dec(page + page_offset + 0x000c);
+		if (flags != 0)
+			return (EINVAL);
+		*map_page_offsetp = le64dec(page + page_offset + 0x0000);
+		*map_page_crc32cp = le32dec(page + page_offset + 0x0008);
+		return (0);
+	}
+
+	*map_page_offsetp = 0;
+	*map_page_crc32cp = 0;
+	return (0);
+}
+
+static int
+sco_lookup_extent(struct sco_image *sco, uint64_t offset, uint64_t length,
+    struct sco_lookup *lookup)
+{
+	uint8_t page[SCO_METADATA_PAGE_SIZE];
+	uint64_t cluster_index, root_index, entry_index, map_page_offset;
+	uint64_t first_cluster_index, last_cluster_index, physical_offset;
+	uint64_t cluster_offset, cluster_remaining, covered;
+	uint32_t map_page_crc32c, entry_count, reserved1;
+	uint16_t reserved0;
+	uint8_t state, flags;
+	int error;
+
+	if (sco == NULL || lookup == NULL || length == 0)
+		return (EINVAL);
+	if (offset >= sco->sb.virtual_size)
+		return (EINVAL);
+	if (length > sco->sb.virtual_size - offset)
+		length = sco->sb.virtual_size - offset;
+
+	cluster_index = offset / sco->sb.cluster_size;
+	cluster_offset = offset % sco->sb.cluster_size;
+	cluster_remaining = sco_cluster_stored_length(sco, cluster_index) -
+	    cluster_offset;
+	covered = length < cluster_remaining ? length : cluster_remaining;
+	root_index = cluster_index / SCO_MAP_ENTRIES_PER_PAGE;
+	entry_index = cluster_index % SCO_MAP_ENTRIES_PER_PAGE;
+
+	error = sco_find_root_entry(sco, root_index, &map_page_offset,
+	    &map_page_crc32c);
+	if (error != 0)
+		return (error);
+	if (map_page_offset == 0) {
+		covered = (SCO_MAP_ENTRIES_PER_PAGE - entry_index) *
+		    (uint64_t)sco->sb.cluster_size - cluster_offset;
+		if (covered > length)
+			covered = length;
+		*lookup = (struct sco_lookup){
+			.extent = {
+				.offset = offset,
+				.length = covered,
+				.state = SCORPI_IMAGE_EXTENT_ABSENT,
+			},
+		};
+		return (0);
+	}
+	if (!range_before_data(map_page_offset, SCO_METADATA_PAGE_SIZE,
+	    sco->sb.data_area_offset))
+		return (EINVAL);
+
+	error = read_exact(sco->fd, map_page_offset, page, sizeof(page));
+	if (error != 0)
+		return (error);
+	error = sco_validate_map_page_header(page, map_page_crc32c,
+	    &entry_count, &first_cluster_index);
+	if (error != 0)
+		return (error);
+	if (!reserved_zero(page,
+	    SCO_MAP_PAGE_HEADER_SIZE + entry_count * SCO_MAP_ENTRY_SIZE,
+	    SCO_METADATA_PAGE_SIZE - SCO_MAP_PAGE_HEADER_SIZE -
+	    entry_count * SCO_MAP_ENTRY_SIZE))
+		return (EINVAL);
+	last_cluster_index = first_cluster_index + entry_count;
+	if (last_cluster_index < first_cluster_index ||
+	    cluster_index < first_cluster_index ||
+	    cluster_index >= last_cluster_index)
+		return (EINVAL);
+
+	entry_index = cluster_index - first_cluster_index;
+	entry_index = SCO_MAP_PAGE_HEADER_SIZE +
+	    entry_index * SCO_MAP_ENTRY_SIZE;
+	state = page[entry_index + 0x0000];
+	flags = page[entry_index + 0x0001];
+	reserved0 = le16dec(page + entry_index + 0x0002);
+	reserved1 = le32dec(page + entry_index + 0x0004);
+	physical_offset = le64dec(page + entry_index + 0x0008);
+	if (flags != 0 || reserved0 != 0 || reserved1 != 0)
+		return (EINVAL);
+
+	switch (state) {
+	case SCO_MAP_STATE_ABSENT:
+		if (physical_offset != 0)
+			return (EINVAL);
+		lookup->extent.state = SCORPI_IMAGE_EXTENT_ABSENT;
+		break;
+	case SCO_MAP_STATE_PRESENT:
+		if (physical_offset < sco->sb.data_area_offset ||
+		    (physical_offset % sco->sb.cluster_size) != 0 ||
+		    !range_fits(physical_offset,
+		    sco_cluster_stored_length(sco, cluster_index),
+		    sco->file_size))
+			return (EINVAL);
+		lookup->extent.state = SCORPI_IMAGE_EXTENT_PRESENT;
+		lookup->physical_offset = physical_offset;
+		break;
+	case SCO_MAP_STATE_ZERO:
+	case SCO_MAP_STATE_DISCARDED:
+		if ((sco->sb.incompatible_features &
+		    SCO_INCOMPAT_ZERO_DISCARD) == 0 || physical_offset != 0)
+			return (EINVAL);
+		lookup->extent.state = state == SCO_MAP_STATE_ZERO ?
+		    SCORPI_IMAGE_EXTENT_ZERO :
+		    SCORPI_IMAGE_EXTENT_DISCARDED;
+		break;
+	default:
+		return (EINVAL);
+	}
+	lookup->extent.offset = offset;
+	lookup->extent.length = covered;
+	return (0);
+}
+
 static int
 sco_probe(int fd, uint32_t *score)
 {
@@ -466,6 +676,7 @@ sco_open(const char *path __attribute__((unused)), int fd, bool readonly,
 		return (ENOMEM);
 	sco->fd = fd;
 	sco->readonly = readonly;
+	sco->file_size = file_size;
 	error = sco_select_superblock(fd, readonly, file_id_uuid, file_size,
 	    &sco->sb);
 	if (error != 0) {
@@ -524,20 +735,70 @@ sco_get_info(void *statep, struct scorpi_image_info *info)
 }
 
 static int
-sco_map(void *state __attribute__((unused)),
-    uint64_t offset __attribute__((unused)),
-    uint64_t length __attribute__((unused)),
-    struct scorpi_image_extent *extent __attribute__((unused)))
+sco_map(void *statep, uint64_t offset, uint64_t length,
+    struct scorpi_image_extent *extent)
 {
-	return (ENOTSUP);
+	struct sco_lookup lookup;
+	int error;
+
+	if (extent == NULL)
+		return (EINVAL);
+	memset(&lookup, 0, sizeof(lookup));
+	error = sco_lookup_extent(statep, offset, length, &lookup);
+	if (error != 0)
+		return (error);
+	*extent = lookup.extent;
+	return (0);
 }
 
 static int
-sco_read(void *state __attribute__((unused)), void *buf __attribute__((unused)),
-    uint64_t offset __attribute__((unused)),
-    size_t len __attribute__((unused)))
+sco_read(void *statep, void *buf, uint64_t offset, size_t len)
 {
-	return (ENOTSUP);
+	struct sco_image *sco;
+	struct sco_lookup lookup;
+	uint8_t *p;
+	uint64_t physical_offset;
+	size_t n;
+	int error;
+
+	if (statep == NULL || (buf == NULL && len != 0))
+		return (EINVAL);
+	sco = statep;
+	if (offset > sco->sb.virtual_size ||
+	    (uint64_t)len > sco->sb.virtual_size - offset)
+		return (EINVAL);
+
+	p = buf;
+	while (len > 0) {
+		memset(&lookup, 0, sizeof(lookup));
+		error = sco_lookup_extent(sco, offset, len, &lookup);
+		if (error != 0)
+			return (error);
+		if (lookup.extent.length == 0 ||
+		    lookup.extent.length > SIZE_MAX)
+			return (EIO);
+		n = (size_t)lookup.extent.length;
+		switch (lookup.extent.state) {
+		case SCORPI_IMAGE_EXTENT_PRESENT:
+			physical_offset = lookup.physical_offset +
+			    (offset % sco->sb.cluster_size);
+			error = read_exact(sco->fd, physical_offset, p, n);
+			if (error != 0)
+				return (error);
+			break;
+		case SCORPI_IMAGE_EXTENT_ABSENT:
+		case SCORPI_IMAGE_EXTENT_ZERO:
+		case SCORPI_IMAGE_EXTENT_DISCARDED:
+			memset(p, 0, n);
+			break;
+		default:
+			return (EINVAL);
+		}
+		offset += n;
+		p += n;
+		len -= n;
+	}
+	return (0);
 }
 
 static int
