@@ -463,14 +463,11 @@ static bool
 buffer_all_zero(const void *buf, size_t len)
 {
 	const uint8_t *p;
-	size_t i;
 
+	if (len == 0)
+		return (true);
 	p = buf;
-	for (i = 0; i < len; i++) {
-		if (p[i] != 0)
-			return (false);
-	}
-	return (true);
+	return (p[0] == 0 && (len == 1 || memcmp(p, p + 1, len - 1) == 0));
 }
 
 static int
