@@ -669,6 +669,8 @@ Validation performed:
 
 ### Task 16: Implement `.sco` Writable Top Support
 
+Status: Done
+
 Scope:
 
 - support writes to a writable top `.sco`
@@ -693,6 +695,11 @@ Validation criteria:
 - write to new map page allocates that page
 - writes do not modify parent images
 - readonly/sealed top rejects writes
+
+Validation performed:
+
+- `meson compile -C builddir`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 
 ### Task 17: Implement Whole-Cluster Materialization
 

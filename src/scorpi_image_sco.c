@@ -91,6 +91,14 @@ struct sco_lookup {
 	uint64_t physical_offset;
 };
 
+struct sco_root_entry_ref {
+	uint8_t page[SCO_METADATA_PAGE_SIZE];
+	uint64_t page_offset;
+	uint64_t entry_offset;
+	uint64_t map_page_offset;
+	uint32_t map_page_crc32c;
+};
+
 static uint32_t
 sco_crc32c(const void *buf, size_t len)
 {
@@ -151,13 +159,40 @@ reserved_zero(const uint8_t *buf, size_t offset, size_t length)
 static int
 read_exact(int fd, uint64_t offset, void *buf, size_t len)
 {
+	uint8_t *p;
 	ssize_t n;
 
-	n = pread(fd, buf, len, (off_t)offset);
-	if (n < 0)
-		return (errno);
-	if ((size_t)n != len)
-		return (EIO);
+	p = buf;
+	while (len > 0) {
+		n = pread(fd, p, len, (off_t)offset);
+		if (n < 0)
+			return (errno);
+		if (n == 0)
+			return (EIO);
+		p += n;
+		offset += (uint64_t)n;
+		len -= (size_t)n;
+	}
+	return (0);
+}
+
+static int
+write_exact(int fd, uint64_t offset, const void *buf, size_t len)
+{
+	const uint8_t *p;
+	ssize_t n;
+
+	p = buf;
+	while (len > 0) {
+		n = pwrite(fd, p, len, (off_t)offset);
+		if (n < 0)
+			return (errno);
+		if (n == 0)
+			return (EIO);
+		p += n;
+		offset += (uint64_t)n;
+		len -= (size_t)n;
+	}
 	return (0);
 }
 
@@ -173,6 +208,17 @@ crc32c_valid(uint8_t *buf, size_t len, size_t checksum_offset,
 	actual = sco_crc32c(buf, len);
 	memcpy(buf + checksum_offset, saved, sizeof(saved));
 	return (actual == expected);
+}
+
+static uint32_t
+page_crc32c_update(uint8_t page[SCO_METADATA_PAGE_SIZE])
+{
+	uint32_t crc;
+
+	le32enc(page + 0x0008, 0);
+	crc = sco_crc32c(page, SCO_METADATA_PAGE_SIZE);
+	le32enc(page + 0x0008, crc);
+	return (crc);
 }
 
 static int
@@ -492,6 +538,8 @@ sco_find_root_entry(struct sco_image *sco, uint64_t root_index,
 		    &entry_count, &first_root_index);
 		if (error != 0)
 			return (error);
+		if (first_root_index + entry_count < first_root_index)
+			return (EINVAL);
 		if (!reserved_zero(page,
 		    SCO_MAP_PAGE_HEADER_SIZE + entry_count * SCO_MAP_ENTRY_SIZE,
 		    SCO_METADATA_PAGE_SIZE - SCO_MAP_PAGE_HEADER_SIZE -
@@ -517,6 +565,156 @@ sco_find_root_entry(struct sco_image *sco, uint64_t root_index,
 	*map_page_offsetp = 0;
 	*map_page_crc32cp = 0;
 	return (0);
+}
+
+static int
+sco_read_root_entry_ref(struct sco_image *sco, uint64_t root_index,
+    struct sco_root_entry_ref *ref)
+{
+	uint64_t page_offset, first_root_index, last_root_index;
+	uint64_t root_page_count, i, entry_index;
+	uint32_t entry_count, expected_crc, flags;
+	int error;
+
+	if (sco == NULL || ref == NULL)
+		return (EINVAL);
+
+	root_page_count = sco->sb.map_root_length / SCO_METADATA_PAGE_SIZE;
+	for (i = 0; i < root_page_count; i++) {
+		page_offset = sco->sb.map_root_offset +
+		    i * SCO_METADATA_PAGE_SIZE;
+		error = read_exact(sco->fd, page_offset, ref->page,
+		    sizeof(ref->page));
+		if (error != 0)
+			return (error);
+		expected_crc = le32dec(ref->page + 0x0008);
+		error = sco_validate_map_page_header(ref->page, expected_crc,
+		    &entry_count, &first_root_index);
+		if (error != 0)
+			return (error);
+		if (first_root_index + entry_count < first_root_index)
+			return (EINVAL);
+		if (!reserved_zero(ref->page,
+		    SCO_MAP_PAGE_HEADER_SIZE + entry_count * SCO_MAP_ENTRY_SIZE,
+		    SCO_METADATA_PAGE_SIZE - SCO_MAP_PAGE_HEADER_SIZE -
+		    entry_count * SCO_MAP_ENTRY_SIZE))
+			return (EINVAL);
+		last_root_index = first_root_index + entry_count;
+		if (last_root_index < first_root_index)
+			return (EINVAL);
+		if (root_index < first_root_index ||
+		    root_index >= last_root_index)
+			continue;
+
+		entry_index = root_index - first_root_index;
+		ref->page_offset = page_offset;
+		ref->entry_offset = SCO_MAP_PAGE_HEADER_SIZE +
+		    entry_index * SCO_MAP_ENTRY_SIZE;
+		flags = le32dec(ref->page + ref->entry_offset + 0x000c);
+		if (flags != 0)
+			return (EINVAL);
+		ref->map_page_offset = le64dec(ref->page +
+		    ref->entry_offset + 0x0000);
+		ref->map_page_crc32c = le32dec(ref->page +
+		    ref->entry_offset + 0x0008);
+		return (0);
+	}
+	return (ENOENT);
+}
+
+static bool
+sco_metadata_fixed_range_used(const struct sco_image *sco, uint64_t offset)
+{
+	uint64_t end;
+
+	end = sco->sb.map_root_offset + sco->sb.map_root_length;
+	if (offset >= sco->sb.map_root_offset && offset < end)
+		return (true);
+	if (sco->sb.base_descriptor_offset == 0)
+		return (false);
+	end = sco->sb.base_descriptor_offset + sco->sb.base_descriptor_length;
+	return (offset >= sco->sb.base_descriptor_offset && offset < end);
+}
+
+static int
+sco_metadata_page_used(struct sco_image *sco, uint64_t offset, bool *usedp)
+{
+	uint8_t page[SCO_METADATA_PAGE_SIZE];
+	uint64_t page_offset, first_root_index;
+	uint64_t root_page_count, i, j, map_page_offset;
+	uint32_t entry_count, expected_crc, flags;
+	int error;
+
+	if (sco == NULL || usedp == NULL)
+		return (EINVAL);
+	if (sco_metadata_fixed_range_used(sco, offset)) {
+		*usedp = true;
+		return (0);
+	}
+
+	root_page_count = sco->sb.map_root_length / SCO_METADATA_PAGE_SIZE;
+	for (i = 0; i < root_page_count; i++) {
+		page_offset = sco->sb.map_root_offset +
+		    i * SCO_METADATA_PAGE_SIZE;
+		error = read_exact(sco->fd, page_offset, page, sizeof(page));
+		if (error != 0)
+			return (error);
+		expected_crc = le32dec(page + 0x0008);
+		error = sco_validate_map_page_header(page, expected_crc,
+		    &entry_count, &first_root_index);
+		if (error != 0)
+			return (error);
+		if (first_root_index + entry_count < first_root_index)
+			return (EINVAL);
+		if (!reserved_zero(page,
+		    SCO_MAP_PAGE_HEADER_SIZE + entry_count * SCO_MAP_ENTRY_SIZE,
+		    SCO_METADATA_PAGE_SIZE - SCO_MAP_PAGE_HEADER_SIZE -
+		    entry_count * SCO_MAP_ENTRY_SIZE))
+			return (EINVAL);
+		for (j = 0; j < entry_count; j++) {
+			page_offset = SCO_MAP_PAGE_HEADER_SIZE +
+			    j * SCO_MAP_ENTRY_SIZE;
+			flags = le32dec(page + page_offset + 0x000c);
+			if (flags != 0)
+				return (EINVAL);
+			map_page_offset = le64dec(page + page_offset);
+			if (map_page_offset == 0)
+				continue;
+			if (!range_before_data(map_page_offset,
+			    SCO_METADATA_PAGE_SIZE, sco->sb.data_area_offset))
+				return (EINVAL);
+			if (map_page_offset == offset) {
+				*usedp = true;
+				return (0);
+			}
+		}
+	}
+
+	*usedp = false;
+	return (0);
+}
+
+static int
+sco_alloc_metadata_page(struct sco_image *sco, uint64_t *offsetp)
+{
+	uint64_t offset;
+	bool used;
+	int error;
+
+	if (sco == NULL || offsetp == NULL)
+		return (EINVAL);
+	for (offset = SCO_METADATA_AREA_OFFSET;
+	    offset + SCO_METADATA_PAGE_SIZE <= sco->sb.data_area_offset;
+	    offset += SCO_METADATA_PAGE_SIZE) {
+		error = sco_metadata_page_used(sco, offset, &used);
+		if (error != 0)
+			return (error);
+		if (!used) {
+			*offsetp = offset;
+			return (0);
+		}
+	}
+	return (ENOSPC);
 }
 
 static int
@@ -631,6 +829,153 @@ sco_lookup_extent(struct sco_image *sco, uint64_t offset, uint64_t length,
 	return (0);
 }
 
+static uint64_t
+align_up_u64(uint64_t value, uint64_t alignment)
+{
+	return ((value + alignment - 1) & ~(alignment - 1));
+}
+
+static int
+sco_alloc_data_cluster(struct sco_image *sco, uint64_t cluster_index,
+    const void *buf, uint64_t *physical_offsetp)
+{
+	uint64_t physical_offset, stored_length, end;
+	int error;
+
+	if (sco == NULL || buf == NULL || physical_offsetp == NULL)
+		return (EINVAL);
+	stored_length = sco_cluster_stored_length(sco, cluster_index);
+	if (stored_length == 0 || stored_length > SIZE_MAX)
+		return (EINVAL);
+	if (sco->file_size > UINT64_MAX - sco->sb.cluster_size + 1)
+		return (EFBIG);
+	physical_offset = align_up_u64(sco->file_size, sco->sb.cluster_size);
+	if (physical_offset < sco->sb.data_area_offset)
+		physical_offset = sco->sb.data_area_offset;
+	if (stored_length > UINT64_MAX - physical_offset)
+		return (EFBIG);
+	end = physical_offset + stored_length;
+	error = write_exact(sco->fd, physical_offset, buf,
+	    (size_t)stored_length);
+	if (error != 0)
+		return (error);
+	if (end > sco->file_size)
+		sco->file_size = end;
+	*physical_offsetp = physical_offset;
+	return (0);
+}
+
+static uint32_t
+sco_map_entry_count_for_root(const struct sco_image *sco, uint64_t root_index)
+{
+	uint64_t first_cluster_index, remaining;
+
+	first_cluster_index = root_index * SCO_MAP_ENTRIES_PER_PAGE;
+	if (first_cluster_index >= sco->sb.cluster_count)
+		return (0);
+	remaining = sco->sb.cluster_count - first_cluster_index;
+	if (remaining > SCO_MAP_ENTRIES_PER_PAGE)
+		return (SCO_MAP_ENTRIES_PER_PAGE);
+	return ((uint32_t)remaining);
+}
+
+static void
+sco_build_empty_map_page(uint8_t page[SCO_METADATA_PAGE_SIZE],
+    uint64_t root_index, uint32_t entry_count)
+{
+	memset(page, 0, SCO_METADATA_PAGE_SIZE);
+	le32enc(page + 0x0000, SCO_METADATA_PAGE_SIZE);
+	le32enc(page + 0x0004, SCO_CHECKSUM_CRC32C);
+	le32enc(page + 0x000c, entry_count);
+	le64enc(page + 0x0010, root_index * SCO_MAP_ENTRIES_PER_PAGE);
+}
+
+static int
+sco_write_root_entry_ref(struct sco_image *sco,
+    struct sco_root_entry_ref *ref, uint64_t map_page_offset,
+    uint32_t map_page_crc32c)
+{
+	if (sco == NULL || ref == NULL)
+		return (EINVAL);
+	le64enc(ref->page + ref->entry_offset + 0x0000, map_page_offset);
+	le32enc(ref->page + ref->entry_offset + 0x0008, map_page_crc32c);
+	le32enc(ref->page + ref->entry_offset + 0x000c, 0);
+	(void)page_crc32c_update(ref->page);
+	return (write_exact(sco->fd, ref->page_offset, ref->page,
+	    sizeof(ref->page)));
+}
+
+static int
+sco_write_map_entry(struct sco_image *sco, uint64_t cluster_index,
+    uint64_t physical_offset)
+{
+	struct sco_root_entry_ref ref;
+	uint8_t page[SCO_METADATA_PAGE_SIZE];
+	uint64_t root_index, first_cluster_index, last_cluster_index;
+	uint64_t entry_index, entry_offset, map_page_offset;
+	uint32_t entry_count, map_page_crc32c;
+	int error;
+
+	if (sco == NULL)
+		return (EINVAL);
+	root_index = cluster_index / SCO_MAP_ENTRIES_PER_PAGE;
+	error = sco_read_root_entry_ref(sco, root_index, &ref);
+	if (error != 0)
+		return (error);
+
+	if (ref.map_page_offset == 0) {
+		if (ref.map_page_crc32c != 0)
+			return (EINVAL);
+		error = sco_alloc_metadata_page(sco, &map_page_offset);
+		if (error != 0)
+			return (error);
+		entry_count = sco_map_entry_count_for_root(sco, root_index);
+		if (entry_count == 0)
+			return (EINVAL);
+		sco_build_empty_map_page(page, root_index, entry_count);
+		first_cluster_index = root_index * SCO_MAP_ENTRIES_PER_PAGE;
+	} else {
+		map_page_offset = ref.map_page_offset;
+		if (!range_before_data(map_page_offset, SCO_METADATA_PAGE_SIZE,
+		    sco->sb.data_area_offset))
+			return (EINVAL);
+		error = read_exact(sco->fd, map_page_offset, page,
+		    sizeof(page));
+		if (error != 0)
+			return (error);
+		error = sco_validate_map_page_header(page,
+		    ref.map_page_crc32c, &entry_count, &first_cluster_index);
+		if (error != 0)
+			return (error);
+		if (!reserved_zero(page,
+		    SCO_MAP_PAGE_HEADER_SIZE + entry_count * SCO_MAP_ENTRY_SIZE,
+		    SCO_METADATA_PAGE_SIZE - SCO_MAP_PAGE_HEADER_SIZE -
+		    entry_count * SCO_MAP_ENTRY_SIZE))
+			return (EINVAL);
+	}
+
+	last_cluster_index = first_cluster_index + entry_count;
+	if (last_cluster_index < first_cluster_index ||
+	    cluster_index < first_cluster_index ||
+	    cluster_index >= last_cluster_index)
+		return (EINVAL);
+	entry_index = cluster_index - first_cluster_index;
+	entry_offset = SCO_MAP_PAGE_HEADER_SIZE +
+	    entry_index * SCO_MAP_ENTRY_SIZE;
+	page[entry_offset + 0x0000] = SCO_MAP_STATE_PRESENT;
+	page[entry_offset + 0x0001] = 0;
+	le16enc(page + entry_offset + 0x0002, 0);
+	le32enc(page + entry_offset + 0x0004, 0);
+	le64enc(page + entry_offset + 0x0008, physical_offset);
+
+	map_page_crc32c = page_crc32c_update(page);
+	error = write_exact(sco->fd, map_page_offset, page, sizeof(page));
+	if (error != 0)
+		return (error);
+	return (sco_write_root_entry_ref(sco, &ref, map_page_offset,
+	    map_page_crc32c));
+}
+
 static int
 sco_probe(int fd, uint32_t *score)
 {
@@ -659,8 +1004,6 @@ sco_open(const char *path __attribute__((unused)), int fd, bool readonly,
 
 	if (fd < 0 || statep == NULL)
 		return (EINVAL);
-	if (!readonly)
-		return (EROFS);
 	if (fstat(fd, &sb) != 0)
 		return (errno);
 	if (sb.st_size < (off_t)SCO_MIN_FILE_SIZE)
@@ -682,6 +1025,11 @@ sco_open(const char *path __attribute__((unused)), int fd, bool readonly,
 	if (error != 0) {
 		free(sco);
 		return (error);
+	}
+	if (!readonly && (sco->sb.readonly_compatible_features &
+	    SCO_RO_COMPAT_SEALED) != 0) {
+		free(sco);
+		return (EROFS);
 	}
 	error = sco_read_base_descriptor(sco);
 	if (error != 0) {
@@ -802,12 +1150,52 @@ sco_read(void *statep, void *buf, uint64_t offset, size_t len)
 }
 
 static int
-sco_write(void *state __attribute__((unused)),
-    const void *buf __attribute__((unused)),
-    uint64_t offset __attribute__((unused)),
-    size_t len __attribute__((unused)))
+sco_write(void *statep, const void *buf, uint64_t offset, size_t len)
 {
-	return (EROFS);
+	struct sco_image *sco;
+	const uint8_t *p;
+	uint64_t cluster_index, stored_length, physical_offset;
+	int error;
+
+	if (statep == NULL || (buf == NULL && len != 0))
+		return (EINVAL);
+	sco = statep;
+	if (sco->readonly ||
+	    (sco->sb.readonly_compatible_features & SCO_RO_COMPAT_SEALED) != 0)
+		return (EROFS);
+	if (offset > sco->sb.virtual_size ||
+	    (uint64_t)len > sco->sb.virtual_size - offset)
+		return (EINVAL);
+	if (len == 0)
+		return (0);
+	if ((offset % sco->sb.cluster_size) != 0 ||
+	    (len % sco->sb.cluster_size) != 0)
+		return (EINVAL);
+
+	p = buf;
+	while (len > 0) {
+		cluster_index = offset / sco->sb.cluster_size;
+		stored_length = sco_cluster_stored_length(sco, cluster_index);
+		if (stored_length == 0 || stored_length > len)
+			return (EINVAL);
+		if (stored_length != sco->sb.cluster_size &&
+		    stored_length != len)
+			return (EINVAL);
+
+		error = sco_alloc_data_cluster(sco, cluster_index, p,
+		    &physical_offset);
+		if (error != 0)
+			return (error);
+		error = sco_write_map_entry(sco, cluster_index,
+		    physical_offset);
+		if (error != 0)
+			return (error);
+
+		offset += stored_length;
+		p += stored_length;
+		len -= (size_t)stored_length;
+	}
+	return (0);
 }
 
 static int
@@ -819,8 +1207,15 @@ sco_discard(void *state __attribute__((unused)),
 }
 
 static int
-sco_flush(void *state __attribute__((unused)))
+sco_flush(void *statep)
 {
+	struct sco_image *sco;
+
+	if (statep == NULL)
+		return (EINVAL);
+	sco = statep;
+	if (fsync(sco->fd) != 0)
+		return (errno);
 	return (0);
 }
 
