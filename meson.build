@@ -57,6 +57,7 @@ runtime_core_sources = files(
     'src/qemu_fwcfg.c',
     'src/qemu_loader.c',
     'src/scorpi_runtime_bridge.c',
+    'src/scorpi_image.c',
     'src/rtc_pl031.c',
     'src/uart_pl011.c',
     'src/uart_backend.c',
