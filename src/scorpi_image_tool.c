@@ -21,7 +21,9 @@
 
 #include "scorpi_crc32c.h"
 #include "scorpi_image.h"
+#include "scorpi_image_raw.h"
 #include "scorpi_image_sco.h"
+#include "scorpi_image_uri.h"
 
 #define	SCO_MAGIC			"SCOIMG\0\0"
 #define	SCO_FILE_ID_SIZE		0x1000U
@@ -45,6 +47,7 @@ struct sco_create_options {
 	const char *path;
 	const char *base_uri;
 	uint64_t virtual_size;
+	bool has_explicit_size;
 	uint32_t cluster_size;
 	uint32_t logical_sector_size;
 	uint32_t physical_sector_size;
@@ -327,6 +330,68 @@ open_image_top(const char *path, const struct scorpi_image_ops **opsp,
 }
 
 static int
+open_image_for_create_base(const char *path,
+    const struct scorpi_image_ops **opsp, void **statep)
+{
+	const struct scorpi_image_ops *ops;
+	uint32_t score;
+	int fd, error;
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return (errno);
+	ops = NULL;
+	error = scorpi_image_backend_probe(fd, &ops, &score);
+	if (error != 0 && error != ENOENT) {
+		close(fd);
+		return (error);
+	}
+	if (error == ENOENT || ops == NULL || score == 0)
+		ops = scorpi_image_raw_backend();
+	error = ops->open(path, fd, true, statep);
+	if (error != 0) {
+		close(fd);
+		return (error);
+	}
+	*opsp = ops;
+	return (0);
+}
+
+static int
+read_base_create_info(const char *image_path, const char *base_uri,
+    struct scorpi_image_info *info)
+{
+	struct scorpi_image_base_location *location;
+	const struct scorpi_image_ops *ops;
+	void *state;
+	int error, close_error;
+
+	if (image_path == NULL || base_uri == NULL || info == NULL)
+		return (EINVAL);
+
+	location = NULL;
+	error = scorpi_image_base_location_resolve(image_path, base_uri, NULL,
+	    &location);
+	if (error != 0)
+		return (error);
+
+	state = NULL;
+	memset(info, 0, sizeof(*info));
+	error = open_image_for_create_base(location->resolved_path, &ops,
+	    &state);
+	if (error != 0) {
+		scorpi_image_base_location_free(location);
+		return (error);
+	}
+	error = ops->get_info(state, info);
+	close_error = ops->close(state);
+	if (error == 0)
+		error = close_error;
+	scorpi_image_base_location_free(location);
+	return (error);
+}
+
+static int
 open_sco_for_seal_state(const char *path, bool readonly_open,
     const struct scorpi_image_ops **opsp, void **statep)
 {
@@ -445,7 +510,7 @@ usage(void)
 {
 	fprintf(stderr,
 	    "usage:\n"
-	    "  scorpi-image create --format sco --size bytes|Nmb|Ngb path [base]\n"
+	    "  scorpi-image create --format sco [--size bytes|Nmb|Ngb] path [base]\n"
 	    "  scorpi-image seal path.sco\n"
 	    "  scorpi-image unseal path.sco\n"
 	    "  scorpi-image info path\n"
@@ -483,6 +548,7 @@ static int
 cmd_create(int argc, char **argv)
 {
 	struct sco_create_options opts;
+	struct scorpi_image_info base_info;
 	char *base_uri;
 	const char *format;
 	int i, error;
@@ -503,6 +569,7 @@ cmd_create(int argc, char **argv)
 				error = errno != 0 ? errno : EINVAL;
 				goto out;
 			}
+			opts.has_explicit_size = true;
 		} else if (argv[i][0] == '-') {
 			error = EINVAL;
 			goto out;
@@ -521,6 +588,24 @@ cmd_create(int argc, char **argv)
 	if (format == NULL || strcmp(format, "sco") != 0) {
 		error = EINVAL;
 		goto out;
+	}
+	if (opts.base_uri != NULL) {
+		memset(&base_info, 0, sizeof(base_info));
+		error = read_base_create_info(opts.path, opts.base_uri,
+		    &base_info);
+		if (error != 0)
+			goto out;
+		if (opts.has_explicit_size &&
+		    opts.virtual_size != base_info.virtual_size) {
+			free(base_info.base_uri);
+			error = EINVAL;
+			goto out;
+		}
+		opts.virtual_size = base_info.virtual_size;
+		opts.logical_sector_size = base_info.logical_sector_size;
+		if (base_info.physical_sector_size != 0)
+			opts.physical_sector_size = base_info.physical_sector_size;
+		free(base_info.base_uri);
 	}
 	error = create_sco(&opts);
 out:

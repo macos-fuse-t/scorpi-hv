@@ -163,6 +163,7 @@ static void
 test_create_with_positional_base(void)
 {
 	char path[] = "/tmp/scorpi-image-cli-base-XXXXXX";
+	char raw_path[128];
 	char cmd[1024];
 	char output_path[128];
 	FILE *fp;
@@ -173,10 +174,15 @@ test_create_with_positional_base(void)
 	assert(fd >= 0);
 	assert(close(fd) == 0);
 	assert(unlink(path) == 0);
+	snprintf(raw_path, sizeof(raw_path), "%s.raw", path);
+	fd = open(raw_path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+	assert(fd >= 0);
+	assert(ftruncate(fd, 192 * 1024 * 1024) == 0);
+	assert(close(fd) == 0);
 
 	snprintf(cmd, sizeof(cmd),
-	    "%s create --format sco --size 128mb %s base.raw",
-	    cli_path(), path);
+	    "%s create --format sco %s %s",
+	    cli_path(), path, raw_path);
 	run_ok(cmd);
 	snprintf(cmd, sizeof(cmd), "%s info %s > %s.info", cli_path(), path,
 	    path);
@@ -187,9 +193,37 @@ test_create_with_positional_base(void)
 	memset(output, 0, sizeof(output));
 	assert(fread(output, 1, sizeof(output) - 1, fp) > 0);
 	assert(fclose(fp) == 0);
-	assert(strstr(output, "base_uri=file:base.raw\n") != NULL);
+	assert(strstr(output, "virtual_size=201326592\n") != NULL);
+	snprintf(cmd, sizeof(cmd), "base_uri=file://%s\n", raw_path);
+	assert(strstr(output, cmd) != NULL);
 	assert(unlink(output_path) == 0);
 	assert(unlink(path) == 0);
+	assert(unlink(raw_path) == 0);
+}
+
+static void
+test_create_with_base_rejects_mismatched_size(void)
+{
+	char path[] = "/tmp/scorpi-image-cli-base-size-XXXXXX";
+	char raw_path[128];
+	char cmd[1024];
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(path) == 0);
+	snprintf(raw_path, sizeof(raw_path), "%s.raw", path);
+	fd = open(raw_path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+	assert(fd >= 0);
+	assert(ftruncate(fd, 64 * 1024 * 1024) == 0);
+	assert(close(fd) == 0);
+
+	snprintf(cmd, sizeof(cmd),
+	    "%s create --format sco --size 128mb %s %s",
+	    cli_path(), path, raw_path);
+	run_fail(cmd);
+	assert(unlink(raw_path) == 0);
 }
 
 static void
@@ -328,6 +362,7 @@ main(void)
 	test_create_info_check_mb_suffix();
 	test_large_sco_reserves_all_map_metadata();
 	test_create_with_positional_base();
+	test_create_with_base_rejects_mismatched_size();
 	test_create_info_check_raw_bytes();
 	test_check_rejects_corrupt_image_gb_suffix();
 	test_removed_create_options_rejected();
