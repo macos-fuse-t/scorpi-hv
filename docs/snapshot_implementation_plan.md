@@ -739,6 +739,44 @@ Validation performed:
 - `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 - `meson compile -C builddir`
 
+### Task 16B: Add Fine-Grained `.sco` Write Locking
+
+Scope:
+
+- reduce unnecessary serialization after `.sco` supports in-place overwrite
+  paths
+- distinguish metadata-changing writes from data-only writes
+- avoid torn overlapping reads and writes
+
+Dependencies:
+
+- Task 16A
+- in-place overwrite support
+
+Implementation notes:
+
+- keep the current exclusive image lock for metadata-changing writes:
+  allocation, map page creation, map entry replacement, discard/zero state
+  changes, and root CRC updates
+- data-only overwrites may use a shared metadata lock plus an exclusive
+  per-cluster or byte-range data lock
+- reads may use a shared metadata lock plus a shared data-range lock when the
+  range overlaps writable top data
+- non-overlapping data-only overwrites should be able to run concurrently
+- the first implementation may use fixed lock striping by cluster index instead
+  of allocating one lock per cluster
+- preserve the simple chain-level exclusive write lock until the backend range
+  locking contract is explicit at the image API boundary
+
+Validation criteria:
+
+- concurrent non-overlapping overwrites do not serialize on the global `.sco`
+  metadata lock
+- overlapping read/write operations never observe torn cluster contents
+- metadata-changing writes remain serialized with all reads and writes that
+  need a consistent map view
+- existing Task 16A thread-safety tests still pass
+
 ### Task 17: Implement Whole-Cluster Materialization
 
 Scope:
