@@ -19,6 +19,7 @@
 
 #include "scorpi_host_sparse.h"
 #include "scorpi_image.h"
+#include "scorpi_image_sco.h"
 
 #define	SCO_MAGIC			"SCOIMG\0\0"
 #define	SCO_MAGIC_SIZE			8
@@ -323,6 +324,30 @@ sco_build_superblock(uint8_t buf[SCO_SUPERBLOCK_SIZE],
 	le32enc(buf + 0x00b4, 0);
 	crc = sco_crc32c(buf, SCO_SUPERBLOCK_SIZE);
 	le32enc(buf + 0x0014, crc);
+}
+
+static int
+sco_commit_superblock(struct sco_image *sco,
+    const struct sco_superblock_decoded *next_sbp)
+{
+	uint8_t superblock[SCO_SUPERBLOCK_SIZE];
+	uint64_t inactive_offset;
+	int error;
+
+	if (sco == NULL || next_sbp == NULL)
+		return (EINVAL);
+	sco_build_superblock(superblock, next_sbp);
+	inactive_offset =
+	    sco_inactive_superblock_offset(sco->active_superblock_offset);
+	error = write_exact(sco->fd, inactive_offset, superblock,
+	    sizeof(superblock));
+	if (error != 0)
+		return (error);
+	if (fsync(sco->fd) != 0)
+		return (errno);
+	sco->sb = *next_sbp;
+	sco->active_superblock_offset = inactive_offset;
+	return (0);
 }
 
 static int
@@ -1062,11 +1087,11 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 {
 	struct sco_root_entry_ref ref;
 	struct sco_superblock_decoded next_sb;
-	uint8_t page[SCO_METADATA_PAGE_SIZE], superblock[SCO_SUPERBLOCK_SIZE];
+	uint8_t page[SCO_METADATA_PAGE_SIZE];
 	uint8_t *root;
 	uint64_t root_index, first_cluster_index, last_cluster_index;
 	uint64_t entry_index, entry_offset, map_page_offset;
-	uint64_t new_map_page_offset, new_root_offset, inactive_offset;
+	uint64_t new_map_page_offset, new_root_offset;
 	uint64_t reserved[2];
 	size_t root_page_index, root_page_count;
 	uint32_t entry_count, map_page_crc32c;
@@ -1173,19 +1198,7 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 	next_sb.map_root_offset = new_root_offset;
 	if (state == SCO_MAP_STATE_ZERO || state == SCO_MAP_STATE_DISCARDED)
 		next_sb.incompatible_features |= SCO_INCOMPAT_ZERO_DISCARD;
-	sco_build_superblock(superblock, &next_sb);
-	inactive_offset =
-	    sco_inactive_superblock_offset(sco->active_superblock_offset);
-	error = write_exact(sco->fd, inactive_offset, superblock,
-	    sizeof(superblock));
-	if (error != 0)
-		goto out;
-	if (fsync(sco->fd) != 0) {
-		error = errno;
-		goto out;
-	}
-	sco->sb = next_sb;
-	sco->active_superblock_offset = inactive_offset;
+	error = sco_commit_superblock(sco, &next_sb);
 out:
 	free(root);
 	return (error);
@@ -1853,6 +1866,48 @@ sco_flush(void *statep)
 		error = errno;
 	else
 		error = 0;
+	pthread_rwlock_unlock(&sco->lock);
+	return (error);
+}
+
+int
+scorpi_image_sco_set_sealed(void *statep, bool sealed)
+{
+	struct sco_superblock_decoded next_sb;
+	struct sco_image *sco;
+	bool currently_sealed;
+	int error;
+
+	if (statep == NULL)
+		return (EINVAL);
+	sco = statep;
+	error = pthread_rwlock_wrlock(&sco->lock);
+	if (error != 0)
+		return (error);
+	currently_sealed =
+	    (sco->sb.readonly_compatible_features & SCO_RO_COMPAT_SEALED) != 0;
+	if ((sco->sb.readonly_compatible_features & ~SCO_RO_COMPAT_SUPPORTED) !=
+	    0) {
+		error = ENOTSUP;
+		goto out;
+	}
+	if (currently_sealed == sealed) {
+		error = 0;
+		goto out;
+	}
+	if (sealed && sco->readonly) {
+		error = EROFS;
+		goto out;
+	}
+
+	next_sb = sco->sb;
+	next_sb.generation++;
+	if (sealed)
+		next_sb.readonly_compatible_features |= SCO_RO_COMPAT_SEALED;
+	else
+		next_sb.readonly_compatible_features &= ~SCO_RO_COMPAT_SEALED;
+	error = sco_commit_superblock(sco, &next_sb);
+out:
 	pthread_rwlock_unlock(&sco->lock);
 	return (error);
 }

@@ -200,6 +200,83 @@ test_removed_create_options_rejected(void)
 	run_fail(cmd);
 }
 
+static void
+read_info_output(const char *path, char *output, size_t output_len)
+{
+	char cmd[1024];
+	char output_path[128];
+	FILE *fp;
+
+	snprintf(cmd, sizeof(cmd), "%s info %s > %s.info", cli_path(), path,
+	    path);
+	run_ok(cmd);
+	snprintf(output_path, sizeof(output_path), "%s.info", path);
+	fp = fopen(output_path, "r");
+	assert(fp != NULL);
+	memset(output, 0, output_len);
+	assert(fread(output, 1, output_len - 1, fp) > 0);
+	assert(fclose(fp) == 0);
+	assert(unlink(output_path) == 0);
+}
+
+static void
+test_seal_and_unseal(void)
+{
+	char path[] = "/tmp/scorpi-image-cli-seal-XXXXXX";
+	char cmd[1024];
+	char output[512];
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(path) == 0);
+
+	snprintf(cmd, sizeof(cmd),
+	    "%s create --format sco --size 128mb %s",
+	    cli_path(), path);
+	run_ok(cmd);
+	read_info_output(path, output, sizeof(output));
+	assert(strstr(output, "sealed=false\n") != NULL);
+
+	snprintf(cmd, sizeof(cmd), "%s seal %s", cli_path(), path);
+	run_ok(cmd);
+	snprintf(cmd, sizeof(cmd), "%s seal %s", cli_path(), path);
+	run_ok(cmd);
+	read_info_output(path, output, sizeof(output));
+	assert(strstr(output, "sealed=true\n") != NULL);
+
+	snprintf(cmd, sizeof(cmd), "%s unseal %s", cli_path(), path);
+	run_ok(cmd);
+	snprintf(cmd, sizeof(cmd), "%s unseal %s", cli_path(), path);
+	run_ok(cmd);
+	read_info_output(path, output, sizeof(output));
+	assert(strstr(output, "sealed=false\n") != NULL);
+
+	assert(unlink(path) == 0);
+}
+
+static void
+test_seal_rejects_non_sco(void)
+{
+	char path[] = "/tmp/scorpi-image-cli-seal-raw-XXXXXX";
+	char cmd[1024];
+	uint8_t buf[512];
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	memset(buf, 0x5a, sizeof(buf));
+	assert(write(fd, buf, sizeof(buf)) == (ssize_t)sizeof(buf));
+	assert(close(fd) == 0);
+
+	snprintf(cmd, sizeof(cmd), "%s seal %s", cli_path(), path);
+	run_fail(cmd);
+	snprintf(cmd, sizeof(cmd), "%s unseal %s", cli_path(), path);
+	run_fail(cmd);
+	assert(unlink(path) == 0);
+}
+
 int
 main(void)
 {
@@ -208,5 +285,7 @@ main(void)
 	test_create_info_check_raw_bytes();
 	test_check_rejects_corrupt_image_gb_suffix();
 	test_removed_create_options_rejected();
+	test_seal_and_unseal();
+	test_seal_rejects_non_sco();
 	return (0);
 }

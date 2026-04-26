@@ -20,6 +20,7 @@
 #include <support/endian.h>
 
 #include "scorpi_image.h"
+#include "scorpi_image_sco.h"
 
 #define	SCO_MAGIC			"SCOIMG\0\0"
 #define	SCO_FILE_ID_SIZE		0x1000U
@@ -332,6 +333,37 @@ open_image_top(const char *path, const struct scorpi_image_ops **opsp,
 	return (0);
 }
 
+static int
+open_sco_for_seal_state(const char *path, bool readonly_open,
+    const struct scorpi_image_ops **opsp, void **statep)
+{
+	const struct scorpi_image_ops *ops;
+	uint32_t score;
+	int fd, error;
+
+	fd = open(path, O_RDWR);
+	if (fd < 0)
+		return (errno);
+	ops = NULL;
+	error = scorpi_image_backend_probe(fd, &ops, &score);
+	if (error != 0) {
+		close(fd);
+		return (error);
+	}
+	if (ops == NULL || score == 0 || ops->name == NULL ||
+	    strcmp(ops->name, "sco") != 0) {
+		close(fd);
+		return (ENOTSUP);
+	}
+	error = ops->open(path, fd, readonly_open, statep);
+	if (error != 0) {
+		close(fd);
+		return (error);
+	}
+	*opsp = ops;
+	return (0);
+}
+
 static const char *
 format_name(enum scorpi_image_format format)
 {
@@ -395,12 +427,34 @@ cmd_check(const char *path)
 	return (error);
 }
 
+static int
+cmd_set_sealed(const char *path, bool sealed)
+{
+	const struct scorpi_image_ops *ops;
+	void *state;
+	int error, close_error;
+
+	state = NULL;
+	error = open_sco_for_seal_state(path, !sealed, &ops, &state);
+	if (error == EROFS && sealed)
+		error = open_sco_for_seal_state(path, true, &ops, &state);
+	if (error != 0)
+		return (error);
+	error = scorpi_image_sco_set_sealed(state, sealed);
+	close_error = ops->close(state);
+	if (error == 0)
+		error = close_error;
+	return (error);
+}
+
 static void
 usage(void)
 {
 	fprintf(stderr,
 	    "usage:\n"
 	    "  scorpi-image create --format sco --size bytes|Nmb|Ngb path [base]\n"
+	    "  scorpi-image seal path.sco\n"
+	    "  scorpi-image unseal path.sco\n"
 	    "  scorpi-image info path\n"
 	    "  scorpi-image check path\n");
 }
@@ -492,6 +546,10 @@ main(int argc, char **argv)
 	}
 	if (strcmp(argv[1], "create") == 0) {
 		error = cmd_create(argc, argv);
+	} else if (strcmp(argv[1], "seal") == 0 && argc == 3) {
+		error = cmd_set_sealed(argv[2], true);
+	} else if (strcmp(argv[1], "unseal") == 0 && argc == 3) {
+		error = cmd_set_sealed(argv[2], false);
 	} else if (strcmp(argv[1], "info") == 0 && argc == 3) {
 		error = cmd_info(argv[2]);
 	} else if (strcmp(argv[1], "check") == 0 && argc == 3) {
