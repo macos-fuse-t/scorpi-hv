@@ -17,6 +17,7 @@
 
 #include <support/endian.h>
 
+#include "scorpi_host_sparse.h"
 #include "scorpi_image.h"
 
 #define	SCO_MAGIC			"SCOIMG\0\0"
@@ -1215,9 +1216,14 @@ sco_write_present_cluster(struct sco_image *sco,
 	    cluster_offset)
 		return (EINVAL);
 	if (cluster_offset == 0 && len == stored_length) {
-		if (buffer_all_zero(buf, len))
-			return (sco_commit_map_entry(sco, cluster_index,
-			    SCO_MAP_STATE_ZERO, 0));
+		if (buffer_all_zero(buf, len)) {
+			error = sco_commit_map_entry(sco, cluster_index,
+			    SCO_MAP_STATE_ZERO, 0);
+			if (error == 0)
+				(void)scorpi_host_punch_hole(sco->fd,
+				    lookup->physical_offset, stored_length);
+			return (error);
+		}
 		return (write_exact(sco->fd, lookup->physical_offset, buf, len));
 	}
 
@@ -1361,14 +1367,20 @@ sco_discard_cluster_range(struct sco_image *sco, uint64_t cluster_index,
 	if (stored_length == 0 || cluster_offset >= stored_length ||
 	    len > stored_length - cluster_offset)
 		return (EINVAL);
-	if (cluster_offset == 0 && len == stored_length)
-		return (sco_commit_map_entry(sco, cluster_index,
-		    SCO_MAP_STATE_DISCARDED, 0));
 
 	memset(&lookup, 0, sizeof(lookup));
 	error = sco_lookup_extent(sco, cluster_start, stored_length, &lookup);
 	if (error != 0)
 		return (error);
+	if (cluster_offset == 0 && len == stored_length) {
+		error = sco_commit_map_entry(sco, cluster_index,
+		    SCO_MAP_STATE_DISCARDED, 0);
+		if (error == 0 &&
+		    lookup.extent.state == SCORPI_IMAGE_EXTENT_PRESENT)
+			(void)scorpi_host_punch_hole(sco->fd,
+			    lookup.physical_offset, stored_length);
+		return (error);
+	}
 	switch (lookup.extent.state) {
 	case SCORPI_IMAGE_EXTENT_PRESENT:
 		zeroes = calloc(1, (size_t)len);

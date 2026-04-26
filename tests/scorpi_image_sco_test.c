@@ -15,6 +15,7 @@
 
 #include <support/endian.h>
 
+#include "scorpi_host_sparse.h"
 #include "scorpi_image.h"
 #include "scorpi_image_chain.h"
 
@@ -383,6 +384,35 @@ assert_buffer_value(const uint8_t *buf, size_t len, uint8_t expected)
 
 	for (i = 0; i < len; i++)
 		assert(buf[i] == expected);
+}
+
+static void
+test_host_punch_hole_preserves_size_and_reads_zero(void)
+{
+	uint8_t buf[4096];
+	struct stat sb_before, sb_after;
+	char path[] = "/tmp/scorpi-sco-punch-hole-XXXXXX";
+	int error, fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	memset(buf, 0x7c, sizeof(buf));
+	write_exact(fd, 0, buf, sizeof(buf));
+	write_exact(fd, sizeof(buf), buf, sizeof(buf));
+	assert(fstat(fd, &sb_before) == 0);
+	error = scorpi_host_punch_hole(fd, sizeof(buf), sizeof(buf));
+	if (error == 0) {
+		assert(fstat(fd, &sb_after) == 0);
+		assert(sb_after.st_size == sb_before.st_size);
+		memset(buf, 0xff, sizeof(buf));
+		read_exact_at(fd, sizeof(buf), buf, sizeof(buf));
+		assert_buffer_value(buf, sizeof(buf), 0);
+	} else {
+		assert(error == EOPNOTSUPP || error == ENOTSUP ||
+		    error == EINVAL);
+	}
+	assert(close(fd) == 0);
+	assert(unlink(path) == 0);
 }
 
 static void
@@ -2078,6 +2108,7 @@ test_read_through_zero_discard_stop_raw(void)
 int
 main(void)
 {
+	test_host_punch_hole_preserves_size_and_reads_zero();
 	test_valid_sco_opens();
 	test_bad_magic_rejected();
 	test_unsupported_version_rejected();

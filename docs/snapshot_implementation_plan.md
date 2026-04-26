@@ -962,6 +962,51 @@ Validation criteria:
 - interrupted seal/unseal leaves either the previous valid generation or the
   new valid generation usable
 
+### Task 20B: Add Host Sparse File Reclamation
+
+Status: Done
+
+Scope:
+
+- add a portability wrapper for host sparse-file operations
+- reclaim physical host space for data clusters made unreachable by `.sco`
+  metadata updates
+- keep `.sco` allocation map state authoritative for snapshot semantics
+
+Dependencies:
+
+- Task 18
+- Task 19
+
+Implementation notes:
+
+- sparse holes may only mean zero bytes at the host filesystem layer; they must
+  not be used to represent `ABSENT` or base fallthrough
+- zero writes and discards should still commit explicit `ZERO` or `DISCARDED`
+  map entries
+- after a crash-safe metadata commit makes an old `PRESENT` cluster unreachable,
+  best-effort punch the old data range from the host file when supported
+- provide platform-specific implementations behind one helper, for example
+  Linux `fallocate(FALLOC_FL_PUNCH_HOLE)`, macOS/APFS `F_PUNCHHOLE`, and a
+  no-op fallback
+- future compaction can use `SEEK_DATA` / `SEEK_HOLE` where available, but must
+  still validate against the `.sco` map
+
+Validation criteria:
+
+- overwriting a full present cluster with zeroes returns zeroes and can reclaim
+  the old host allocation when the filesystem supports hole punching
+- full-cluster discard returns zeroes, blocks base fallthrough, and can reclaim
+  the old host allocation
+- unsupported platforms behave correctly with no reclamation
+- interrupted hole punching cannot corrupt a valid committed image
+
+Validation performed:
+
+- `meson compile -C builddir`
+- `meson test -C builddir scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+
 ### Task 21: Add Resolved Chain Diagnostics
 
 Scope:
