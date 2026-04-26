@@ -56,7 +56,7 @@
 #include "debug.h"
 #include "mevent.h"
 #include "pci_emul.h"
-#include "scorpi_image.h"
+#include "scorpi_image_chain.h"
 #include "scorpi_image_raw.h"
 
 #define BLOCKIF_SIG    0xb109b109
@@ -80,8 +80,7 @@ struct blockif_elem {
 struct blockif_ctxt {
 	unsigned int bc_magic;
 	int bc_fd;
-	const struct scorpi_image_ops *bc_image_ops;
-	void *bc_image_state;
+	struct scorpi_image_chain *bc_image_chain;
 	int bc_ischr;
 	int bc_isgeom;
 	int bc_candelete;
@@ -205,7 +204,7 @@ blockif_complete(struct blockif_ctxt *bc, struct blockif_elem *be)
 static int
 blockif_flush_bc(struct blockif_ctxt *bc)
 {
-	return (bc->bc_image_ops->flush(bc->bc_image_state));
+	return (scorpi_image_chain_flush(bc->bc_image_chain));
 }
 
 static int
@@ -220,7 +219,7 @@ blockif_read_iov(struct blockif_ctxt *bc, struct blockif_req *br)
 		len = MIN((size_t)br->br_resid, br->br_iov[i].iov_len);
 		if (len == 0)
 			continue;
-		error = bc->bc_image_ops->read(bc->bc_image_state,
+		error = scorpi_image_chain_read(bc->bc_image_chain,
 		    br->br_iov[i].iov_base, (uint64_t)offset, len);
 		if (error != 0)
 			return (error);
@@ -245,7 +244,7 @@ blockif_write_iov(struct blockif_ctxt *bc, struct blockif_req *br)
 		len = MIN((size_t)br->br_resid, br->br_iov[i].iov_len);
 		if (len == 0)
 			continue;
-		error = bc->bc_image_ops->write(bc->bc_image_state,
+		error = scorpi_image_chain_write(bc->bc_image_chain,
 		    br->br_iov[i].iov_base, (uint64_t)offset, len);
 		if (error != 0)
 			return (error);
@@ -282,7 +281,7 @@ blockif_proc(struct blockif_ctxt *bc, struct blockif_elem *be,
 		else if (bc->bc_rdonly)
 			err = EROFS;
 		else {
-			err = bc->bc_image_ops->discard(bc->bc_image_state,
+			err = scorpi_image_chain_discard(bc->bc_image_chain,
 			    (uint64_t)br->br_offset, (uint64_t)br->br_resid);
 			if (err == 0)
 				br->br_resid = 0;
@@ -416,6 +415,7 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	char *cp;
 	struct blockif_ctxt *bc;
 	const struct scorpi_image_ops *image_ops;
+	struct scorpi_image_chain *image_chain;
 	struct stat sbuf;
 	void *image_state;
 	// struct diocgattr_arg arg;
@@ -427,6 +427,7 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	pthread_once(&blockif_once, blockif_init);
 
 	fd = -1;
+	image_chain = NULL;
 	image_state = NULL;
 	extra = 0;
 	ssopt = 0;
@@ -553,6 +554,10 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	image_ops = scorpi_image_raw_backend();
 	if (image_ops->open(path, fd, ro != 0, &image_state) != 0)
 		goto err;
+	if (scorpi_image_chain_open_single(image_ops, image_state,
+	    &image_chain) != 0)
+		goto err;
+	image_state = NULL;
 
 	bc = calloc(1, sizeof(struct blockif_ctxt));
 	if (bc == NULL) {
@@ -562,8 +567,7 @@ blockif_open(nvlist_t *nvl, const char *ident)
 
 	bc->bc_magic = BLOCKIF_SIG;
 	bc->bc_fd = fd;
-	bc->bc_image_ops = image_ops;
-	bc->bc_image_state = image_state;
+	bc->bc_image_chain = image_chain;
 	bc->bc_ischr = S_ISCHR(sbuf.st_mode);
 	bc->bc_isgeom = geom;
 	bc->bc_candelete = candelete;
@@ -593,7 +597,9 @@ blockif_open(nvlist_t *nvl, const char *ident)
 
 	return (bc);
 err:
-	if (image_state != NULL)
+	if (image_chain != NULL)
+		scorpi_image_chain_close(image_chain);
+	else if (image_state != NULL)
 		image_ops->close(image_state);
 	else if (fd >= 0)
 		close(fd);
@@ -830,7 +836,7 @@ blockif_close(struct blockif_ctxt *bc)
 	 * Release resources
 	 */
 	bc->bc_magic = 0;
-	bc->bc_image_ops->close(bc->bc_image_state);
+	scorpi_image_chain_close(bc->bc_image_chain);
 	free(bc);
 
 	return (0);

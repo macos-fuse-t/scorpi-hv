@@ -174,6 +174,10 @@ Validation performed:
 
 ### Task 3: Add Image Chain Object
 
+Status:
+
+- Done
+
 Scope:
 
 - add `scorpi_image_chain` or equivalent
@@ -196,6 +200,12 @@ Validation criteria:
 - raw behavior remains unchanged
 - unit tests verify one-layer chain read/write/flush
 - no device emulation code needs snapshot-specific changes
+
+Validation performed:
+
+- `meson setup builddir --reconfigure`
+- `meson test -C builddir scorpi_image_backend_test scorpi_image_raw_test scorpi_image_chain_test`
+- `meson compile -C builddir`
 
 ### Task 4: Add Format Probing And Raw Fallback Policy
 
