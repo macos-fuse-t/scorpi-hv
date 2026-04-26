@@ -822,6 +822,8 @@ Validation performed:
 
 ### Task 18: Implement `.sco` Discard And Zero State
 
+Status: Done
+
 Scope:
 
 - support top-layer discard behavior
@@ -844,6 +846,12 @@ Validation criteria:
 - discard over absent cluster does not reveal parent data
 - partial discard preserves non-discarded bytes correctly
 - `blockif_candelete()` reflects backend capability
+
+Validation:
+
+- `meson compile -C builddir`
+- `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 
 ### Task 19: Implement Crash-Safe `.sco` Metadata Commit
 

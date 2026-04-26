@@ -523,6 +523,75 @@ scorpi_image_chain_write_nolock(struct scorpi_image_chain *chain,
 	return (0);
 }
 
+static int
+scorpi_image_chain_discard_nolock(struct scorpi_image_chain *chain,
+    uint64_t offset, uint64_t length)
+{
+	const struct scorpi_image_info *top_info;
+	struct scorpi_image *top;
+	uint8_t *cluster;
+	uint64_t end, cluster_size, cluster_start, cluster_len;
+	uint64_t discard_start, discard_end, chunk_len;
+	int error;
+
+	if (chain == NULL || chain->image_count == 0)
+		return (EINVAL);
+	if (length == 0)
+		return (0);
+	top = chain->images[0];
+	top_info = &top->info;
+	if (offset > top_info->virtual_size ||
+	    length > top_info->virtual_size - offset ||
+	    offset > UINT64_MAX - length)
+		return (EINVAL);
+	if (top_info->readonly || top_info->sealed)
+		return (EROFS);
+
+	cluster_size = top_info->cluster_size;
+	if (cluster_size == 0 || top->ops->name == NULL ||
+	    strcmp(top->ops->name, "sco") != 0)
+		return (top->ops->discard(top->state, offset, length));
+
+	end = offset + length;
+	while (offset < end) {
+		cluster_start = offset - (offset % cluster_size);
+		cluster_len = top_info->virtual_size - cluster_start;
+		if (cluster_len > cluster_size)
+			cluster_len = cluster_size;
+		discard_start = offset;
+		discard_end = cluster_start + cluster_len;
+		if (discard_end > end)
+			discard_end = end;
+		chunk_len = discard_end - discard_start;
+		if (chunk_len > SIZE_MAX || cluster_len > SIZE_MAX)
+			return (EINVAL);
+
+		if (discard_start == cluster_start && chunk_len == cluster_len) {
+			error = top->ops->discard(top->state, cluster_start,
+			    cluster_len);
+			if (error != 0)
+				return (error);
+		} else {
+			cluster = malloc((size_t)cluster_len);
+			if (cluster == NULL)
+				return (ENOMEM);
+			error = scorpi_image_chain_read_nolock(chain, cluster,
+			    cluster_start, (size_t)cluster_len);
+			if (error == 0) {
+				memset(cluster + (discard_start - cluster_start),
+				    0, (size_t)chunk_len);
+				error = top->ops->write(top->state, cluster,
+				    cluster_start, (size_t)cluster_len);
+			}
+			free(cluster);
+			if (error != 0)
+				return (error);
+		}
+		offset += chunk_len;
+	}
+	return (0);
+}
+
 int
 scorpi_image_chain_open_single_backend(const struct scorpi_image_ops *ops,
     void *state, struct scorpi_image_chain **chainp)
@@ -776,8 +845,8 @@ scorpi_image_chain_discard(struct scorpi_image_chain *chain, uint64_t offset,
 		goto out;
 	}
 	scorpi_image_chain_read_cache_invalidate(chain);
-	error = chain->images[0]->ops->discard(chain->images[0]->state, offset,
-	    length);
+	error = scorpi_image_chain_discard_nolock(chain, offset, length);
+	scorpi_image_chain_read_cache_invalidate(chain);
 out:
 	pthread_rwlock_unlock(&chain->lock);
 	return (error);

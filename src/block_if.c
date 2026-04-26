@@ -559,6 +559,7 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	if (image_info == NULL)
 		goto err;
 	size = (off_t)image_info->virtual_size;
+	candelete = image_info->can_discard;
 	if (ssopt == 0) {
 		sectsz = (int)image_info->logical_sector_size;
 		psectsz = image_info->physical_sector_size;
