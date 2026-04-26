@@ -358,6 +358,10 @@ Validation performed:
 
 ### Task 8: Add Chain Read Resolver And Cache
 
+Status:
+
+- Done
+
 Scope:
 
 - implement multi-layer read resolution
@@ -378,10 +382,15 @@ Implementation notes:
 Validation criteria:
 
 - read from top layer returns top data
-- absent range falls through to parent
-- absent range without parent returns zero
-- zero/discard state prevents parent fallthrough
+- absent range falls through to base
+- absent range without base returns zero
+- zero/discard state prevents base fallthrough
 - cache is invalidated on write/discard/reopen
+
+Validation performed:
+
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson compile -C builddir`
 
 ### Task 9: Specify Fixed `.sco` V1 On-Disk Layout
 

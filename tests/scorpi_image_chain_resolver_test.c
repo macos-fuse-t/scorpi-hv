@@ -31,6 +31,8 @@ struct base_test_state {
 	uint8_t base_digest[32];
 	bool has_base_digest;
 	char *base_uri;
+	enum scorpi_image_extent_state map_state;
+	uint8_t data_byte;
 };
 
 static int
@@ -70,6 +72,16 @@ parse_u32(const char *value)
 	return ((uint32_t)number);
 }
 
+static uint8_t
+parse_u8(const char *value)
+{
+	uint64_t number;
+
+	number = parse_u64(value);
+	assert(number <= UINT8_MAX);
+	return ((uint8_t)number);
+}
+
 static bool
 parse_bool(const char *value)
 {
@@ -77,6 +89,19 @@ parse_bool(const char *value)
 		return (true);
 	assert(strcmp(value, "false") == 0);
 	return (false);
+}
+
+static enum scorpi_image_extent_state
+parse_map_state(const char *value)
+{
+	if (strcmp(value, "present") == 0)
+		return (SCORPI_IMAGE_EXTENT_PRESENT);
+	if (strcmp(value, "absent") == 0)
+		return (SCORPI_IMAGE_EXTENT_ABSENT);
+	if (strcmp(value, "zero") == 0)
+		return (SCORPI_IMAGE_EXTENT_ZERO);
+	assert(strcmp(value, "discarded") == 0);
+	return (SCORPI_IMAGE_EXTENT_DISCARDED);
 }
 
 static uint8_t
@@ -138,6 +163,10 @@ read_image_metadata(int fd, struct base_test_state *state)
 		} else if (strncmp(line, "base_digest=", 12) == 0) {
 			parse_digest(line + 12, state->base_digest);
 			state->has_base_digest = true;
+		} else if (strncmp(line, "map=", 4) == 0) {
+			state->map_state = parse_map_state(line + 4);
+		} else if (strncmp(line, "byte=", 5) == 0) {
+			state->data_byte = parse_u8(line + 5);
 		}
 		line = next;
 	}
@@ -156,6 +185,8 @@ base_test_open(const char *path __attribute__((unused)), int fd,
 	state->readonly = readonly;
 	state->virtual_size = 128 * 1024 * 1024;
 	state->logical_sector_size = 512;
+	state->map_state = SCORPI_IMAGE_EXTENT_PRESENT;
+	state->data_byte = 0x5a;
 	read_image_metadata(fd, state);
 	*statep = state;
 	return (0);
@@ -195,37 +226,77 @@ base_test_get_info(void *statep, struct scorpi_image_info *info)
 }
 
 static int
-base_test_map(void *state __attribute__((unused)),
-    uint64_t offset __attribute__((unused)),
-    uint64_t length __attribute__((unused)),
-    struct scorpi_image_extent *extent __attribute__((unused)))
+base_test_map(void *statep, uint64_t offset, uint64_t length,
+    struct scorpi_image_extent *extent)
 {
-	return (ENOTSUP);
+	struct base_test_state *state;
+
+	if (statep == NULL || extent == NULL)
+		return (EINVAL);
+	state = statep;
+	if (offset > state->virtual_size)
+		return (EINVAL);
+	if (length > state->virtual_size - offset)
+		length = state->virtual_size - offset;
+	if (length == 0)
+		return (EINVAL);
+
+	*extent = (struct scorpi_image_extent){
+		.offset = offset,
+		.length = length,
+		.state = state->map_state,
+	};
+	return (0);
 }
 
 static int
-base_test_read(void *state __attribute__((unused)),
-    void *buf __attribute__((unused)), uint64_t offset __attribute__((unused)),
-    size_t len __attribute__((unused)))
+base_test_read(void *statep, void *buf, uint64_t offset, size_t len)
 {
-	return (ENOTSUP);
+	struct base_test_state *state;
+
+	if (statep == NULL || buf == NULL)
+		return (EINVAL);
+	state = statep;
+	if (offset > state->virtual_size ||
+	    (uint64_t)len > state->virtual_size - offset)
+		return (EINVAL);
+	memset(buf, state->data_byte, len);
+	return (0);
 }
 
 static int
-base_test_write(void *state __attribute__((unused)),
-    const void *buf __attribute__((unused)),
-    uint64_t offset __attribute__((unused)),
-    size_t len __attribute__((unused)))
+base_test_write(void *statep, const void *buf, uint64_t offset, size_t len)
 {
-	return (ENOTSUP);
+	struct base_test_state *state;
+
+	if (statep == NULL || buf == NULL)
+		return (EINVAL);
+	state = statep;
+	if (state->readonly)
+		return (EROFS);
+	if (offset > state->virtual_size ||
+	    (uint64_t)len > state->virtual_size - offset)
+		return (EINVAL);
+	if (len > 0)
+		state->data_byte = ((const uint8_t *)buf)[0];
+	state->map_state = SCORPI_IMAGE_EXTENT_PRESENT;
+	return (0);
 }
 
 static int
-base_test_discard(void *state __attribute__((unused)),
-    uint64_t offset __attribute__((unused)),
-    uint64_t length __attribute__((unused)))
+base_test_discard(void *statep, uint64_t offset, uint64_t length)
 {
-	return (ENOTSUP);
+	struct base_test_state *state;
+
+	if (statep == NULL)
+		return (EINVAL);
+	state = statep;
+	if (state->readonly)
+		return (EROFS);
+	if (offset > state->virtual_size || length > state->virtual_size - offset)
+		return (EINVAL);
+	state->map_state = SCORPI_IMAGE_EXTENT_DISCARDED;
+	return (0);
 }
 
 static int
@@ -298,6 +369,34 @@ assert_open_error(const char *path,
     const struct scorpi_image_chain_open_options *options, int expected)
 {
 	assert_open_error_with_readonly(path, true, options, expected);
+}
+
+static struct scorpi_image_chain *
+open_chain(const char *path, bool readonly)
+{
+	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain *chain;
+	int fd;
+
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = false,
+	};
+	fd = open(path, readonly ? O_RDONLY : O_RDWR);
+	assert(fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(path, fd, readonly, &options,
+	    &chain) == 0);
+	assert(chain != NULL);
+	return (chain);
+}
+
+static void
+assert_buffer_value(const uint8_t *buf, size_t len, uint8_t expected)
+{
+	size_t i;
+
+	for (i = 0; i < len; i++)
+		assert(buf[i] == expected);
 }
 
 static void
@@ -523,6 +622,140 @@ test_reject_base_digest_mismatch(const char *dir)
 	assert_open_error(child, &options, EINVAL);
 }
 
+static void
+test_read_from_top_layer(const char *dir)
+{
+	struct scorpi_image_chain *chain;
+	char child[MAXPATHLEN], base[MAXPATHLEN];
+	uint8_t buf[32];
+
+	make_path(child, sizeof(child), dir, "read-top-child.ptst");
+	make_path(base, sizeof(base), dir, "read-top-base.ptst");
+	write_file(child, "PTST\nbase=file:read-top-base.ptst\nmap=present\n"
+	    "byte=17\n");
+	write_file(base, "PTST\nmap=present\nbyte=34\n");
+
+	chain = open_chain(child, true);
+	memset(buf, 0, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 4096, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 17);
+	assert(scorpi_image_chain_close(chain) == 0);
+}
+
+static void
+test_read_absent_falls_through_to_base(const char *dir)
+{
+	struct scorpi_image_chain *chain;
+	char child[MAXPATHLEN], base[MAXPATHLEN];
+	uint8_t buf[32];
+
+	make_path(child, sizeof(child), dir, "read-base-child.ptst");
+	make_path(base, sizeof(base), dir, "read-base.ptst");
+	write_file(child, "PTST\nbase=file:read-base.ptst\nmap=absent\n"
+	    "byte=17\n");
+	write_file(base, "PTST\nmap=present\nbyte=34\n");
+
+	chain = open_chain(child, true);
+	memset(buf, 0, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 8192, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 34);
+	assert(scorpi_image_chain_close(chain) == 0);
+}
+
+static void
+test_read_absent_without_base_returns_zero(const char *dir)
+{
+	struct scorpi_image_chain *chain;
+	char child[MAXPATHLEN];
+	uint8_t buf[32];
+
+	make_path(child, sizeof(child), dir, "read-absent-zero.ptst");
+	write_file(child, "PTST\nmap=absent\nbyte=17\n");
+
+	chain = open_chain(child, true);
+	memset(buf, 0xff, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 12288, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+}
+
+static void
+test_read_zero_and_discarded_stop_base_fallthrough(const char *dir)
+{
+	struct scorpi_image_chain *chain;
+	char zero_child[MAXPATHLEN], discarded_child[MAXPATHLEN], base[MAXPATHLEN];
+	uint8_t buf[32];
+
+	make_path(base, sizeof(base), dir, "read-zero-base.ptst");
+	make_path(zero_child, sizeof(zero_child), dir, "read-zero-child.ptst");
+	make_path(discarded_child, sizeof(discarded_child), dir,
+	    "read-discarded-child.ptst");
+	write_file(base, "PTST\nmap=present\nbyte=34\n");
+	write_file(zero_child, "PTST\nbase=file:read-zero-base.ptst\nmap=zero\n"
+	    "byte=17\n");
+	write_file(discarded_child, "PTST\nbase=file:read-zero-base.ptst\n"
+	    "map=discarded\nbyte=17\n");
+
+	chain = open_chain(zero_child, true);
+	memset(buf, 0xff, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 16384, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+
+	chain = open_chain(discarded_child, true);
+	memset(buf, 0xff, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 20480, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+}
+
+static void
+test_read_cache_invalidated_by_write(const char *dir)
+{
+	struct scorpi_image_chain *chain;
+	char child[MAXPATHLEN], base[MAXPATHLEN];
+	uint8_t buf[32], writebuf[32];
+
+	make_path(child, sizeof(child), dir, "write-cache-child.ptst");
+	make_path(base, sizeof(base), dir, "write-cache-base.ptst");
+	write_file(child, "PTST\nbase=file:write-cache-base.ptst\nmap=absent\n"
+	    "byte=17\n");
+	write_file(base, "PTST\nmap=present\nbyte=34\n");
+
+	chain = open_chain(child, false);
+	memset(buf, 0, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 24576, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 34);
+	memset(writebuf, 51, sizeof(writebuf));
+	assert(scorpi_image_chain_write(chain, writebuf, 24576,
+	    sizeof(writebuf)) == 0);
+	memset(buf, 0, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 24576, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 51);
+	assert(scorpi_image_chain_close(chain) == 0);
+}
+
+static void
+test_read_cache_invalidated_by_discard(const char *dir)
+{
+	struct scorpi_image_chain *chain;
+	char child[MAXPATHLEN];
+	uint8_t buf[32];
+
+	make_path(child, sizeof(child), dir, "discard-cache-child.ptst");
+	write_file(child, "PTST\nmap=present\nbyte=17\n");
+
+	chain = open_chain(child, false);
+	memset(buf, 0, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 28672, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 17);
+	assert(scorpi_image_chain_discard(chain, 28672, sizeof(buf)) == 0);
+	memset(buf, 0xff, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 28672, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+}
+
 int
 main(void)
 {
@@ -542,6 +775,12 @@ main(void)
 	test_reject_readonly_top_for_writable_open(dir);
 	test_accept_matching_base_digest(dir);
 	test_reject_base_digest_mismatch(dir);
+	test_read_from_top_layer(dir);
+	test_read_absent_falls_through_to_base(dir);
+	test_read_absent_without_base_returns_zero(dir);
+	test_read_zero_and_discarded_stop_base_fallthrough(dir);
+	test_read_cache_invalidated_by_write(dir);
+	test_read_cache_invalidated_by_discard(dir);
 
 	assert(scorpi_image_backend_unregister("test-base-chain") == 0);
 	return (0);
