@@ -6,10 +6,15 @@
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "scorpi_image_chain.h"
+
+struct magic_state {
+	int fd;
+};
 
 static int magic_open_calls;
 static int magic_close_calls;
@@ -30,11 +35,15 @@ magic_probe(int fd, uint32_t *score)
 
 static int
 magic_open(const char *path __attribute__((unused)),
-    int fd __attribute__((unused)), bool readonly __attribute__((unused)),
-    void **state)
+    int fd, bool readonly __attribute__((unused)), void **state)
 {
+	struct magic_state *st;
+
+	st = calloc(1, sizeof(*st));
+	assert(st != NULL);
+	st->fd = fd;
 	magic_open_calls++;
-	*state = (void *)&magic_open_calls;
+	*state = st;
 	return (0);
 }
 
@@ -86,8 +95,13 @@ magic_flush(void *state __attribute__((unused)))
 }
 
 static int
-magic_close(void *state __attribute__((unused)))
+magic_close(void *state)
 {
+	struct magic_state *st;
+
+	st = state;
+	assert(close(st->fd) == 0);
+	free(st);
 	magic_close_calls++;
 	return (0);
 }
@@ -166,7 +180,6 @@ main(void)
 	assert(scorpi_image_chain_open_single(raw_path, fd, true, &options,
 	    &chain) == ENOENT);
 	assert(chain == NULL);
-	assert(close(fd) == 0);
 
 	assert(scorpi_image_backend_unregister("test-magic-open") == 0);
 	assert(unlink(magic_path) == 0);

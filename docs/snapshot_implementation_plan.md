@@ -283,6 +283,10 @@ Validation performed:
 
 ### Task 6: Add Backing Chain Resolver
 
+Status:
+
+- Done
+
 Scope:
 
 - resolve parent chains from top image metadata
@@ -307,6 +311,12 @@ Validation criteria:
 - missing parent is rejected
 - cycle is rejected
 - chain above max depth is rejected
+
+Validation performed:
+
+- `meson setup builddir --reconfigure`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson compile -C builddir`
 
 ### Task 7: Add Chain Validation
 

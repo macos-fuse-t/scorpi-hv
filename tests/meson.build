@@ -57,6 +57,7 @@ scorpi_image_open_test_executable = executable(
     '../src/scorpi_image_chain.c',
     '../src/scorpi_image.c',
     '../src/scorpi_image_raw.c',
+    '../src/scorpi_image_uri.c',
   ),
   dependencies: threads_dep,
   include_directories: [inc, include_directories('../src')],
@@ -87,11 +88,27 @@ scorpi_image_chain_test_executable = executable(
     '../src/scorpi_image_chain.c',
     '../src/scorpi_image.c',
     '../src/scorpi_image_raw.c',
+    '../src/scorpi_image_uri.c',
   ),
   include_directories: [inc, include_directories('../src')],
 )
 
 test('scorpi_image_chain_test', scorpi_image_chain_test_executable)
+
+scorpi_image_chain_resolver_test_executable = executable(
+  'scorpi_image_chain_resolver_test',
+  files(
+    'scorpi_image_chain_resolver_test.c',
+    '../src/scorpi_image_chain.c',
+    '../src/scorpi_image.c',
+    '../src/scorpi_image_raw.c',
+    '../src/scorpi_image_uri.c',
+  ),
+  dependencies: threads_dep,
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_image_chain_resolver_test', scorpi_image_chain_resolver_test_executable)
 
 scorpi_error_contract_test_src = files('scorpi_error_contract_test.c')
 

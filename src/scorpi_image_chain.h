@@ -11,13 +11,20 @@
 #include <stdint.h>
 
 #include "scorpi_image.h"
+#include "scorpi_image_uri.h"
 
 struct scorpi_image_chain;
 
 struct scorpi_image_chain_open_options {
 	bool raw_fallback;
+	size_t max_depth;
+	struct scorpi_image_uri_policy uri_policy;
+	bool has_uri_policy;
 };
 
+/*
+ * Takes ownership of fd on both success and failure.
+ */
 int	scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
 	    const struct scorpi_image_chain_open_options *options,
 	    struct scorpi_image_chain **chainp);
@@ -25,6 +32,9 @@ int	scorpi_image_chain_open_single_backend(const struct scorpi_image_ops *ops,
 	    void *state, struct scorpi_image_chain **chainp);
 const struct scorpi_image_info *scorpi_image_chain_top_info(
 	    const struct scorpi_image_chain *chain);
+size_t	scorpi_image_chain_layer_count(const struct scorpi_image_chain *chain);
+const struct scorpi_image_info *scorpi_image_chain_layer_info(
+	    const struct scorpi_image_chain *chain, size_t index);
 int	scorpi_image_chain_read(struct scorpi_image_chain *chain, void *buf,
 	    uint64_t offset, size_t len);
 int	scorpi_image_chain_write(struct scorpi_image_chain *chain,
