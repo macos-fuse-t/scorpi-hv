@@ -57,6 +57,7 @@
 #include "mevent.h"
 #include "pci_emul.h"
 #include "scorpi_image_chain.h"
+#include "scorpi_image_sco.h"
 
 #define BLOCKIF_SIG    0xb109b109
 
@@ -415,6 +416,7 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	struct blockif_ctxt *bc;
 	struct scorpi_image_chain_open_options image_options;
 	struct scorpi_image_chain *image_chain;
+	const struct scorpi_image_info *image_info;
 	struct stat sbuf;
 	// struct diocgattr_arg arg;
 	off_t size, psectsz, psectoff;
@@ -551,9 +553,22 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	image_options = (struct scorpi_image_chain_open_options){
 		.raw_fallback = true,
 	};
+	if (scorpi_image_backend_find("sco") == NULL)
+		(void)scorpi_image_backend_register(scorpi_image_sco_backend());
 	if (scorpi_image_chain_open_single(path, fd, ro != 0, &image_options,
 	    &image_chain) != 0)
 		goto err;
+	image_info = scorpi_image_chain_top_info(image_chain);
+	if (image_info == NULL)
+		goto err;
+	size = (off_t)image_info->virtual_size;
+	if (ssopt == 0) {
+		sectsz = (int)image_info->logical_sector_size;
+		psectsz = image_info->physical_sector_size;
+		if (psectsz == 0)
+			psectsz = sectsz;
+		psectoff = 0;
+	}
 
 	bc = calloc(1, sizeof(struct blockif_ctxt));
 	if (bc == NULL) {

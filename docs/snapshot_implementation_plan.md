@@ -439,6 +439,10 @@ Validation performed:
 
 ### Task 10: Implement `.sco` Parser And Superblock Selection
 
+Status:
+
+- Done
+
 Scope:
 
 - implement readonly parsing for `.sco` headers
@@ -465,6 +469,12 @@ Validation criteria:
 - invalid checksum is rejected
 - newest valid generation is selected
 - corrupt newest generation falls back to previous valid generation
+
+Validation performed:
+
+- `meson setup builddir --reconfigure`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson compile -C builddir`
 
 ### Task 11: Implement `.sco` Base Descriptor
 
