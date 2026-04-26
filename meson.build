@@ -138,7 +138,7 @@ scorpi_image_executable = executable(
     'src/scorpi_crc32c.c',
     'src/scorpi_host_sparse.c',
   ),
-  dependencies: [libutil_dep, threads_dep],
+  dependencies: [libutil_dep, threads_dep, zlib_dep],
   include_directories: [inc, include_directories('src')],
 )
 

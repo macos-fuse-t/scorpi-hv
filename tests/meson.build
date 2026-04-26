@@ -91,7 +91,7 @@ scorpi_image_qcow2_test_executable = executable(
     '../src/scorpi_image_raw.c',
     '../src/scorpi_image_uri.c',
   ),
-  dependencies: threads_dep,
+  dependencies: [threads_dep, zlib_dep],
   include_directories: [inc, include_directories('../src')],
 )
 

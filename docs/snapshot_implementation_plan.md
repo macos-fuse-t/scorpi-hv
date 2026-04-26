@@ -1179,6 +1179,51 @@ Validation criteria:
 - drain reports completion when queues are empty
 - resume allows requests again
 
+### Task 23A: Support Readonly Qcow2 Compressed Clusters
+
+Status: Done
+
+Scope:
+
+- add readonly support for qcow2 compressed cluster descriptors
+- support the default deflate/zlib compression type used by common cloud images
+- keep writable qcow2 unsupported
+- keep non-default compression types rejected unless explicitly implemented
+
+Dependencies:
+
+- Task 22
+- zlib dependency already used by the build
+
+Implementation notes:
+
+- qcow2 compressed clusters are not cluster-aligned and encode host offset plus
+  compressed sector count in the L2 descriptor
+- decompress into one virtual cluster, then satisfy the requested read slice
+- add a small per-image cache for the most recently decompressed cluster to
+  avoid repeatedly inflating adjacent reads from the same cluster
+- map should report compressed clusters as present for chain resolution, while
+  read performs decompression
+- reject malformed descriptors, invalid compressed lengths, decompression
+  failures, and unsupported compression types
+
+Validation criteria:
+
+- reads from a compressed qcow2 cluster match `qemu-io`
+- reads crossing compressed/present/zero cluster boundaries return correct data
+- `~/vms/noble-server-cloudimg-arm64.qcow2` can be read at offsets that are
+  currently rejected with `ENOTSUP`
+- unsupported non-default compression type is rejected
+
+Validation performed:
+
+- `ninja -C builddir`
+- `meson test -C builddir scorpi_image_qcow2_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_qcow2_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- read sampled compressed offsets from
+  `~/vms/noble-server-cloudimg-arm64.qcow2` through Scorpi's qcow2 backend
+- compared those samples against a raw image produced with `qemu-img convert`
+
 ### Task 24: Add Disk Reopen/Rebind Primitive
 
 Scope:
@@ -1406,7 +1451,9 @@ Start with the runtime foundation:
 3. Tasks 16-20: `.sco` writable top, materialization, discard, crash safety,
    flush.
 4. Task 22: readonly qcow2.
-5. Tasks 23-25: live drain/reopen primitives.
+5. Task 23A: readonly qcow2 compressed clusters for cloud-image
+   compatibility.
+6. Tasks 23-25: live drain/reopen primitives.
 
 Then move to parent-managed behavior:
 

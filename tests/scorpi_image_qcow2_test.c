@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include <support/endian.h>
+#include <zlib.h>
 
 #include "scorpi_image_chain.h"
 #include "scorpi_image_qcow2.h"
@@ -22,8 +23,11 @@
 #define	QCOW2_TEST_L1_OFFSET	QCOW2_TEST_CLUSTER_SIZE
 #define	QCOW2_TEST_L2_OFFSET	(2ULL * QCOW2_TEST_CLUSTER_SIZE)
 #define	QCOW2_TEST_DATA_OFFSET	(3ULL * QCOW2_TEST_CLUSTER_SIZE)
+#define	QCOW2_TEST_COMPRESSED_OFFSET \
+	(QCOW2_TEST_DATA_OFFSET + QCOW2_TEST_CLUSTER_SIZE + 123)
 #define	QCOW2_TEST_COPIED	(1ULL << 63)
 #define	QCOW2_TEST_ZERO		(1ULL << 0)
+#define	QCOW2_TEST_COMPRESSED	(1ULL << 62)
 
 static void
 write_all(int fd, const void *buf, size_t len)
@@ -54,6 +58,26 @@ pwrite_all(int fd, uint64_t offset, const void *buf, size_t len)
 		offset += (uint64_t)n;
 		len -= (size_t)n;
 	}
+}
+
+static size_t
+deflate_raw_cluster(const uint8_t *in, uint8_t *out, size_t out_len)
+{
+	z_stream zs;
+	int zret;
+
+	memset(&zs, 0, sizeof(zs));
+	zret = deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED,
+	    -MAX_WBITS, 8, Z_DEFAULT_STRATEGY);
+	assert(zret == Z_OK);
+	zs.next_in = (uint8_t *)in;
+	zs.avail_in = QCOW2_TEST_CLUSTER_SIZE;
+	zs.next_out = out;
+	zs.avail_out = (uInt)out_len;
+	zret = deflate(&zs, Z_FINISH);
+	assert(zret == Z_STREAM_END);
+	assert(deflateEnd(&zs) == Z_OK);
+	return ((size_t)zs.total_out);
 }
 
 static void
@@ -126,6 +150,76 @@ create_qcow2(const char *path, const char *base_name,
 	pwrite_all(fd, QCOW2_TEST_DATA_OFFSET, cluster, QCOW2_TEST_CLUSTER_SIZE);
 	assert(close(fd) == 0);
 	free(cluster);
+}
+
+static void
+create_compressed_qcow2(const char *path)
+{
+	uint8_t *cluster, *compressed;
+	uint64_t sectors, entry;
+	size_t compressed_len, padded_len;
+	int fd;
+
+	cluster = malloc(QCOW2_TEST_CLUSTER_SIZE);
+	compressed = malloc(QCOW2_TEST_CLUSTER_SIZE);
+	assert(cluster != NULL && compressed != NULL);
+
+	fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+	assert(fd >= 0);
+
+	memset(cluster, 0, QCOW2_TEST_CLUSTER_SIZE);
+	be32enc(cluster + 0, 0x514649fbU);
+	be32enc(cluster + 4, 3);
+	be32enc(cluster + 20, QCOW2_TEST_CLUSTER_BITS);
+	be64enc(cluster + 24, QCOW2_TEST_VIRTUAL_SIZE);
+	be32enc(cluster + 32, 0);
+	be32enc(cluster + 36, 1);
+	be64enc(cluster + 40, QCOW2_TEST_L1_OFFSET);
+	be64enc(cluster + 48, 0);
+	be32enc(cluster + 56, 0);
+	be32enc(cluster + 60, 0);
+	be64enc(cluster + 64, 0);
+	be64enc(cluster + 72, 0);
+	be64enc(cluster + 80, 0);
+	be64enc(cluster + 88, 0);
+	be32enc(cluster + 96, 4);
+	be32enc(cluster + 100, 104);
+	pwrite_all(fd, 0, cluster, QCOW2_TEST_CLUSTER_SIZE);
+
+	memset(cluster, 0, QCOW2_TEST_CLUSTER_SIZE);
+	be64enc(cluster, QCOW2_TEST_L2_OFFSET | QCOW2_TEST_COPIED);
+	pwrite_all(fd, QCOW2_TEST_L1_OFFSET, cluster, QCOW2_TEST_CLUSTER_SIZE);
+
+	for (size_t i = 0; i < QCOW2_TEST_CLUSTER_SIZE; i++)
+		cluster[i] = (uint8_t)((i * 31U) ^ (i >> 8));
+	compressed_len = deflate_raw_cluster(cluster, compressed,
+	    QCOW2_TEST_CLUSTER_SIZE);
+	sectors = ((QCOW2_TEST_COMPRESSED_OFFSET & 511) + compressed_len +
+	    511) / 512;
+	assert(sectors > 0);
+	padded_len = (size_t)(sectors * 512 -
+	    (QCOW2_TEST_COMPRESSED_OFFSET & 511));
+
+	memset(cluster, 0, QCOW2_TEST_CLUSTER_SIZE);
+	entry = QCOW2_TEST_COMPRESSED_OFFSET |
+	    ((sectors - 1) << (62U - (QCOW2_TEST_CLUSTER_BITS - 8U))) |
+	    QCOW2_TEST_COMPRESSED;
+	be64enc(cluster, entry);
+	be64enc(cluster + 8, QCOW2_TEST_ZERO);
+	be64enc(cluster + 16, QCOW2_TEST_DATA_OFFSET | QCOW2_TEST_COPIED);
+	pwrite_all(fd, QCOW2_TEST_L2_OFFSET, cluster, QCOW2_TEST_CLUSTER_SIZE);
+
+	for (size_t i = 0; i < QCOW2_TEST_CLUSTER_SIZE; i++)
+		cluster[i] = (uint8_t)((i * 31U) ^ (i >> 8));
+	pwrite_all(fd, QCOW2_TEST_DATA_OFFSET, cluster, QCOW2_TEST_CLUSTER_SIZE);
+
+	memset(cluster, 0, QCOW2_TEST_CLUSTER_SIZE);
+	memcpy(cluster, compressed, compressed_len);
+	pwrite_all(fd, QCOW2_TEST_COMPRESSED_OFFSET, cluster, padded_len);
+
+	assert(close(fd) == 0);
+	free(cluster);
+	free(compressed);
 }
 
 static void
@@ -249,11 +343,56 @@ test_qcow2_rejects_unsupported_features(void)
 	assert(unlink(path) == 0);
 }
 
+static void
+test_qcow2_compressed_clusters(void)
+{
+	const struct scorpi_image_ops *qcow2;
+	struct scorpi_image_extent extent;
+	char path[] = "/tmp/scorpi-qcow2-compressed-XXXXXX";
+	uint8_t buf[8192], expected[8192];
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	create_compressed_qcow2(path);
+
+	qcow2 = scorpi_image_qcow2_backend();
+	fd = open(path, O_RDONLY);
+	assert(fd >= 0);
+	state = NULL;
+	assert(qcow2->open(path, fd, true, &state) == 0);
+
+	assert(qcow2->map(state, 512, sizeof(buf), &extent) == 0);
+	assert(extent.state == SCORPI_IMAGE_EXTENT_PRESENT);
+	assert(qcow2->read(state, buf, 512, sizeof(buf)) == 0);
+	for (size_t i = 0; i < sizeof(expected); i++) {
+		size_t pos = i + 512;
+		expected[i] = (uint8_t)((pos * 31U) ^ (pos >> 8));
+	}
+	assert(memcmp(buf, expected, sizeof(buf)) == 0);
+
+	memset(buf, 0xa5, sizeof(buf));
+	assert(qcow2->read(state, buf, QCOW2_TEST_CLUSTER_SIZE - 4096,
+	    sizeof(buf)) == 0);
+	for (size_t i = 0; i < 4096; i++) {
+		size_t pos = QCOW2_TEST_CLUSTER_SIZE - 4096 + i;
+		assert(buf[i] == (uint8_t)((pos * 31U) ^ (pos >> 8)));
+	}
+	for (size_t i = 4096; i < sizeof(buf); i++)
+		assert(buf[i] == 0);
+
+	assert(qcow2->close(state) == 0);
+	assert(unlink(path) == 0);
+}
+
 int
 main(void)
 {
 	test_direct_qcow2_backend();
 	test_qcow2_backing_chain();
 	test_qcow2_rejects_unsupported_features();
+	test_qcow2_compressed_clusters();
 	return (0);
 }

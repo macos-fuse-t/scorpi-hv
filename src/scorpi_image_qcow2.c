@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 
 #include <fcntl.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -17,6 +18,7 @@
 #include <unistd.h>
 
 #include <support/endian.h>
+#include <zlib.h>
 
 #include "scorpi_image_qcow2.h"
 
@@ -36,6 +38,8 @@
 #define	QCOW2_ENTRY_COMPRESSED		(1ULL << 62)
 #define	QCOW2_ENTRY_COPIED		(1ULL << 63)
 #define	QCOW2_ENTRY_OFFSET_MASK		0x00ffffffffffffe00ULL
+#define	QCOW2_COMPRESSION_TYPE_ZLIB	0U
+#define	QCOW2_COMPRESSED_SECTOR_SIZE	512U
 #define	QCOW2_L1_RESERVED_MASK \
 	(~(QCOW2_ENTRY_OFFSET_MASK | QCOW2_ENTRY_COPIED))
 #define	QCOW2_L2_RESERVED_MASK \
@@ -54,6 +58,15 @@ struct qcow2_header {
 	uint32_t nb_snapshots;
 	uint64_t incompatible_features;
 	uint32_t header_length;
+	uint8_t compression_type;
+};
+
+struct qcow2_resolved_cluster {
+	enum scorpi_image_extent_state state;
+	bool compressed;
+	uint64_t physical_offset;
+	uint64_t compressed_length;
+	uint64_t guest_cluster;
 };
 
 struct qcow2_image {
@@ -62,6 +75,7 @@ struct qcow2_image {
 	uint32_t version;
 	uint32_t cluster_bits;
 	uint32_t cluster_size;
+	uint8_t compression_type;
 	uint64_t virtual_size;
 	uint32_t l1_size;
 	uint64_t *l1_table;
@@ -71,6 +85,11 @@ struct qcow2_image {
 	bool l2_cache_valid;
 	uint64_t l2_cache_offset;
 	uint64_t *l2_cache;
+
+	pthread_mutex_t compressed_cache_mtx;
+	bool compressed_cache_valid;
+	uint64_t compressed_cache_guest_cluster;
+	uint8_t *compressed_cache;
 };
 
 static int
@@ -144,6 +163,11 @@ qcow2_decode_header(int fd, struct qcow2_header *header)
 	    (header_length % 8) != 0)
 		return (EINVAL);
 	header->header_length = header_length;
+	if (header_length > 104) {
+		error = read_exact(fd, 104, &header->compression_type, 1);
+		if (error != 0)
+			return (error);
+	}
 	return (0);
 }
 
@@ -235,6 +259,8 @@ qcow2_validate_header(const struct qcow2_header *header)
 	if (header->crypt_method != 0)
 		return (ENOTSUP);
 	if ((header->incompatible_features & ~QCOW2_INCOMPAT_SUPPORTED) != 0)
+		return (ENOTSUP);
+	if (header->compression_type != QCOW2_COMPRESSION_TYPE_ZLIB)
 		return (ENOTSUP);
 	if (header->l1_size == 0 || header->l1_table_offset == 0)
 		return (EINVAL);
@@ -333,33 +359,45 @@ qcow2_open(const char *path __attribute__((unused)), int fd, bool readonly,
 	qcow2->version = header.version;
 	qcow2->cluster_bits = header.cluster_bits;
 	qcow2->cluster_size = 1U << header.cluster_bits;
+	qcow2->compression_type = header.compression_type;
 	qcow2->virtual_size = header.size;
 	qcow2->l1_size = header.l1_size;
 
 	error = pthread_mutex_init(&qcow2->l2_cache_mtx, NULL);
 	if (error != 0)
 		goto err;
+	error = pthread_mutex_init(&qcow2->compressed_cache_mtx, NULL);
+	if (error != 0)
+		goto err_destroy_l2_mtx;
 	qcow2->l2_cache = calloc(qcow2->cluster_size, 1);
 	if (qcow2->l2_cache == NULL) {
 		error = ENOMEM;
-		goto err_destroy_mtx;
+		goto err_destroy_compressed_mtx;
+	}
+	qcow2->compressed_cache = malloc(qcow2->cluster_size);
+	if (qcow2->compressed_cache == NULL) {
+		error = ENOMEM;
+		goto err_destroy_compressed_mtx;
 	}
 	error = qcow2_read_l1_table(qcow2, &header);
 	if (error != 0)
-		goto err_destroy_mtx;
+		goto err_destroy_compressed_mtx;
 	error = qcow2_read_base_uri(fd, &header, &qcow2->base_uri);
 	if (error != 0)
-		goto err_destroy_mtx;
+		goto err_destroy_compressed_mtx;
 
 	*statep = qcow2;
 	return (0);
 
-err_destroy_mtx:
+err_destroy_compressed_mtx:
+	pthread_mutex_destroy(&qcow2->compressed_cache_mtx);
+err_destroy_l2_mtx:
 	pthread_mutex_destroy(&qcow2->l2_cache_mtx);
 err:
 	free(qcow2->base_uri);
 	free(qcow2->l1_table);
 	free(qcow2->l2_cache);
+	free(qcow2->compressed_cache);
 	free(qcow2);
 	return (error);
 }
@@ -443,15 +481,18 @@ qcow2_l2_entry(struct qcow2_image *qcow2, uint64_t l2_offset,
 
 static int
 qcow2_resolve_cluster(struct qcow2_image *qcow2, uint64_t offset,
-    enum scorpi_image_extent_state *statep, uint64_t *physical_offsetp)
+    struct qcow2_resolved_cluster *resolved)
 {
 	uint64_t guest_cluster, l2_entries, l1_index, l2_index;
-	uint64_t l2_offset, entry, physical_offset;
+	uint64_t l2_offset, entry, physical_offset, compressed_sectors;
+	unsigned int compressed_offset_bits;
 	int error;
 
-	if (offset >= qcow2->virtual_size)
+	if (resolved == NULL || offset >= qcow2->virtual_size)
 		return (EINVAL);
+	memset(resolved, 0, sizeof(*resolved));
 	guest_cluster = offset >> qcow2->cluster_bits;
+	resolved->guest_cluster = guest_cluster;
 	l2_entries = qcow2->cluster_size / sizeof(uint64_t);
 	l1_index = guest_cluster / l2_entries;
 	l2_index = guest_cluster % l2_entries;
@@ -460,24 +501,45 @@ qcow2_resolve_cluster(struct qcow2_image *qcow2, uint64_t offset,
 
 	l2_offset = qcow2->l1_table[l1_index];
 	if (l2_offset == 0) {
-		*statep = SCORPI_IMAGE_EXTENT_ABSENT;
-		*physical_offsetp = 0;
+		resolved->state = SCORPI_IMAGE_EXTENT_ABSENT;
 		return (0);
 	}
 
 	error = qcow2_l2_entry(qcow2, l2_offset, l2_index, &entry);
 	if (error != 0)
 		return (error);
-	if ((entry & QCOW2_ENTRY_COMPRESSED) != 0)
-		return (ENOTSUP);
+	if ((entry & QCOW2_ENTRY_COMPRESSED) != 0) {
+		if ((entry & QCOW2_ENTRY_COPIED) != 0)
+			return (EINVAL);
+		compressed_offset_bits = 62U - (qcow2->cluster_bits - 8U);
+		physical_offset = entry & ((1ULL << compressed_offset_bits) - 1);
+		compressed_sectors = (entry >> compressed_offset_bits) &
+		    ((1ULL << (62U - compressed_offset_bits)) - 1);
+		if (compressed_sectors == UINT64_MAX ||
+		    compressed_sectors + 1 >
+		    UINT64_MAX / QCOW2_COMPRESSED_SECTOR_SIZE)
+			return (EINVAL);
+		resolved->compressed_length = (compressed_sectors + 1) *
+		    QCOW2_COMPRESSED_SECTOR_SIZE -
+		    (physical_offset & (QCOW2_COMPRESSED_SECTOR_SIZE - 1));
+		if (resolved->compressed_length == 0)
+			return (EINVAL);
+		if (physical_offset > qcow2->file_size ||
+		    resolved->compressed_length >
+		    qcow2->file_size - physical_offset)
+			return (EINVAL);
+		resolved->state = SCORPI_IMAGE_EXTENT_PRESENT;
+		resolved->compressed = true;
+		resolved->physical_offset = physical_offset;
+		return (0);
+	}
 	if ((entry & QCOW2_L2_RESERVED_MASK) != 0)
 		return (ENOTSUP);
 	if (qcow2->version == QCOW2_VERSION_2 &&
 	    (entry & QCOW2_ENTRY_ZERO) != 0)
 		return (ENOTSUP);
 	if ((entry & QCOW2_ENTRY_ZERO) != 0) {
-		*statep = SCORPI_IMAGE_EXTENT_ZERO;
-		*physical_offsetp = 0;
+		resolved->state = SCORPI_IMAGE_EXTENT_ZERO;
 		return (0);
 	}
 
@@ -485,15 +547,14 @@ qcow2_resolve_cluster(struct qcow2_image *qcow2, uint64_t offset,
 	if (physical_offset == 0) {
 		if ((entry & QCOW2_ENTRY_COPIED) != 0)
 			return (EINVAL);
-		*statep = SCORPI_IMAGE_EXTENT_ABSENT;
-		*physical_offsetp = 0;
+		resolved->state = SCORPI_IMAGE_EXTENT_ABSENT;
 		return (0);
 	}
 	if (!is_cluster_aligned(qcow2, physical_offset) ||
 	    physical_offset > qcow2->file_size)
 		return (EINVAL);
-	*statep = SCORPI_IMAGE_EXTENT_PRESENT;
-	*physical_offsetp = physical_offset;
+	resolved->state = SCORPI_IMAGE_EXTENT_PRESENT;
+	resolved->physical_offset = physical_offset;
 	return (0);
 }
 
@@ -502,8 +563,8 @@ qcow2_map(void *statep, uint64_t offset, uint64_t length,
     struct scorpi_image_extent *extent)
 {
 	struct qcow2_image *qcow2;
-	enum scorpi_image_extent_state state;
-	uint64_t cluster_start, cluster_end, physical_offset;
+	struct qcow2_resolved_cluster resolved;
+	uint64_t cluster_start, cluster_end;
 	int error;
 
 	if (statep == NULL || extent == NULL || length == 0)
@@ -514,7 +575,7 @@ qcow2_map(void *statep, uint64_t offset, uint64_t length,
 	if (length > qcow2->virtual_size - offset)
 		length = qcow2->virtual_size - offset;
 
-	error = qcow2_resolve_cluster(qcow2, offset, &state, &physical_offset);
+	error = qcow2_resolve_cluster(qcow2, offset, &resolved);
 	if (error != 0)
 		return (error);
 	cluster_start = offset & ~((uint64_t)qcow2->cluster_size - 1);
@@ -527,18 +588,88 @@ qcow2_map(void *statep, uint64_t offset, uint64_t length,
 	*extent = (struct scorpi_image_extent){
 		.offset = offset,
 		.length = length,
-		.state = state,
+		.state = resolved.state,
 	};
 	return (0);
+}
+
+static int
+qcow2_read_compressed_cluster_locked(struct qcow2_image *qcow2,
+    const struct qcow2_resolved_cluster *resolved)
+{
+	uint8_t *compressed;
+	z_stream zs;
+	int error, zret;
+
+	if (qcow2->compressed_cache_valid &&
+	    qcow2->compressed_cache_guest_cluster == resolved->guest_cluster)
+		return (0);
+	if (qcow2->compression_type != QCOW2_COMPRESSION_TYPE_ZLIB)
+		return (ENOTSUP);
+	if (resolved->compressed_length > UINT_MAX)
+		return (EFBIG);
+
+	compressed = malloc((size_t)resolved->compressed_length);
+	if (compressed == NULL)
+		return (ENOMEM);
+	error = read_exact(qcow2->fd, resolved->physical_offset, compressed,
+	    (size_t)resolved->compressed_length);
+	if (error != 0) {
+		free(compressed);
+		return (error);
+	}
+
+	memset(&zs, 0, sizeof(zs));
+	zret = inflateInit2(&zs, -MAX_WBITS);
+	if (zret != Z_OK) {
+		free(compressed);
+		return (EIO);
+	}
+	zs.next_in = compressed;
+	zs.avail_in = (uInt)resolved->compressed_length;
+	zs.next_out = qcow2->compressed_cache;
+	zs.avail_out = qcow2->cluster_size;
+	zret = inflate(&zs, Z_FINISH);
+	if (zret != Z_STREAM_END || zs.total_out != qcow2->cluster_size) {
+		inflateEnd(&zs);
+		free(compressed);
+		return (EIO);
+	}
+	if (inflateEnd(&zs) != Z_OK) {
+		free(compressed);
+		return (EIO);
+	}
+
+	qcow2->compressed_cache_guest_cluster = resolved->guest_cluster;
+	qcow2->compressed_cache_valid = true;
+	free(compressed);
+	return (0);
+}
+
+static int
+qcow2_read_compressed_cluster(struct qcow2_image *qcow2,
+    const struct qcow2_resolved_cluster *resolved, void *buf,
+    uint64_t cluster_offset, size_t len)
+{
+	int error;
+
+	error = pthread_mutex_lock(&qcow2->compressed_cache_mtx);
+	if (error != 0)
+		return (error);
+	error = qcow2_read_compressed_cluster_locked(qcow2, resolved);
+	if (error == 0)
+		memcpy(buf, qcow2->compressed_cache + cluster_offset, len);
+	pthread_mutex_unlock(&qcow2->compressed_cache_mtx);
+	return (error);
 }
 
 static int
 qcow2_read(void *statep, void *buf, uint64_t offset, size_t len)
 {
 	struct qcow2_image *qcow2;
-	enum scorpi_image_extent_state state;
+	struct qcow2_resolved_cluster resolved;
 	uint8_t *p;
-	uint64_t physical_offset, cluster_offset, chunk;
+	uint64_t cluster_offset, chunk;
 	int error;
 
 	if (statep == NULL || (buf == NULL && len != 0))
@@ -552,8 +683,7 @@ qcow2_read(void *statep, void *buf, uint64_t offset, size_t len)
 
 	p = buf;
 	while (len > 0) {
-		error = qcow2_resolve_cluster(qcow2, offset, &state,
-		    &physical_offset);
+		error = qcow2_resolve_cluster(qcow2, offset, &resolved);
 		if (error != 0)
 			return (error);
 		cluster_offset = offset & ((uint64_t)qcow2->cluster_size - 1);
@@ -561,16 +691,24 @@ qcow2_read(void *statep, void *buf, uint64_t offset, size_t len)
 		if (chunk > len)
 			chunk = len;
 
-		switch (state) {
+		switch (resolved.state) {
 		case SCORPI_IMAGE_EXTENT_PRESENT:
-			if (physical_offset > UINT64_MAX - cluster_offset ||
-			    physical_offset + cluster_offset >
+			if (resolved.compressed) {
+				error = qcow2_read_compressed_cluster(qcow2,
+				    &resolved, p, cluster_offset, (size_t)chunk);
+				if (error != 0)
+					return (error);
+				break;
+			}
+			if (resolved.physical_offset > UINT64_MAX - cluster_offset ||
+			    resolved.physical_offset + cluster_offset >
 			    qcow2->file_size ||
 			    chunk > qcow2->file_size -
-			    (physical_offset + cluster_offset))
+			    (resolved.physical_offset + cluster_offset))
 				return (EINVAL);
 			error = read_exact(qcow2->fd,
-			    physical_offset + cluster_offset, p, (size_t)chunk);
+			    resolved.physical_offset + cluster_offset, p,
+			    (size_t)chunk);
 			if (error != 0)
 				return (error);
 			break;
@@ -627,10 +765,12 @@ qcow2_close(void *statep)
 	error = 0;
 	if (qcow2->fd >= 0 && close(qcow2->fd) != 0)
 		error = errno;
+	pthread_mutex_destroy(&qcow2->compressed_cache_mtx);
 	pthread_mutex_destroy(&qcow2->l2_cache_mtx);
 	free(qcow2->base_uri);
 	free(qcow2->l1_table);
 	free(qcow2->l2_cache);
+	free(qcow2->compressed_cache);
 	free(qcow2);
 	return (error);
 }
