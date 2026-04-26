@@ -245,6 +245,10 @@ Validation performed:
 
 ### Task 5: Implement Parent Location URI Parser
 
+Status:
+
+- Done
+
 Scope:
 
 - parse parent location URIs
@@ -270,6 +274,12 @@ Validation criteria:
 - unit tests cover relative `file:` URI
 - unit tests reject unsupported schemes such as `https:`
 - unit tests cover path traversal policy behavior
+
+Validation performed:
+
+- `meson setup builddir --reconfigure`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_chain_test`
+- `meson compile -C builddir`
 
 ### Task 6: Add Backing Chain Resolver
 

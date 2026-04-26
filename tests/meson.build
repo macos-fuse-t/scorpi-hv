@@ -64,6 +64,14 @@ scorpi_image_open_test_executable = executable(
 
 test('scorpi_image_open_test', scorpi_image_open_test_executable)
 
+scorpi_image_uri_test_executable = executable(
+  'scorpi_image_uri_test',
+  files('scorpi_image_uri_test.c', '../src/scorpi_image_uri.c'),
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_image_uri_test', scorpi_image_uri_test_executable)
+
 scorpi_image_raw_test_executable = executable(
   'scorpi_image_raw_test',
   files('scorpi_image_raw_test.c', '../src/scorpi_image_raw.c'),

@@ -60,6 +60,7 @@ runtime_core_sources = files(
     'src/scorpi_image.c',
     'src/scorpi_image_chain.c',
     'src/scorpi_image_raw.c',
+    'src/scorpi_image_uri.c',
     'src/rtc_pl031.c',
     'src/uart_pl011.c',
     'src/uart_backend.c',
