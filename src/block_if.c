@@ -57,7 +57,6 @@
 #include "mevent.h"
 #include "pci_emul.h"
 #include "scorpi_image_chain.h"
-#include "scorpi_image_sco.h"
 
 #define BLOCKIF_SIG    0xb109b109
 
@@ -553,8 +552,6 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	image_options = (struct scorpi_image_chain_open_options){
 		.raw_fallback = true,
 	};
-	if (scorpi_image_backend_find("sco") == NULL)
-		(void)scorpi_image_backend_register(scorpi_image_sco_backend());
 	if (scorpi_image_chain_open_single(path, fd, ro != 0, &image_options,
 	    &image_chain) != 0)
 		goto err;

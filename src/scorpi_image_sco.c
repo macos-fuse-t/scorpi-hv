@@ -479,6 +479,7 @@ static const struct scorpi_image_ops scorpi_sco_ops = {
 	.flush = sco_flush,
 	.close = sco_close,
 };
+SCORPI_IMAGE_BACKEND_SET(scorpi_sco_ops);
 
 const struct scorpi_image_ops *
 scorpi_image_sco_backend(void)

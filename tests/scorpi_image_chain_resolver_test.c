@@ -331,6 +331,7 @@ static const struct scorpi_image_ops base_test_backend = {
 	.flush = base_test_flush,
 	.close = base_test_close,
 };
+SCORPI_IMAGE_BACKEND_SET(base_test_backend);
 
 static void
 write_file(const char *path, const char *contents)
@@ -762,7 +763,6 @@ main(void)
 	char dir[] = "/tmp/scorpi-chain-resolver-XXXXXX";
 
 	assert(mkdtemp(dir) != NULL);
-	assert(scorpi_image_backend_register(&base_test_backend) == 0);
 
 	test_raw_depth_one(dir);
 	test_simple_base_chain(dir);
@@ -782,6 +782,5 @@ main(void)
 	test_read_cache_invalidated_by_write(dir);
 	test_read_cache_invalidated_by_discard(dir);
 
-	assert(scorpi_image_backend_unregister("test-base-chain") == 0);
 	return (0);
 }

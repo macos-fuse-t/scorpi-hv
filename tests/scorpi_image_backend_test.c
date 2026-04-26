@@ -1,4 +1,4 @@
-/* Internal image backend registry coverage for snapshot support. */
+/* Internal image backend linker-set coverage for snapshot support. */
 
 #include <assert.h>
 #include <stdbool.h>
@@ -101,6 +101,7 @@ static const struct scorpi_image_ops low_backend = {
 	.flush = noop_flush,
 	.close = noop_close,
 };
+SCORPI_IMAGE_BACKEND_SET(low_backend);
 
 static const struct scorpi_image_ops high_backend = {
 	.name = "test-high",
@@ -114,6 +115,7 @@ static const struct scorpi_image_ops high_backend = {
 	.flush = noop_flush,
 	.close = noop_close,
 };
+SCORPI_IMAGE_BACKEND_SET(high_backend);
 
 int
 main(void)
@@ -121,10 +123,6 @@ main(void)
 	const struct scorpi_image_ops *best;
 	uint32_t score;
 
-	assert(scorpi_image_backend_find("test-low") == NULL);
-	assert(scorpi_image_backend_register(&low_backend) == 0);
-	assert(scorpi_image_backend_register(&low_backend) != 0);
-	assert(scorpi_image_backend_register(&high_backend) == 0);
 	assert(scorpi_image_backend_find("test-low") == &low_backend);
 	assert(scorpi_image_backend_find("test-high") == &high_backend);
 
@@ -135,17 +133,6 @@ main(void)
 	assert(score == 42);
 	assert(low_probe_calls == 1);
 	assert(high_probe_calls == 1);
-
-	assert(scorpi_image_backend_unregister("test-low") == 0);
-	assert(scorpi_image_backend_unregister("test-high") == 0);
-	assert(scorpi_image_backend_find("test-low") == NULL);
-	assert(scorpi_image_backend_find("test-high") == NULL);
-
-	best = NULL;
-	score = 99;
-	assert(scorpi_image_backend_probe(7, &best, &score) != 0);
-	assert(best == NULL);
-	assert(score == 0);
 
 	return (0);
 }

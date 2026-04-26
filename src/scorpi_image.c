@@ -6,17 +6,12 @@
 
 #include <sys/errno.h>
 
-#include <pthread.h>
 #include <stdint.h>
 #include <string.h>
 
 #include "scorpi_image.h"
 
-#define	SCORPI_IMAGE_BACKEND_MAX	32
-
-static pthread_mutex_t scorpi_image_backend_mtx = PTHREAD_MUTEX_INITIALIZER;
-static const struct scorpi_image_ops *scorpi_image_backends[
-    SCORPI_IMAGE_BACKEND_MAX];
+SET_DECLARE(scoimgbe_set, struct scorpi_image_ops);
 
 static bool
 scorpi_image_backend_ops_valid(const struct scorpi_image_ops *ops)
@@ -29,84 +24,21 @@ scorpi_image_backend_ops_valid(const struct scorpi_image_ops *ops)
 	    ops->close != NULL);
 }
 
-int
-scorpi_image_backend_register(const struct scorpi_image_ops *ops)
-{
-	int free_slot, ret;
-	size_t i;
-
-	if (!scorpi_image_backend_ops_valid(ops))
-		return (EINVAL);
-
-	ret = 0;
-	free_slot = -1;
-	pthread_mutex_lock(&scorpi_image_backend_mtx);
-	for (i = 0; i < SCORPI_IMAGE_BACKEND_MAX; i++) {
-		if (scorpi_image_backends[i] == NULL) {
-			if (free_slot < 0)
-				free_slot = (int)i;
-			continue;
-		}
-		if (strcmp(scorpi_image_backends[i]->name, ops->name) == 0) {
-			ret = EEXIST;
-			goto out;
-		}
-	}
-	if (free_slot < 0) {
-		ret = ENOSPC;
-		goto out;
-	}
-	scorpi_image_backends[free_slot] = ops;
-out:
-	pthread_mutex_unlock(&scorpi_image_backend_mtx);
-	return (ret);
-}
-
-int
-scorpi_image_backend_unregister(const char *name)
-{
-	int ret;
-	size_t i;
-
-	if (name == NULL || name[0] == '\0')
-		return (EINVAL);
-
-	ret = ENOENT;
-	pthread_mutex_lock(&scorpi_image_backend_mtx);
-	for (i = 0; i < SCORPI_IMAGE_BACKEND_MAX; i++) {
-		if (scorpi_image_backends[i] == NULL)
-			continue;
-		if (strcmp(scorpi_image_backends[i]->name, name) == 0) {
-			scorpi_image_backends[i] = NULL;
-			ret = 0;
-			break;
-		}
-	}
-	pthread_mutex_unlock(&scorpi_image_backend_mtx);
-	return (ret);
-}
-
 const struct scorpi_image_ops *
 scorpi_image_backend_find(const char *name)
 {
-	const struct scorpi_image_ops *ops;
-	size_t i;
+	struct scorpi_image_ops **opsp;
 
 	if (name == NULL || name[0] == '\0')
 		return (NULL);
 
-	ops = NULL;
-	pthread_mutex_lock(&scorpi_image_backend_mtx);
-	for (i = 0; i < SCORPI_IMAGE_BACKEND_MAX; i++) {
-		if (scorpi_image_backends[i] == NULL)
+	SET_FOREACH(opsp, scoimgbe_set) {
+		if (*opsp == NULL || !scorpi_image_backend_ops_valid(*opsp))
 			continue;
-		if (strcmp(scorpi_image_backends[i]->name, name) == 0) {
-			ops = scorpi_image_backends[i];
-			break;
-		}
+		if (strcmp((*opsp)->name, name) == 0)
+			return (*opsp);
 	}
-	pthread_mutex_unlock(&scorpi_image_backend_mtx);
-	return (ops);
+	return (NULL);
 }
 
 int
@@ -114,9 +46,9 @@ scorpi_image_backend_probe(int fd, const struct scorpi_image_ops **ops,
     uint32_t *score)
 {
 	const struct scorpi_image_ops *best_ops;
+	struct scorpi_image_ops **opsp;
 	uint32_t best_score, candidate_score;
 	int error, ret;
-	size_t i;
 
 	if (ops == NULL)
 		return (EINVAL);
@@ -124,24 +56,19 @@ scorpi_image_backend_probe(int fd, const struct scorpi_image_ops **ops,
 	best_ops = NULL;
 	best_score = 0;
 	ret = ENOENT;
-	pthread_mutex_lock(&scorpi_image_backend_mtx);
-	for (i = 0; i < SCORPI_IMAGE_BACKEND_MAX; i++) {
-		if (scorpi_image_backends[i] == NULL)
+	SET_FOREACH(opsp, scoimgbe_set) {
+		if (*opsp == NULL || !scorpi_image_backend_ops_valid(*opsp))
 			continue;
 		candidate_score = 0;
-		error = scorpi_image_backends[i]->probe(fd, &candidate_score);
-		if (error != 0) {
-			ret = error;
-			goto out;
-		}
+		error = (*opsp)->probe(fd, &candidate_score);
+		if (error != 0)
+			return (error);
 		if (candidate_score > best_score) {
 			best_score = candidate_score;
-			best_ops = scorpi_image_backends[i];
+			best_ops = *opsp;
 			ret = 0;
 		}
 	}
-out:
-	pthread_mutex_unlock(&scorpi_image_backend_mtx);
 	if (ret == 0) {
 		*ops = best_ops;
 		if (score != NULL)

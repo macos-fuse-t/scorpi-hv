@@ -128,6 +128,7 @@ static const struct scorpi_image_ops magic_backend = {
 	.flush = magic_flush,
 	.close = magic_close,
 };
+SCORPI_IMAGE_BACKEND_SET(magic_backend);
 
 static void
 write_file(const char *path, const char *contents)
@@ -159,8 +160,6 @@ main(void)
 	write_file(magic_path, "SCO!payload");
 	write_file(raw_path, "plain raw payload");
 
-	assert(scorpi_image_backend_register(&magic_backend) == 0);
-
 	options = (struct scorpi_image_chain_open_options){
 		.raw_fallback = true,
 	};
@@ -191,7 +190,6 @@ main(void)
 	    &chain) == ENOENT);
 	assert(chain == NULL);
 
-	assert(scorpi_image_backend_unregister("test-magic-open") == 0);
 	assert(unlink(magic_path) == 0);
 	assert(unlink(raw_path) == 0);
 	return (0);

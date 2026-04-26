@@ -13,6 +13,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <support/linker_set.h>
+
 enum scorpi_image_format {
 	SCORPI_IMAGE_FORMAT_RAW = 1,
 	SCORPI_IMAGE_FORMAT_QCOW2,
@@ -74,8 +76,8 @@ struct scorpi_image {
 	struct scorpi_image *base;
 };
 
-int	scorpi_image_backend_register(const struct scorpi_image_ops *ops);
-int	scorpi_image_backend_unregister(const char *name);
+#define	SCORPI_IMAGE_BACKEND_SET(x)	DATA_SET(scoimgbe_set, x)
+
 const struct scorpi_image_ops *scorpi_image_backend_find(const char *name);
 int	scorpi_image_backend_probe(int fd, const struct scorpi_image_ops **ops,
 	    uint32_t *score);
