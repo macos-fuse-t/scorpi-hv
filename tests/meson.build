@@ -81,6 +81,22 @@ scorpi_image_raw_test_executable = executable(
 
 test('scorpi_image_raw_test', scorpi_image_raw_test_executable)
 
+scorpi_image_qcow2_test_executable = executable(
+  'scorpi_image_qcow2_test',
+  files(
+    'scorpi_image_qcow2_test.c',
+    '../src/scorpi_image_chain.c',
+    '../src/scorpi_image.c',
+    '../src/scorpi_image_qcow2.c',
+    '../src/scorpi_image_raw.c',
+    '../src/scorpi_image_uri.c',
+  ),
+  dependencies: threads_dep,
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_image_qcow2_test', scorpi_image_qcow2_test_executable)
+
 scorpi_image_sco_test_executable = executable(
   'scorpi_image_sco_test',
   files(

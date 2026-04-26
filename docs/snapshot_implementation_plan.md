@@ -1117,6 +1117,8 @@ Validation performed:
 
 ### Task 22: Add Readonly Qcow2 Backend
 
+Status: Done
+
 Scope:
 
 - implement minimal readonly qcow2 support
@@ -1144,6 +1146,13 @@ Validation criteria:
 - qcow2 backing file resolves through chain resolver
 - unsupported qcow2 feature is rejected
 - qcow2 cannot be opened writable
+
+Validation performed:
+
+- `ninja -C builddir`
+- `meson test -C builddir scorpi_image_qcow2_test scorpi_image_open_test scorpi_image_chain_resolver_test scorpi_image_sco_test scorpi_image_cli_test`
+- `qemu-img`/`qemu-io` smoke test with `scorpi-image check/info` on simple
+  qcow2 and qcow2-with-raw-backing images
 
 ### Task 23: Add Block Drain/Pause Primitives
 
