@@ -2413,17 +2413,12 @@ sco_close(void *statep)
 		return (0);
 	sco = statep;
 	error = 0;
-	error = pthread_rwlock_wrlock(&sco->lock);
-	if (error != 0)
-		return (error);
-	error = 0;
 	sco_trace_report(sco, "close");
 	if (sco->fd >= 0 && close(sco->fd) != 0)
 		error = errno;
 	free(sco->base_uri);
 	free(sco->metadata_page_used);
 	sco_metadata_cache_destroy(sco);
-	pthread_rwlock_unlock(&sco->lock);
 	sco_data_locks_destroy(sco);
 	pthread_mutex_destroy(&sco->metadata_cache_mtx);
 	pthread_rwlock_destroy(&sco->lock);
