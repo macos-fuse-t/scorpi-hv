@@ -160,6 +160,48 @@ scorpi_image_chain_max_depth(
 	return (options->max_depth);
 }
 
+static int
+scorpi_image_chain_validate(const struct scorpi_image_chain *chain,
+    bool require_writable_top)
+{
+	const struct scorpi_image_info *top_info, *info;
+	size_t writable_count, i;
+
+	if (chain == NULL || chain->image_count == 0)
+		return (EINVAL);
+
+	top_info = &chain->images[0]->info;
+	if (top_info->virtual_size == 0 || top_info->logical_sector_size == 0)
+		return (EINVAL);
+	if (require_writable_top && (top_info->readonly || top_info->sealed))
+		return (EROFS);
+
+	writable_count = 0;
+	for (i = 0; i < chain->image_count; i++) {
+		info = &chain->images[i]->info;
+		if (info->virtual_size != top_info->virtual_size)
+			return (EINVAL);
+		if (info->logical_sector_size != top_info->logical_sector_size)
+			return (EINVAL);
+		if (!info->readonly && !info->sealed)
+			writable_count++;
+		if (i > 0 && !info->readonly && !info->sealed)
+			return (EROFS);
+		if (i + 1 < chain->image_count &&
+		    info->has_base_digest) {
+			if (!chain->images[i + 1]->info.has_image_digest)
+				return (EINVAL);
+			if (memcmp(info->base_digest,
+			    chain->images[i + 1]->info.image_digest,
+			    sizeof(info->base_digest)) != 0)
+				return (EINVAL);
+		}
+	}
+	if (writable_count > 1)
+		return (EROFS);
+	return (0);
+}
+
 int
 scorpi_image_chain_open_single_backend(const struct scorpi_image_ops *ops,
     void *state, struct scorpi_image_chain **chainp)
@@ -190,6 +232,11 @@ scorpi_image_chain_open_single_backend(const struct scorpi_image_ops *ops,
 		free(chain);
 		return (error);
 	}
+	error = scorpi_image_chain_validate(chain, false);
+	if (error != 0) {
+		scorpi_image_chain_close(chain);
+		return (error);
+	}
 
 	*chainp = chain;
 	return (0);
@@ -208,6 +255,7 @@ scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
 	const char *current_path;
 	char *owned_path;
 	size_t max_depth;
+	bool require_writable_top;
 	int error;
 
 	if (path == NULL || fd < 0 || chainp == NULL)
@@ -227,6 +275,7 @@ scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
 	}
 
 	max_depth = scorpi_image_chain_max_depth(options);
+	require_writable_top = !readonly;
 	current_path = path;
 	owned_path = NULL;
 	for (;;) {
@@ -278,6 +327,10 @@ scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
 		current_path = owned_path;
 		readonly = true;
 	}
+
+	error = scorpi_image_chain_validate(chain, require_writable_top);
+	if (error != 0)
+		goto err;
 
 	free(owned_path);
 	*chainp = chain;

@@ -34,6 +34,8 @@ struct scorpi_image_info {
 	uint32_t cluster_size;
 	bool readonly;
 	bool sealed;
+	uint8_t image_digest[32];
+	bool has_image_digest;
 	bool has_base;
 	char *base_uri;
 	uint8_t base_digest[32];

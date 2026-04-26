@@ -320,6 +320,10 @@ Validation performed:
 
 ### Task 7: Add Chain Validation
 
+Status:
+
+- Done
+
 Scope:
 
 - validate complete resolved chains before accepting I/O
@@ -336,7 +340,7 @@ Implementation notes:
 - reject multiple writable layers
 - reject writable lower layers
 - reject readonly top image for writable VM disks
-- validate parent UUID/digest when available
+- validate base UUID/digest when available
 
 Validation criteria:
 
@@ -344,7 +348,13 @@ Validation criteria:
 - tests reject sector mismatch
 - tests reject lower writable layer
 - tests reject top readonly when write access is requested
-- tests reject parent identity mismatch
+- tests reject base identity mismatch
+
+Validation performed:
+
+- `meson setup builddir --reconfigure`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson compile -C builddir`
 
 ### Task 8: Add Chain Read Resolver And Cache
 

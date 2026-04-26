@@ -14,6 +14,7 @@
 
 struct magic_state {
 	int fd;
+	bool readonly;
 };
 
 static int magic_open_calls;
@@ -42,15 +43,24 @@ magic_open(const char *path __attribute__((unused)),
 	st = calloc(1, sizeof(*st));
 	assert(st != NULL);
 	st->fd = fd;
+	st->readonly = readonly;
 	magic_open_calls++;
 	*state = st;
 	return (0);
 }
 
 static int
-magic_get_info(void *state __attribute__((unused)),
-    struct scorpi_image_info *info __attribute__((unused)))
+magic_get_info(void *state, struct scorpi_image_info *info)
 {
+	struct magic_state *st;
+
+	st = state;
+	*info = (struct scorpi_image_info){
+		.format = SCORPI_IMAGE_FORMAT_SCO,
+		.virtual_size = 4096,
+		.logical_sector_size = 512,
+		.readonly = st->readonly,
+	};
 	return (0);
 }
 
