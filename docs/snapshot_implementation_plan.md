@@ -847,6 +847,8 @@ Validation criteria:
 
 ### Task 19: Implement Crash-Safe `.sco` Metadata Commit
 
+Status: Done
+
 Scope:
 
 - implement copy-on-write metadata update flow
@@ -872,7 +874,15 @@ Validation criteria:
 - open selects newest valid generation
 - old valid generation remains usable after interrupted write
 
+Validation performed:
+
+- `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test scorpi_sco_fixture_test scorpi_image_cli_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson compile -C builddir`
+
 ### Task 20: Add `.sco` Flush Semantics
+
+Status: Done
 
 Scope:
 
@@ -894,6 +904,12 @@ Validation criteria:
 - flush followed by close/reopen preserves data
 - flush errors are returned to block request completion
 - tests cover no-space or injected flush failure where practical
+
+Validation performed:
+
+- `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test scorpi_sco_fixture_test scorpi_image_cli_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson compile -C builddir`
 
 ### Task 20A: Add `scorpi-image` Seal And Unseal Commands
 

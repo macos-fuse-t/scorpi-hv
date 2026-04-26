@@ -79,6 +79,7 @@ struct sco_image {
 	pthread_rwlock_t lock;
 	bool readonly;
 	uint64_t file_size;
+	uint64_t active_superblock_offset;
 	struct sco_superblock_decoded sb;
 	bool has_base;
 	char *base_uri;
@@ -221,6 +222,53 @@ page_crc32c_update(uint8_t page[SCO_METADATA_PAGE_SIZE])
 	crc = sco_crc32c(page, SCO_METADATA_PAGE_SIZE);
 	le32enc(page + 0x0008, crc);
 	return (crc);
+}
+
+static uint64_t
+sco_inactive_superblock_offset(uint64_t active_offset)
+{
+	return (active_offset == SCO_SUPERBLOCK_A_OFFSET ?
+	    SCO_SUPERBLOCK_B_OFFSET : SCO_SUPERBLOCK_A_OFFSET);
+}
+
+static void
+sco_build_superblock(uint8_t buf[SCO_SUPERBLOCK_SIZE],
+    const struct sco_superblock_decoded *sb)
+{
+	uint32_t crc;
+
+	memset(buf, 0, SCO_SUPERBLOCK_SIZE);
+	memcpy(buf, SCO_MAGIC, SCO_MAGIC_SIZE);
+	le16enc(buf + 0x0008, SCO_FORMAT_MAJOR);
+	le16enc(buf + 0x000a, 0);
+	le32enc(buf + 0x000c, SCO_SUPERBLOCK_SIZE);
+	le32enc(buf + 0x0010, SCO_CHECKSUM_CRC32C);
+	le64enc(buf + 0x0018, sb->generation);
+	le64enc(buf + 0x0020, sb->virtual_size);
+	le32enc(buf + 0x0028, sb->logical_sector_size);
+	le32enc(buf + 0x002c, sb->physical_sector_size);
+	le32enc(buf + 0x0030, sb->cluster_size);
+	le64enc(buf + 0x0038, sb->cluster_count);
+	le64enc(buf + 0x0040, SCO_METADATA_AREA_OFFSET);
+	le64enc(buf + 0x0048, sb->data_area_offset);
+	le64enc(buf + 0x0050, sb->base_descriptor_offset);
+	le32enc(buf + 0x0058, sb->base_descriptor_length);
+	le32enc(buf + 0x005c, 0);
+	le64enc(buf + 0x0060, sb->map_root_offset);
+	le32enc(buf + 0x0068, sb->map_root_length);
+	le32enc(buf + 0x006c, SCO_MAP_ENTRY_SIZE);
+	le32enc(buf + 0x0070, sb->incompatible_features);
+	le32enc(buf + 0x0074, sb->readonly_compatible_features);
+	le32enc(buf + 0x0078, sb->compatible_features);
+	le32enc(buf + 0x007c, 0);
+	memcpy(buf + 0x0080, sb->image_uuid, sizeof(sb->image_uuid));
+	if (sb->has_image_digest)
+		memcpy(buf + 0x0090, sb->image_digest,
+		    sizeof(sb->image_digest));
+	le32enc(buf + 0x00b0, sb->has_image_digest ? 1 : 0);
+	le32enc(buf + 0x00b4, 0);
+	crc = sco_crc32c(buf, SCO_SUPERBLOCK_SIZE);
+	le32enc(buf + 0x0014, crc);
 }
 
 static int
@@ -378,7 +426,8 @@ sco_read_superblock(int fd, uint64_t offset, bool readonly,
 
 static int
 sco_select_superblock(int fd, bool readonly, const uint8_t file_id_uuid[16],
-    uint64_t file_size, struct sco_superblock_decoded *out)
+    uint64_t file_size, struct sco_superblock_decoded *out,
+    uint64_t *active_offsetp)
 {
 	struct sco_superblock_decoded a, b;
 	int error_a, error_b;
@@ -391,13 +440,25 @@ sco_select_superblock(int fd, bool readonly, const uint8_t file_id_uuid[16],
 		return (EINVAL);
 	if (error_a == 0 && error_b != 0) {
 		*out = a;
+		if (active_offsetp != NULL)
+			*active_offsetp = SCO_SUPERBLOCK_A_OFFSET;
 		return (0);
 	}
 	if (error_a != 0 && error_b == 0) {
 		*out = b;
+		if (active_offsetp != NULL)
+			*active_offsetp = SCO_SUPERBLOCK_B_OFFSET;
 		return (0);
 	}
-	*out = b.generation > a.generation ? b : a;
+	if (b.generation > a.generation) {
+		*out = b;
+		if (active_offsetp != NULL)
+			*active_offsetp = SCO_SUPERBLOCK_B_OFFSET;
+	} else {
+		*out = a;
+		if (active_offsetp != NULL)
+			*active_offsetp = SCO_SUPERBLOCK_A_OFFSET;
+	}
 	return (0);
 }
 
@@ -696,8 +757,22 @@ sco_metadata_page_used(struct sco_image *sco, uint64_t offset, bool *usedp)
 	return (0);
 }
 
+static bool
+sco_offset_reserved(uint64_t offset, const uint64_t *reserved,
+    size_t reserved_count)
+{
+	size_t i;
+
+	for (i = 0; i < reserved_count; i++) {
+		if (reserved[i] == offset)
+			return (true);
+	}
+	return (false);
+}
+
 static int
-sco_alloc_metadata_page(struct sco_image *sco, uint64_t *offsetp)
+sco_alloc_metadata_page_reserved(struct sco_image *sco, uint64_t *offsetp,
+    const uint64_t *reserved, size_t reserved_count)
 {
 	uint64_t offset;
 	bool used;
@@ -708,10 +783,45 @@ sco_alloc_metadata_page(struct sco_image *sco, uint64_t *offsetp)
 	for (offset = SCO_METADATA_AREA_OFFSET;
 	    offset + SCO_METADATA_PAGE_SIZE <= sco->sb.data_area_offset;
 	    offset += SCO_METADATA_PAGE_SIZE) {
+		if (sco_offset_reserved(offset, reserved, reserved_count))
+			continue;
 		error = sco_metadata_page_used(sco, offset, &used);
 		if (error != 0)
 			return (error);
 		if (!used) {
+			*offsetp = offset;
+			return (0);
+		}
+	}
+	return (ENOSPC);
+}
+
+static int
+sco_alloc_metadata_run_reserved(struct sco_image *sco, size_t page_count,
+    uint64_t *offsetp, const uint64_t *reserved, size_t reserved_count)
+{
+	uint64_t offset, candidate;
+	size_t i;
+	bool used;
+	int error;
+
+	if (sco == NULL || offsetp == NULL || page_count == 0)
+		return (EINVAL);
+	for (offset = SCO_METADATA_AREA_OFFSET;
+	    offset + page_count * SCO_METADATA_PAGE_SIZE <=
+	    sco->sb.data_area_offset; offset += SCO_METADATA_PAGE_SIZE) {
+		for (i = 0; i < page_count; i++) {
+			candidate = offset + i * SCO_METADATA_PAGE_SIZE;
+			if (sco_offset_reserved(candidate, reserved,
+			    reserved_count))
+				break;
+			error = sco_metadata_page_used(sco, candidate, &used);
+			if (error != 0)
+				return (error);
+			if (used)
+				break;
+		}
+		if (i == page_count) {
 			*offsetp = offset;
 			return (0);
 		}
@@ -893,28 +1003,18 @@ sco_build_empty_map_page(uint8_t page[SCO_METADATA_PAGE_SIZE],
 }
 
 static int
-sco_write_root_entry_ref(struct sco_image *sco,
-    struct sco_root_entry_ref *ref, uint64_t map_page_offset,
-    uint32_t map_page_crc32c)
-{
-	if (sco == NULL || ref == NULL)
-		return (EINVAL);
-	le64enc(ref->page + ref->entry_offset + 0x0000, map_page_offset);
-	le32enc(ref->page + ref->entry_offset + 0x0008, map_page_crc32c);
-	le32enc(ref->page + ref->entry_offset + 0x000c, 0);
-	(void)page_crc32c_update(ref->page);
-	return (write_exact(sco->fd, ref->page_offset, ref->page,
-	    sizeof(ref->page)));
-}
-
-static int
 sco_write_map_entry(struct sco_image *sco, uint64_t cluster_index,
     uint64_t physical_offset)
 {
 	struct sco_root_entry_ref ref;
-	uint8_t page[SCO_METADATA_PAGE_SIZE];
+	struct sco_superblock_decoded next_sb;
+	uint8_t page[SCO_METADATA_PAGE_SIZE], superblock[SCO_SUPERBLOCK_SIZE];
+	uint8_t *root;
 	uint64_t root_index, first_cluster_index, last_cluster_index;
 	uint64_t entry_index, entry_offset, map_page_offset;
+	uint64_t new_map_page_offset, new_root_offset, inactive_offset;
+	uint64_t reserved[2];
+	size_t root_page_index, root_page_count;
 	uint32_t entry_count, map_page_crc32c;
 	int error;
 
@@ -928,9 +1028,6 @@ sco_write_map_entry(struct sco_image *sco, uint64_t cluster_index,
 	if (ref.map_page_offset == 0) {
 		if (ref.map_page_crc32c != 0)
 			return (EINVAL);
-		error = sco_alloc_metadata_page(sco, &map_page_offset);
-		if (error != 0)
-			return (error);
 		entry_count = sco_map_entry_count_for_root(sco, root_index);
 		if (entry_count == 0)
 			return (EINVAL);
@@ -969,13 +1066,73 @@ sco_write_map_entry(struct sco_image *sco, uint64_t cluster_index,
 	le16enc(page + entry_offset + 0x0002, 0);
 	le32enc(page + entry_offset + 0x0004, 0);
 	le64enc(page + entry_offset + 0x0008, physical_offset);
-
 	map_page_crc32c = page_crc32c_update(page);
-	error = write_exact(sco->fd, map_page_offset, page, sizeof(page));
+
+	reserved[0] = 0;
+	error = sco_alloc_metadata_page_reserved(sco, &new_map_page_offset,
+	    NULL, 0);
 	if (error != 0)
 		return (error);
-	return (sco_write_root_entry_ref(sco, &ref, map_page_offset,
-	    map_page_crc32c));
+	reserved[0] = new_map_page_offset;
+	root_page_count = sco->sb.map_root_length / SCO_METADATA_PAGE_SIZE;
+	error = sco_alloc_metadata_run_reserved(sco, root_page_count,
+	    &new_root_offset, reserved, 1);
+	if (error != 0)
+		return (error);
+
+	root = malloc(sco->sb.map_root_length);
+	if (root == NULL)
+		return (ENOMEM);
+	error = read_exact(sco->fd, sco->sb.map_root_offset, root,
+	    sco->sb.map_root_length);
+	if (error != 0)
+		goto out;
+	root_page_index = (ref.page_offset - sco->sb.map_root_offset) /
+	    SCO_METADATA_PAGE_SIZE;
+	if (root_page_index >= root_page_count) {
+		error = EINVAL;
+		goto out;
+	}
+	le64enc(root + root_page_index * SCO_METADATA_PAGE_SIZE +
+	    ref.entry_offset + 0x0000, new_map_page_offset);
+	le32enc(root + root_page_index * SCO_METADATA_PAGE_SIZE +
+	    ref.entry_offset + 0x0008, map_page_crc32c);
+	le32enc(root + root_page_index * SCO_METADATA_PAGE_SIZE +
+	    ref.entry_offset + 0x000c, 0);
+	(void)page_crc32c_update(root +
+	    root_page_index * SCO_METADATA_PAGE_SIZE);
+
+	error = write_exact(sco->fd, new_map_page_offset, page, sizeof(page));
+	if (error != 0)
+		goto out;
+	error = write_exact(sco->fd, new_root_offset, root,
+	    sco->sb.map_root_length);
+	if (error != 0)
+		goto out;
+	if (fsync(sco->fd) != 0) {
+		error = errno;
+		goto out;
+	}
+
+	next_sb = sco->sb;
+	next_sb.generation++;
+	next_sb.map_root_offset = new_root_offset;
+	sco_build_superblock(superblock, &next_sb);
+	inactive_offset =
+	    sco_inactive_superblock_offset(sco->active_superblock_offset);
+	error = write_exact(sco->fd, inactive_offset, superblock,
+	    sizeof(superblock));
+	if (error != 0)
+		goto out;
+	if (fsync(sco->fd) != 0) {
+		error = errno;
+		goto out;
+	}
+	sco->sb = next_sb;
+	sco->active_superblock_offset = inactive_offset;
+out:
+	free(root);
+	return (error);
 }
 
 static int
@@ -1133,7 +1290,7 @@ sco_open(const char *path __attribute__((unused)), int fd, bool readonly,
 	sco->readonly = readonly;
 	sco->file_size = file_size;
 	error = sco_select_superblock(fd, readonly, file_id_uuid, file_size,
-	    &sco->sb);
+	    &sco->sb, &sco->active_superblock_offset);
 	if (error != 0) {
 		pthread_rwlock_destroy(&sco->lock);
 		free(sco);
