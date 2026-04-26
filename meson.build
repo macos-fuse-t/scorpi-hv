@@ -131,7 +131,7 @@ scorpi_image_executable = executable(
     'src/scorpi_image_sco.c',
     'src/scorpi_image_uri.c',
   ),
-  dependencies: libutil_dep,
+  dependencies: [libutil_dep, threads_dep],
   include_directories: [inc, include_directories('src')],
 )
 

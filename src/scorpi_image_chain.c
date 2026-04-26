@@ -9,6 +9,7 @@
 #include <sys/types.h>
 
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,16 +27,47 @@ struct scorpi_image_read_cache {
 };
 
 struct scorpi_image_chain {
+	pthread_rwlock_t lock;
+	pthread_mutex_t cache_mtx;
 	size_t image_count;
 	struct scorpi_image **images;
 	struct scorpi_image_read_cache read_cache;
 };
 
+static int
+scorpi_image_chain_alloc(struct scorpi_image_chain **chainp)
+{
+	struct scorpi_image_chain *chain;
+	int error;
+
+	if (chainp == NULL)
+		return (EINVAL);
+	chain = calloc(1, sizeof(*chain));
+	if (chain == NULL)
+		return (ENOMEM);
+	error = pthread_rwlock_init(&chain->lock, NULL);
+	if (error != 0) {
+		free(chain);
+		return (error);
+	}
+	error = pthread_mutex_init(&chain->cache_mtx, NULL);
+	if (error != 0) {
+		pthread_rwlock_destroy(&chain->lock);
+		free(chain);
+		return (error);
+	}
+	*chainp = chain;
+	return (0);
+}
+
 static void
 scorpi_image_chain_read_cache_invalidate(struct scorpi_image_chain *chain)
 {
-	if (chain != NULL)
-		chain->read_cache.valid = false;
+	if (chain == NULL)
+		return;
+	pthread_mutex_lock(&chain->cache_mtx);
+	chain->read_cache.valid = false;
+	pthread_mutex_unlock(&chain->cache_mtx);
 }
 
 static int
@@ -255,17 +287,22 @@ static int
 scorpi_image_chain_cache_read(struct scorpi_image_chain *chain, void *buf,
     uint64_t offset, size_t len, size_t *readp)
 {
+	struct scorpi_image_read_cache cache;
 	uint64_t cache_end, length;
 	struct scorpi_image *image;
 	int error;
 
-	if (!chain->read_cache.valid)
+	pthread_mutex_lock(&chain->cache_mtx);
+	cache = chain->read_cache;
+	pthread_mutex_unlock(&chain->cache_mtx);
+
+	if (!cache.valid)
 		return (ENOENT);
-	if (offset < chain->read_cache.offset)
+	if (offset < cache.offset)
 		return (ENOENT);
-	if (chain->read_cache.length > UINT64_MAX - chain->read_cache.offset)
+	if (cache.length > UINT64_MAX - cache.offset)
 		return (ENOENT);
-	cache_end = chain->read_cache.offset + chain->read_cache.length;
+	cache_end = cache.offset + cache.length;
 	if (offset >= cache_end)
 		return (ENOENT);
 	length = cache_end - offset;
@@ -274,11 +311,11 @@ scorpi_image_chain_cache_read(struct scorpi_image_chain *chain, void *buf,
 	if (length > SIZE_MAX)
 		return (EINVAL);
 
-	switch (chain->read_cache.state) {
+	switch (cache.state) {
 	case SCORPI_IMAGE_EXTENT_PRESENT:
-		if (chain->read_cache.image_index >= chain->image_count)
+		if (cache.image_index >= chain->image_count)
 			return (ENOENT);
-		image = chain->images[chain->read_cache.image_index];
+		image = chain->images[cache.image_index];
 		error = image->ops->read(image->state, buf, offset,
 		    (size_t)length);
 		if (error != 0) {
@@ -328,6 +365,7 @@ scorpi_image_chain_resolve_read(struct scorpi_image_chain *chain, void *buf,
 			    (size_t)covered);
 			if (error != 0)
 				return (error);
+			pthread_mutex_lock(&chain->cache_mtx);
 			chain->read_cache = (struct scorpi_image_read_cache){
 				.valid = true,
 				.offset = offset,
@@ -335,17 +373,20 @@ scorpi_image_chain_resolve_read(struct scorpi_image_chain *chain, void *buf,
 				.state = SCORPI_IMAGE_EXTENT_PRESENT,
 				.image_index = i,
 			};
+			pthread_mutex_unlock(&chain->cache_mtx);
 			*readp = (size_t)covered;
 			return (0);
 		case SCORPI_IMAGE_EXTENT_ZERO:
 		case SCORPI_IMAGE_EXTENT_DISCARDED:
 			memset(buf, 0, (size_t)covered);
+			pthread_mutex_lock(&chain->cache_mtx);
 			chain->read_cache = (struct scorpi_image_read_cache){
 				.valid = true,
 				.offset = offset,
 				.length = covered,
 				.state = extent.state,
 			};
+			pthread_mutex_unlock(&chain->cache_mtx);
 			*readp = (size_t)covered;
 			return (0);
 		case SCORPI_IMAGE_EXTENT_ABSENT:
@@ -357,12 +398,14 @@ scorpi_image_chain_resolve_read(struct scorpi_image_chain *chain, void *buf,
 	}
 
 	memset(buf, 0, (size_t)limit);
+	pthread_mutex_lock(&chain->cache_mtx);
 	chain->read_cache = (struct scorpi_image_read_cache){
 		.valid = true,
 		.offset = offset,
 		.length = limit,
 		.state = SCORPI_IMAGE_EXTENT_ABSENT,
 	};
+	pthread_mutex_unlock(&chain->cache_mtx);
 	*readp = (size_t)limit;
 	return (0);
 }
@@ -379,22 +422,22 @@ scorpi_image_chain_open_single_backend(const struct scorpi_image_ops *ops,
 		return (EINVAL);
 	*chainp = NULL;
 
-	chain = calloc(1, sizeof(*chain));
-	if (chain == NULL) {
+	error = scorpi_image_chain_alloc(&chain);
+	if (error != 0) {
 		ops->close(state);
-		return (ENOMEM);
+		return (error);
 	}
 	image = NULL;
 	error = scorpi_image_alloc(ops, state, NULL, NULL, &image);
 	if (error != 0) {
 		ops->close(state);
-		free(chain);
+		scorpi_image_chain_close(chain);
 		return (error);
 	}
 	error = scorpi_image_chain_add_image(chain, image);
 	if (error != 0) {
 		scorpi_image_close_image(image);
-		free(chain);
+		scorpi_image_chain_close(chain);
 		return (error);
 	}
 	error = scorpi_image_chain_validate(chain, false);
@@ -433,10 +476,10 @@ scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
 	if (options == NULL)
 		options = &default_options;
 
-	chain = calloc(1, sizeof(*chain));
-	if (chain == NULL) {
+	error = scorpi_image_chain_alloc(&chain);
+	if (error != 0) {
 		close(fd);
-		return (ENOMEM);
+		return (error);
 	}
 
 	max_depth = scorpi_image_chain_max_depth(options);
@@ -511,26 +554,50 @@ err:
 const struct scorpi_image_info *
 scorpi_image_chain_top_info(const struct scorpi_image_chain *chain)
 {
-	if (chain == NULL || chain->image_count == 0)
+	struct scorpi_image_chain *mutable_chain;
+	const struct scorpi_image_info *info;
+
+	if (chain == NULL)
 		return (NULL);
-	return (&chain->images[0]->info);
+	mutable_chain = (struct scorpi_image_chain *)chain;
+	if (pthread_rwlock_rdlock(&mutable_chain->lock) != 0)
+		return (NULL);
+	info = chain->image_count == 0 ? NULL : &chain->images[0]->info;
+	pthread_rwlock_unlock(&mutable_chain->lock);
+	return (info);
 }
 
 size_t
 scorpi_image_chain_layer_count(const struct scorpi_image_chain *chain)
 {
+	struct scorpi_image_chain *mutable_chain;
+	size_t count;
+
 	if (chain == NULL)
 		return (0);
-	return (chain->image_count);
+	mutable_chain = (struct scorpi_image_chain *)chain;
+	if (pthread_rwlock_rdlock(&mutable_chain->lock) != 0)
+		return (0);
+	count = chain->image_count;
+	pthread_rwlock_unlock(&mutable_chain->lock);
+	return (count);
 }
 
 const struct scorpi_image_info *
 scorpi_image_chain_layer_info(const struct scorpi_image_chain *chain,
     size_t index)
 {
-	if (chain == NULL || index >= chain->image_count)
+	struct scorpi_image_chain *mutable_chain;
+	const struct scorpi_image_info *info;
+
+	if (chain == NULL)
 		return (NULL);
-	return (&chain->images[index]->info);
+	mutable_chain = (struct scorpi_image_chain *)chain;
+	if (pthread_rwlock_rdlock(&mutable_chain->lock) != 0)
+		return (NULL);
+	info = index >= chain->image_count ? NULL : &chain->images[index]->info;
+	pthread_rwlock_unlock(&mutable_chain->lock);
+	return (info);
 }
 
 int
@@ -542,18 +609,27 @@ scorpi_image_chain_read(struct scorpi_image_chain *chain, void *buf,
 	size_t n;
 	int error;
 
-	if (chain == NULL || chain->image_count == 0)
+	if (chain == NULL)
 		return (EINVAL);
+	error = pthread_rwlock_rdlock(&chain->lock);
+	if (error != 0)
+		return (error);
+	if (chain->image_count == 0) {
+		error = EINVAL;
+		goto out;
+	}
 	if (buf == NULL && len != 0)
-		return (EINVAL);
-	if (len == 0)
-		return (0);
-	if (offset > chain->images[0]->info.virtual_size)
-		return (EINVAL);
-	if ((uint64_t)len > chain->images[0]->info.virtual_size - offset)
-		return (EINVAL);
-	if (offset > UINT64_MAX - (uint64_t)len)
-		return (EINVAL);
+		error = EINVAL;
+	else if (len == 0)
+		error = 0;
+	else if (offset > chain->images[0]->info.virtual_size)
+		error = EINVAL;
+	else if ((uint64_t)len > chain->images[0]->info.virtual_size - offset)
+		error = EINVAL;
+	else if (offset > UINT64_MAX - (uint64_t)len)
+		error = EINVAL;
+	if (error != 0 || len == 0)
+		goto out;
 	end = offset + (uint64_t)len;
 
 	p = buf;
@@ -565,47 +641,90 @@ scorpi_image_chain_read(struct scorpi_image_chain *chain, void *buf,
 			error = scorpi_image_chain_resolve_read(chain, p, offset,
 			    (size_t)(end - offset), &n);
 		if (error != 0)
-			return (error);
-		if (n == 0)
-			return (EIO);
+			goto out;
+		if (n == 0) {
+			error = EIO;
+			goto out;
+		}
 		offset += n;
 		p += n;
 	}
-	return (0);
+	error = 0;
+out:
+	pthread_rwlock_unlock(&chain->lock);
+	return (error);
 }
 
 int
 scorpi_image_chain_write(struct scorpi_image_chain *chain, const void *buf,
     uint64_t offset, size_t len)
 {
-	if (chain == NULL || chain->image_count == 0)
+	int error;
+
+	if (chain == NULL)
 		return (EINVAL);
-	if (chain->images[0]->info.readonly || chain->images[0]->info.sealed)
-		return (EROFS);
+	error = pthread_rwlock_wrlock(&chain->lock);
+	if (error != 0)
+		return (error);
+	if (chain->image_count == 0) {
+		error = EINVAL;
+		goto out;
+	}
+	if (chain->images[0]->info.readonly || chain->images[0]->info.sealed) {
+		error = EROFS;
+		goto out;
+	}
 	scorpi_image_chain_read_cache_invalidate(chain);
-	return (chain->images[0]->ops->write(chain->images[0]->state, buf,
-	    offset, len));
+	error = chain->images[0]->ops->write(chain->images[0]->state, buf,
+	    offset, len);
+out:
+	pthread_rwlock_unlock(&chain->lock);
+	return (error);
 }
 
 int
 scorpi_image_chain_discard(struct scorpi_image_chain *chain, uint64_t offset,
     uint64_t length)
 {
-	if (chain == NULL || chain->image_count == 0)
+	int error;
+
+	if (chain == NULL)
 		return (EINVAL);
-	if (chain->images[0]->info.readonly || chain->images[0]->info.sealed)
-		return (EROFS);
+	error = pthread_rwlock_wrlock(&chain->lock);
+	if (error != 0)
+		return (error);
+	if (chain->image_count == 0) {
+		error = EINVAL;
+		goto out;
+	}
+	if (chain->images[0]->info.readonly || chain->images[0]->info.sealed) {
+		error = EROFS;
+		goto out;
+	}
 	scorpi_image_chain_read_cache_invalidate(chain);
-	return (chain->images[0]->ops->discard(chain->images[0]->state, offset,
-	    length));
+	error = chain->images[0]->ops->discard(chain->images[0]->state, offset,
+	    length);
+out:
+	pthread_rwlock_unlock(&chain->lock);
+	return (error);
 }
 
 int
 scorpi_image_chain_flush(struct scorpi_image_chain *chain)
 {
-	if (chain == NULL || chain->image_count == 0)
+	int error;
+
+	if (chain == NULL)
 		return (EINVAL);
-	return (chain->images[0]->ops->flush(chain->images[0]->state));
+	error = pthread_rwlock_wrlock(&chain->lock);
+	if (error != 0)
+		return (error);
+	if (chain->image_count == 0)
+		error = EINVAL;
+	else
+		error = chain->images[0]->ops->flush(chain->images[0]->state);
+	pthread_rwlock_unlock(&chain->lock);
+	return (error);
 }
 
 int
@@ -617,6 +736,9 @@ scorpi_image_chain_close(struct scorpi_image_chain *chain)
 	if (chain == NULL)
 		return (0);
 
+	error = pthread_rwlock_wrlock(&chain->lock);
+	if (error != 0)
+		return (error);
 	first_error = 0;
 	for (i = 0; i < chain->image_count; i++) {
 		error = scorpi_image_close_image(chain->images[i]);
@@ -624,6 +746,11 @@ scorpi_image_chain_close(struct scorpi_image_chain *chain)
 			first_error = error;
 	}
 	free(chain->images);
+	chain->images = NULL;
+	chain->image_count = 0;
+	pthread_rwlock_unlock(&chain->lock);
+	pthread_mutex_destroy(&chain->cache_mtx);
+	pthread_rwlock_destroy(&chain->lock);
 	free(chain);
 	return (first_error);
 }

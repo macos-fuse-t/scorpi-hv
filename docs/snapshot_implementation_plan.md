@@ -701,6 +701,44 @@ Validation performed:
 - `meson compile -C builddir`
 - `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 
+### Task 16A: Make Image I/O Thread-Safe
+
+Status: Done
+
+Scope:
+
+- support multiple block worker threads issuing reads and writes through the
+  same image chain
+- protect `.sco` metadata updates for direct backend users
+- keep concurrent reads scalable where possible
+
+Implementation notes:
+
+- image chains use a read/write lock: reads take the shared side, while writes,
+  discards, flushes, and close take the exclusive side
+- the chain read cache has its own mutex so concurrent readers can share the
+  chain read lock without racing cache state
+- `.sco` backends use a read/write lock: map/read/info take the shared side,
+  while write/flush/close take the exclusive side
+- `.sco` write locking covers data cluster allocation, map page allocation,
+  map entry updates, and root entry CRC updates as one in-process critical
+  section
+- locks are per opened image object; concurrent opens of the same file from
+  different processes are not coordinated by this task
+
+Validation criteria:
+
+- concurrent chain readers do not race the read cache
+- concurrent chain writes are serialized against reads
+- concurrent direct `.sco` writes preserve all map updates
+- existing image chain and `.sco` behavior remains unchanged
+
+Validation performed:
+
+- `meson test -C builddir scorpi_image_chain_test scorpi_image_sco_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson compile -C builddir`
+
 ### Task 17: Implement Whole-Cluster Materialization
 
 Scope:

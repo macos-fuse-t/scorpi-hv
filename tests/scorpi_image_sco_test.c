@@ -4,6 +4,7 @@
 
 #include <assert.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -40,6 +41,14 @@
 static const uint8_t test_uuid[16] = {
 	0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
 	0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+};
+
+struct concurrent_sco_write_arg {
+	const struct scorpi_image_ops *sco;
+	void *state;
+	uint64_t offset;
+	uint8_t byte;
+	int error;
 };
 
 struct superblock_fixture {
@@ -860,6 +869,84 @@ test_full_cluster_write_persists_after_reopen(void)
 	assert(unlink(path) == 0);
 }
 
+static void *
+concurrent_sco_write_thread(void *argp)
+{
+	struct concurrent_sco_write_arg *arg;
+	uint8_t *cluster;
+
+	arg = argp;
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	if (cluster == NULL) {
+		arg->error = ENOMEM;
+		return (NULL);
+	}
+	memset(cluster, arg->byte, SCO_CLUSTER_SIZE);
+	arg->error = arg->sco->write(arg->state, cluster, arg->offset,
+	    SCO_CLUSTER_SIZE);
+	free(cluster);
+	return (NULL);
+}
+
+static void
+test_concurrent_sco_writes_preserve_map_updates(void)
+{
+	enum { THREAD_COUNT = 8 };
+	const struct scorpi_image_ops *sco;
+	struct concurrent_sco_write_arg args[THREAD_COUNT];
+	struct superblock_fixture a, b;
+	pthread_t threads[THREAD_COUNT];
+	uint8_t buf[512];
+	char path[] = "/tmp/scorpi-sco-concurrent-XXXXXX";
+	void *state;
+	int fd;
+	size_t i;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	assert(open_sco_rw(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	for (i = 0; i < THREAD_COUNT; i++) {
+		args[i] = (struct concurrent_sco_write_arg){
+			.sco = sco,
+			.state = state,
+			.offset = i * SCO_CLUSTER_SIZE,
+			.byte = (uint8_t)(0x80 + i),
+		};
+		assert(pthread_create(&threads[i], NULL,
+		    concurrent_sco_write_thread, &args[i]) == 0);
+	}
+	for (i = 0; i < THREAD_COUNT; i++) {
+		assert(pthread_join(threads[i], NULL) == 0);
+		assert(args[i].error == 0);
+	}
+	assert(sco->flush(state) == 0);
+	assert(sco->close(state) == 0);
+
+	assert(open_sco(path, &state) == 0);
+	for (i = 0; i < THREAD_COUNT; i++) {
+		memset(buf, 0, sizeof(buf));
+		assert(sco->read(state, buf, i * SCO_CLUSTER_SIZE,
+		    sizeof(buf)) == 0);
+		assert_buffer_value(buf, sizeof(buf), (uint8_t)(0x80 + i));
+	}
+	assert(sco->close(state) == 0);
+	assert(unlink(path) == 0);
+}
+
 static void
 test_readonly_and_sealed_sco_reject_write(void)
 {
@@ -1263,6 +1350,7 @@ main(void)
 	test_map_zero_and_discarded_read_zero();
 	test_corrupt_map_page_rejected();
 	test_full_cluster_write_persists_after_reopen();
+	test_concurrent_sco_writes_preserve_map_updates();
 	test_readonly_and_sealed_sco_reject_write();
 	test_writable_top_does_not_modify_base();
 	test_absent_map_falls_through_to_base();

@@ -91,6 +91,7 @@ scorpi_image_sco_test_executable = executable(
     '../src/scorpi_image_sco.c',
     '../src/scorpi_image_uri.c',
   ),
+  dependencies: threads_dep,
   include_directories: [inc, include_directories('../src')],
 )
 
@@ -104,6 +105,7 @@ scorpi_sco_fixture_test_executable = executable(
     '../src/scorpi_image.c',
     '../src/scorpi_image_sco.c',
   ),
+  dependencies: threads_dep,
   include_directories: [inc, include_directories('../src')],
 )
 
@@ -130,6 +132,7 @@ scorpi_image_chain_test_executable = executable(
     '../src/scorpi_image_raw.c',
     '../src/scorpi_image_uri.c',
   ),
+  dependencies: threads_dep,
   include_directories: [inc, include_directories('../src')],
 )
 
