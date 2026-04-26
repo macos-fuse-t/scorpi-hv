@@ -618,6 +618,10 @@ Validation performed:
 
 ### Task 15: Add `scorpi_image` CLI Tool
 
+Status:
+
+- Done
+
 Scope:
 
 - add a Meson executable target for a user-facing `scorpi_image` utility
@@ -653,6 +657,11 @@ Validation criteria:
   readonly or sealed state, and base URI when present
 - `scorpi_image check` rejects corrupt `.sco` metadata
 - generated images can be opened by the runtime image backend tests
+
+Validation performed:
+
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson compile -C builddir`
 
 ### Task 16: Implement `.sco` Writable Top Support
 

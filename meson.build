@@ -123,6 +123,17 @@ endif
 
 runtime_core_sources += arch_src
 
+scorpi_image_executable = executable(
+  'scorpi_image',
+  files(
+    'src/scorpi_image_tool.c',
+    'src/scorpi_image.c',
+    'src/scorpi_image_sco.c',
+    'src/scorpi_image_uri.c',
+  ),
+  include_directories: [inc, include_directories('src')],
+)
+
 subdir('src/libscorpi')
 subdir('tests')
 subdir('util/console')

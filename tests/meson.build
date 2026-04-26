@@ -109,6 +109,18 @@ scorpi_sco_fixture_test_executable = executable(
 
 test('scorpi_sco_fixture_test', scorpi_sco_fixture_test_executable)
 
+scorpi_image_cli_test_executable = executable(
+  'scorpi_image_cli_test',
+  files('scorpi_image_cli_test.c'),
+  include_directories: [inc, include_directories('../src')],
+)
+
+scorpi_image_cli_test_env = environment()
+scorpi_image_cli_test_env.set('SCORPI_IMAGE_CLI',
+  scorpi_image_executable.full_path())
+test('scorpi_image_cli_test', scorpi_image_cli_test_executable,
+  env: scorpi_image_cli_test_env, depends: scorpi_image_executable)
+
 scorpi_image_chain_test_executable = executable(
   'scorpi_image_chain_test',
   files(
