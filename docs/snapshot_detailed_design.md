@@ -433,6 +433,10 @@ format_major = 1
 format_minor = 0
 ```
 
+The precise V1 on-disk layout is specified in
+[sco_v1_format.md](sco_v1_format.md). That document is the contract for the
+parser and deterministic test fixture generator.
+
 ### File Layout
 
 Recommended v1 layout:
@@ -495,8 +499,7 @@ struct sco_superblock {
 };
 ```
 
-The exact packed layout should be specified in a later format spec with fixed
-offsets and sizes.
+The exact packed layout is specified in [sco_v1_format.md](sco_v1_format.md).
 
 ### Version Compatibility
 

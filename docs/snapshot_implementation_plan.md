@@ -394,6 +394,10 @@ Validation performed:
 
 ### Task 9: Specify Fixed `.sco` V1 On-Disk Layout
 
+Status:
+
+- Done
+
 Scope:
 
 - create a precise `.sco` format specification document or section
@@ -410,7 +414,7 @@ Implementation notes:
 - define:
   - file identifier block
   - superblock A/B
-  - parent descriptor
+  - base descriptor
   - map root
   - map pages
   - map entries
@@ -426,6 +430,12 @@ Validation criteria:
 - fixture generator can be implemented from the spec without guessing field
   offsets
 - compatibility rules are documented
+
+Validation performed:
+
+- created [sco_v1_format.md](sco_v1_format.md)
+- linked the fixed format spec from [snapshot_detailed_design.md](snapshot_detailed_design.md)
+- `git diff --check`
 
 ### Task 10: Implement `.sco` Parser And Superblock Selection
 
@@ -456,12 +466,12 @@ Validation criteria:
 - newest valid generation is selected
 - corrupt newest generation falls back to previous valid generation
 
-### Task 11: Implement `.sco` Parent Descriptor
+### Task 11: Implement `.sco` Base Descriptor
 
 Scope:
 
-- parse parent descriptor
-- expose parent URI, parent UUID, and parent digest
+- parse base descriptor
+- expose base URI, base UUID, and base digest
 - integrate descriptor with chain resolver
 
 Dependencies:
@@ -471,17 +481,17 @@ Dependencies:
 
 Implementation notes:
 
-- parent descriptor does not store authoritative parent format, virtual size,
+- base descriptor does not store authoritative base format, virtual size,
   or sector size
-- resolver discovers parent metadata by opening the parent image
-- parent UUID/digest are validation data only
+- resolver discovers base metadata by opening the base image
+- base UUID/digest are validation data only
 
 Validation criteria:
 
-- `.sco` with no parent resolves as base
-- `.sco` with `file:` parent resolves parent
-- unsupported parent URI scheme is rejected
-- parent identity mismatch is rejected when identity fields are present
+- `.sco` with no base resolves as terminal
+- `.sco` with `file:` base resolves base
+- unsupported base URI scheme is rejected
+- base identity mismatch is rejected when identity fields are present
 
 ### Task 12: Implement `.sco` Allocation Map Read Path
 
@@ -551,7 +561,7 @@ Dependencies:
 Implementation notes:
 
 - helper can live under tests or tools
-- support creating base overlay, parent descriptor, present clusters, zero
+- support creating base overlay, base descriptor, present clusters, zero
   entries, discarded entries, and corrupt variants
 
 Validation criteria:
