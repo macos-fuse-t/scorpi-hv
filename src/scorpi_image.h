@@ -76,7 +76,7 @@ struct scorpi_image {
 	struct scorpi_image *base;
 };
 
-#define	SCORPI_IMAGE_BACKEND_SET(x)	DATA_SET(scoimgbe_set, x)
+#define	SCORPI_IMAGE_BACKEND_SET(x)	DATA_SET(sco_img_be_set, x)
 
 const struct scorpi_image_ops *scorpi_image_backend_find(const char *name);
 int	scorpi_image_backend_probe(int fd, const struct scorpi_image_ops **ops,

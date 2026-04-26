@@ -16,7 +16,7 @@
 
 #include <support/endian.h>
 
-#include "scorpi_image_sco.h"
+#include "scorpi_image.h"
 
 #define	SCO_MAGIC			"SCOIMG\0\0"
 #define	SCO_MAGIC_SIZE			8
@@ -480,9 +480,3 @@ static const struct scorpi_image_ops scorpi_sco_ops = {
 	.close = sco_close,
 };
 SCORPI_IMAGE_BACKEND_SET(scorpi_sco_ops);
-
-const struct scorpi_image_ops *
-scorpi_image_sco_backend(void)
-{
-	return (&scorpi_sco_ops);
-}

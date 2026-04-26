@@ -11,7 +11,7 @@
 
 #include "scorpi_image.h"
 
-SET_DECLARE(scoimgbe_set, struct scorpi_image_ops);
+SET_DECLARE(sco_img_be_set, struct scorpi_image_ops);
 
 static bool
 scorpi_image_backend_ops_valid(const struct scorpi_image_ops *ops)
@@ -32,7 +32,7 @@ scorpi_image_backend_find(const char *name)
 	if (name == NULL || name[0] == '\0')
 		return (NULL);
 
-	SET_FOREACH(opsp, scoimgbe_set) {
+	SET_FOREACH(opsp, sco_img_be_set) {
 		if (*opsp == NULL || !scorpi_image_backend_ops_valid(*opsp))
 			continue;
 		if (strcmp((*opsp)->name, name) == 0)
@@ -56,7 +56,7 @@ scorpi_image_backend_probe(int fd, const struct scorpi_image_ops **ops,
 	best_ops = NULL;
 	best_score = 0;
 	ret = ENOENT;
-	SET_FOREACH(opsp, scoimgbe_set) {
+	SET_FOREACH(opsp, sco_img_be_set) {
 		if (*opsp == NULL || !scorpi_image_backend_ops_valid(*opsp))
 			continue;
 		candidate_score = 0;

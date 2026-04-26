@@ -12,7 +12,7 @@
 
 #include <support/endian.h>
 
-#include "scorpi_image_sco.h"
+#include "scorpi_image.h"
 
 #define	SCO_MAGIC			"SCOIMG\0\0"
 #define	SCO_FILE_ID_SIZE		0x1000
@@ -156,7 +156,8 @@ open_sco(const char *path, void **statep)
 	const struct scorpi_image_ops *sco;
 	int error, fd;
 
-	sco = scorpi_image_sco_backend();
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
 	fd = open(path, O_RDONLY);
 	assert(fd >= 0);
 	*statep = NULL;
@@ -192,7 +193,8 @@ test_valid_sco_opens(void)
 
 	state = NULL;
 	assert(open_sco(path, &state) == 0);
-	sco = scorpi_image_sco_backend();
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
 	assert(sco->get_info(state, &info) == 0);
 	assert(info.format == SCORPI_IMAGE_FORMAT_SCO);
 	assert(info.virtual_size == a.virtual_size);
@@ -325,7 +327,8 @@ test_newest_valid_generation_selected(void)
 	};
 	write_fixture(path, false, 1, false, &a, &b);
 	assert(open_sco(path, &state) == 0);
-	sco = scorpi_image_sco_backend();
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
 	assert(sco->get_info(state, &info) == 0);
 	assert(info.virtual_size == b.virtual_size);
 	assert(sco->close(state) == 0);
@@ -362,7 +365,8 @@ test_corrupt_newest_generation_falls_back(void)
 	};
 	write_fixture(path, false, 1, false, &a, &b);
 	assert(open_sco(path, &state) == 0);
-	sco = scorpi_image_sco_backend();
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
 	assert(sco->get_info(state, &info) == 0);
 	assert(info.virtual_size == a.virtual_size);
 	assert(sco->close(state) == 0);
