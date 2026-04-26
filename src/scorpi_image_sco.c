@@ -1217,7 +1217,6 @@ sco_write_present_cluster(struct sco_image *sco,
     const struct sco_lookup *lookup, uint64_t cluster_offset,
     const void *buf, size_t len)
 {
-	uint8_t *cluster;
 	uint64_t cluster_index, stored_length;
 	int error;
 
@@ -1240,20 +1239,8 @@ sco_write_present_cluster(struct sco_image *sco,
 		return (write_exact(sco->fd, lookup->physical_offset, buf, len));
 	}
 
-	if (stored_length > SIZE_MAX)
-		return (EINVAL);
-	cluster = malloc((size_t)stored_length);
-	if (cluster == NULL)
-		return (ENOMEM);
-	error = read_exact(sco->fd, lookup->physical_offset, cluster,
-	    (size_t)stored_length);
-	if (error == 0) {
-		memcpy(cluster + cluster_offset, buf, len);
-		error = write_exact(sco->fd, lookup->physical_offset, cluster,
-		    (size_t)stored_length);
-	}
-	free(cluster);
-	return (error);
+	return (write_exact(sco->fd, lookup->physical_offset + cluster_offset,
+	    buf, len));
 }
 
 static int
@@ -1261,9 +1248,7 @@ sco_write_present_cluster_data(struct sco_image *sco,
     const struct sco_lookup *lookup, uint64_t cluster_offset,
     const void *buf, size_t len)
 {
-	uint8_t *cluster;
 	uint64_t cluster_index, stored_length;
-	int error;
 
 	if (sco == NULL || lookup == NULL || buf == NULL || len == 0)
 		return (EINVAL);
@@ -1272,23 +1257,9 @@ sco_write_present_cluster_data(struct sco_image *sco,
 	if (cluster_offset > stored_length || len > stored_length -
 	    cluster_offset)
 		return (EINVAL);
-	if (cluster_offset == 0 && len == stored_length)
-		return (write_exact(sco->fd, lookup->physical_offset, buf, len));
 
-	if (stored_length > SIZE_MAX)
-		return (EINVAL);
-	cluster = malloc((size_t)stored_length);
-	if (cluster == NULL)
-		return (ENOMEM);
-	error = read_exact(sco->fd, lookup->physical_offset, cluster,
-	    (size_t)stored_length);
-	if (error == 0) {
-		memcpy(cluster + cluster_offset, buf, len);
-		error = write_exact(sco->fd, lookup->physical_offset, cluster,
-		    (size_t)stored_length);
-	}
-	free(cluster);
-	return (error);
+	return (write_exact(sco->fd, lookup->physical_offset + cluster_offset,
+	    buf, len));
 }
 
 static int
