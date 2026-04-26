@@ -49,7 +49,7 @@ main(void)
 	state = NULL;
 	assert(raw->open(path, fd, false, &state) == 0);
 	chain = NULL;
-	assert(scorpi_image_chain_open_single(raw, state, &chain) == 0);
+	assert(scorpi_image_chain_open_single_backend(raw, state, &chain) == 0);
 
 	info = scorpi_image_chain_top_info(chain);
 	assert(info != NULL);
@@ -71,7 +71,7 @@ main(void)
 	state = NULL;
 	assert(raw->open(path, fd, true, &state) == 0);
 	chain = NULL;
-	assert(scorpi_image_chain_open_single(raw, state, &chain) == 0);
+	assert(scorpi_image_chain_open_single_backend(raw, state, &chain) == 0);
 	assert(scorpi_image_chain_write(chain, buf, 0, sizeof(buf)) == EROFS);
 	assert(scorpi_image_chain_discard(chain, 0, sizeof(buf)) == EROFS);
 	assert(scorpi_image_chain_close(chain) == 0);

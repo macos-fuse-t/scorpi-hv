@@ -14,7 +14,14 @@
 
 struct scorpi_image_chain;
 
-int	scorpi_image_chain_open_single(const struct scorpi_image_ops *ops,
+struct scorpi_image_chain_open_options {
+	bool raw_fallback;
+};
+
+int	scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
+	    const struct scorpi_image_chain_open_options *options,
+	    struct scorpi_image_chain **chainp);
+int	scorpi_image_chain_open_single_backend(const struct scorpi_image_ops *ops,
 	    void *state, struct scorpi_image_chain **chainp);
 const struct scorpi_image_info *scorpi_image_chain_top_info(
 	    const struct scorpi_image_chain *chain);

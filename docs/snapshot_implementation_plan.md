@@ -209,6 +209,10 @@ Validation performed:
 
 ### Task 4: Add Format Probing And Raw Fallback Policy
 
+Status:
+
+- Done
+
 Scope:
 
 - implement backend probing by file content
@@ -232,6 +236,12 @@ Validation criteria:
 - unknown file opens as raw only when raw fallback is enabled
 - unknown file is rejected when raw fallback is disabled
 - fake backend with magic wins over raw fallback
+
+Validation performed:
+
+- `meson setup builddir --reconfigure`
+- `meson test -C builddir scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_chain_test`
+- `meson compile -C builddir`
 
 ### Task 5: Implement Parent Location URI Parser
 

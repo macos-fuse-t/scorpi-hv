@@ -40,12 +40,29 @@ test('scorpi_header_compile_test', scorpi_header_compile_test_executable)
 
 scorpi_image_backend_test_executable = executable(
   'scorpi_image_backend_test',
-  files('scorpi_image_backend_test.c', '../src/scorpi_image.c'),
+  files(
+    'scorpi_image_backend_test.c',
+    '../src/scorpi_image.c',
+  ),
   dependencies: threads_dep,
   include_directories: [inc, include_directories('../src')],
 )
 
 test('scorpi_image_backend_test', scorpi_image_backend_test_executable)
+
+scorpi_image_open_test_executable = executable(
+  'scorpi_image_open_test',
+  files(
+    'scorpi_image_open_test.c',
+    '../src/scorpi_image_chain.c',
+    '../src/scorpi_image.c',
+    '../src/scorpi_image_raw.c',
+  ),
+  dependencies: threads_dep,
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_image_open_test', scorpi_image_open_test_executable)
 
 scorpi_image_raw_test_executable = executable(
   'scorpi_image_raw_test',
@@ -60,6 +77,7 @@ scorpi_image_chain_test_executable = executable(
   files(
     'scorpi_image_chain_test.c',
     '../src/scorpi_image_chain.c',
+    '../src/scorpi_image.c',
     '../src/scorpi_image_raw.c',
   ),
   include_directories: [inc, include_directories('../src')],

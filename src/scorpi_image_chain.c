@@ -10,6 +10,7 @@
 #include <stdlib.h>
 
 #include "scorpi_image_chain.h"
+#include "scorpi_image_raw.h"
 
 struct scorpi_image_layer {
 	const struct scorpi_image_ops *ops;
@@ -23,8 +24,8 @@ struct scorpi_image_chain {
 };
 
 int
-scorpi_image_chain_open_single(const struct scorpi_image_ops *ops, void *state,
-    struct scorpi_image_chain **chainp)
+scorpi_image_chain_open_single_backend(const struct scorpi_image_ops *ops,
+    void *state, struct scorpi_image_chain **chainp)
 {
 	struct scorpi_image_chain *chain;
 	int error;
@@ -53,6 +54,46 @@ scorpi_image_chain_open_single(const struct scorpi_image_ops *ops, void *state,
 
 	*chainp = chain;
 	return (0);
+}
+
+int
+scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
+    const struct scorpi_image_chain_open_options *options,
+    struct scorpi_image_chain **chainp)
+{
+	const struct scorpi_image_ops *ops;
+	struct scorpi_image_chain_open_options default_options;
+	uint32_t score;
+	void *state;
+	int error;
+
+	if (path == NULL || fd < 0 || chainp == NULL)
+		return (EINVAL);
+
+	default_options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = false,
+	};
+	if (options == NULL)
+		options = &default_options;
+
+	ops = NULL;
+	score = 0;
+	error = scorpi_image_backend_probe(fd, &ops, &score);
+	if (error != 0 && error != ENOENT)
+		return (error);
+	if ((error == ENOENT || score == 0) && options->raw_fallback)
+		ops = scorpi_image_raw_backend();
+	if (ops == NULL)
+		return (ENOENT);
+
+	state = NULL;
+	error = ops->open(path, fd, readonly, &state);
+	if (error != 0)
+		return (error);
+	error = scorpi_image_chain_open_single_backend(ops, state, chainp);
+	if (error != 0)
+		ops->close(state);
+	return (error);
 }
 
 const struct scorpi_image_info *

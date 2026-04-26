@@ -57,7 +57,6 @@
 #include "mevent.h"
 #include "pci_emul.h"
 #include "scorpi_image_chain.h"
-#include "scorpi_image_raw.h"
 
 #define BLOCKIF_SIG    0xb109b109
 
@@ -414,10 +413,9 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	const char *path, *pssval, *ssval, *bootindex_val;
 	char *cp;
 	struct blockif_ctxt *bc;
-	const struct scorpi_image_ops *image_ops;
+	struct scorpi_image_chain_open_options image_options;
 	struct scorpi_image_chain *image_chain;
 	struct stat sbuf;
-	void *image_state;
 	// struct diocgattr_arg arg;
 	off_t size, psectsz, psectoff;
 	int extra, fd, i, sectsz;
@@ -428,7 +426,6 @@ blockif_open(nvlist_t *nvl, const char *ident)
 
 	fd = -1;
 	image_chain = NULL;
-	image_state = NULL;
 	extra = 0;
 	ssopt = 0;
 	ro = 0;
@@ -551,13 +548,12 @@ blockif_open(nvlist_t *nvl, const char *ident)
 		psectoff = 0;
 	}
 
-	image_ops = scorpi_image_raw_backend();
-	if (image_ops->open(path, fd, ro != 0, &image_state) != 0)
-		goto err;
-	if (scorpi_image_chain_open_single(image_ops, image_state,
+	image_options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	if (scorpi_image_chain_open_single(path, fd, ro != 0, &image_options,
 	    &image_chain) != 0)
 		goto err;
-	image_state = NULL;
 
 	bc = calloc(1, sizeof(struct blockif_ctxt));
 	if (bc == NULL) {
@@ -599,8 +595,6 @@ blockif_open(nvlist_t *nvl, const char *ident)
 err:
 	if (image_chain != NULL)
 		scorpi_image_chain_close(image_chain);
-	else if (image_state != NULL)
-		image_ops->close(image_state);
 	else if (fd >= 0)
 		close(fd);
 	return (NULL);
