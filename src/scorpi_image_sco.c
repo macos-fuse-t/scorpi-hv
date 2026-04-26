@@ -5,6 +5,7 @@
  */
 
 #include <sys/errno.h>
+#include <sys/queue.h>
 #include <sys/stat.h>
 
 #include <fcntl.h>
@@ -59,6 +60,8 @@
 #define	SCO_MAP_STATE_DISCARDED		3
 
 #define	SCO_DATA_LOCK_STRIPES		64
+#define	SCO_METADATA_CACHE_MAX_BYTES	(32ULL * 1024ULL * 1024ULL)
+#define	SCO_METADATA_CACHE_BUCKETS	4096
 
 struct sco_superblock_decoded {
 	uint64_t generation;
@@ -80,10 +83,24 @@ struct sco_superblock_decoded {
 	bool has_image_digest;
 };
 
+struct sco_metadata_cache_entry {
+	TAILQ_ENTRY(sco_metadata_cache_entry) lru_link;
+	TAILQ_ENTRY(sco_metadata_cache_entry) hash_link;
+	uint64_t offset;
+	uint64_t first_index;
+	uint32_t page_crc32c;
+	uint32_t entry_count;
+	uint8_t page[SCO_METADATA_PAGE_SIZE];
+};
+
+TAILQ_HEAD(sco_metadata_cache_lru, sco_metadata_cache_entry);
+TAILQ_HEAD(sco_metadata_cache_bucket, sco_metadata_cache_entry);
+
 struct sco_image {
 	int fd;
 	pthread_rwlock_t lock;
 	pthread_rwlock_t data_locks[SCO_DATA_LOCK_STRIPES];
+	pthread_mutex_t metadata_cache_mtx;
 	bool readonly;
 	bool trace;
 	uint64_t file_size;
@@ -92,6 +109,10 @@ struct sco_image {
 	uint8_t *metadata_page_used;
 	uint64_t metadata_page_count;
 	uint64_t metadata_alloc_cursor;
+	struct sco_metadata_cache_lru metadata_cache_lru;
+	struct sco_metadata_cache_bucket
+	    metadata_cache_buckets[SCO_METADATA_CACHE_BUCKETS];
+	uint64_t metadata_cache_bytes;
 	bool has_base;
 	char *base_uri;
 	uint8_t base_uuid[16];
@@ -111,6 +132,9 @@ struct sco_image {
 	uint64_t trace_commit_map_ns;
 	uint64_t trace_metadata_candidates;
 	uint64_t trace_metadata_page_used_calls;
+	uint64_t trace_metadata_cache_hits;
+	uint64_t trace_metadata_cache_misses;
+	uint64_t trace_metadata_cache_evictions;
 	uint64_t trace_fsync_calls;
 	uint64_t trace_fsync_ns;
 	uint64_t trace_flush_calls;
@@ -161,7 +185,9 @@ sco_trace_report(struct sco_image *sco, const char *where)
 	    "write_bytes=%llu data_only=%llu metadata_writes=%llu "
 	    "materialize=%llu alloc_data=%llu alloc_data_bytes=%llu "
 	    "commit_map=%llu commit_map_ms=%llu metadata_candidates=%llu "
-	    "metadata_page_used=%llu fsyncs=%llu fsync_ms=%llu flushes=%llu\n",
+	    "metadata_page_used=%llu metadata_cache_hits=%llu "
+	    "metadata_cache_misses=%llu metadata_cache_evictions=%llu "
+	    "fsyncs=%llu fsync_ms=%llu flushes=%llu\n",
 	    where,
 	    (unsigned long long)sco_trace_load(&sco->trace_read_calls),
 	    (unsigned long long)sco_trace_load(&sco->trace_read_bytes),
@@ -177,6 +203,9 @@ sco_trace_report(struct sco_image *sco, const char *where)
 	    1000000ULL),
 	    (unsigned long long)sco_trace_load(&sco->trace_metadata_candidates),
 	    (unsigned long long)sco_trace_load(&sco->trace_metadata_page_used_calls),
+	    (unsigned long long)sco_trace_load(&sco->trace_metadata_cache_hits),
+	    (unsigned long long)sco_trace_load(&sco->trace_metadata_cache_misses),
+	    (unsigned long long)sco_trace_load(&sco->trace_metadata_cache_evictions),
 	    (unsigned long long)sco_trace_load(&sco->trace_fsync_calls),
 	    (unsigned long long)(sco_trace_load(&sco->trace_fsync_ns) /
 	    1000000ULL),
@@ -234,6 +263,143 @@ static pthread_rwlock_t *
 sco_data_lock_for_cluster(struct sco_image *sco, uint64_t cluster_index)
 {
 	return (&sco->data_locks[cluster_index % SCO_DATA_LOCK_STRIPES]);
+}
+
+static void
+sco_metadata_cache_init(struct sco_image *sco)
+{
+	size_t i;
+
+	TAILQ_INIT(&sco->metadata_cache_lru);
+	for (i = 0; i < SCO_METADATA_CACHE_BUCKETS; i++)
+		TAILQ_INIT(&sco->metadata_cache_buckets[i]);
+}
+
+static size_t
+sco_metadata_cache_bucket_index(uint64_t offset)
+{
+	return ((offset / SCO_METADATA_PAGE_SIZE) %
+	    SCO_METADATA_CACHE_BUCKETS);
+}
+
+static struct sco_metadata_cache_entry *
+sco_metadata_cache_find_locked(struct sco_image *sco, uint64_t offset)
+{
+	struct sco_metadata_cache_entry *entry;
+	size_t bucket;
+
+	bucket = sco_metadata_cache_bucket_index(offset);
+	TAILQ_FOREACH(entry, &sco->metadata_cache_buckets[bucket],
+	    hash_link) {
+		if (entry->offset == offset)
+			return (entry);
+	}
+	return (NULL);
+}
+
+static void
+sco_metadata_cache_remove_locked(struct sco_image *sco,
+    struct sco_metadata_cache_entry *entry)
+{
+	size_t bucket;
+
+	bucket = sco_metadata_cache_bucket_index(entry->offset);
+	TAILQ_REMOVE(&sco->metadata_cache_buckets[bucket], entry,
+	    hash_link);
+	TAILQ_REMOVE(&sco->metadata_cache_lru, entry, lru_link);
+	sco->metadata_cache_bytes -= sizeof(*entry);
+	free(entry);
+}
+
+static void
+sco_metadata_cache_remove(struct sco_image *sco, uint64_t offset)
+{
+	struct sco_metadata_cache_entry *entry;
+
+	pthread_mutex_lock(&sco->metadata_cache_mtx);
+	entry = sco_metadata_cache_find_locked(sco, offset);
+	if (entry != NULL)
+		sco_metadata_cache_remove_locked(sco, entry);
+	pthread_mutex_unlock(&sco->metadata_cache_mtx);
+}
+
+static void
+sco_metadata_cache_remove_range(struct sco_image *sco, uint64_t offset,
+    uint64_t length)
+{
+	uint64_t i, page_count;
+
+	if (length == 0 || (length % SCO_METADATA_PAGE_SIZE) != 0)
+		return;
+	page_count = length / SCO_METADATA_PAGE_SIZE;
+	for (i = 0; i < page_count; i++)
+		sco_metadata_cache_remove(sco,
+		    offset + i * SCO_METADATA_PAGE_SIZE);
+}
+
+static void
+sco_metadata_cache_evict_locked(struct sco_image *sco, uint64_t extra_bytes)
+{
+	struct sco_metadata_cache_entry *entry;
+
+	while (sco->metadata_cache_bytes + extra_bytes >
+	    SCO_METADATA_CACHE_MAX_BYTES) {
+		entry = TAILQ_LAST(&sco->metadata_cache_lru,
+		    sco_metadata_cache_lru);
+		if (entry == NULL)
+			break;
+		if (sco->trace)
+			sco_trace_add(&sco->trace_metadata_cache_evictions, 1);
+		sco_metadata_cache_remove_locked(sco, entry);
+	}
+}
+
+static int
+sco_metadata_cache_store(struct sco_image *sco, uint64_t offset,
+    const uint8_t page[SCO_METADATA_PAGE_SIZE], uint32_t page_crc32c,
+    uint32_t entry_count, uint64_t first_index)
+{
+	struct sco_metadata_cache_entry *entry;
+	size_t bucket;
+
+	if (sizeof(*entry) > SCO_METADATA_CACHE_MAX_BYTES)
+		return (0);
+	pthread_mutex_lock(&sco->metadata_cache_mtx);
+	entry = sco_metadata_cache_find_locked(sco, offset);
+	if (entry == NULL) {
+		sco_metadata_cache_evict_locked(sco, sizeof(*entry));
+		entry = calloc(1, sizeof(*entry));
+		if (entry == NULL) {
+			pthread_mutex_unlock(&sco->metadata_cache_mtx);
+			return (ENOMEM);
+		}
+		entry->offset = offset;
+		bucket = sco_metadata_cache_bucket_index(offset);
+		TAILQ_INSERT_HEAD(&sco->metadata_cache_buckets[bucket],
+		    entry, hash_link);
+		TAILQ_INSERT_HEAD(&sco->metadata_cache_lru, entry, lru_link);
+		sco->metadata_cache_bytes += sizeof(*entry);
+	} else {
+		TAILQ_REMOVE(&sco->metadata_cache_lru, entry, lru_link);
+		TAILQ_INSERT_HEAD(&sco->metadata_cache_lru, entry, lru_link);
+	}
+	memcpy(entry->page, page, SCO_METADATA_PAGE_SIZE);
+	entry->page_crc32c = page_crc32c;
+	entry->entry_count = entry_count;
+	entry->first_index = first_index;
+	pthread_mutex_unlock(&sco->metadata_cache_mtx);
+	return (0);
+}
+
+static void
+sco_metadata_cache_destroy(struct sco_image *sco)
+{
+	struct sco_metadata_cache_entry *entry;
+
+	pthread_mutex_lock(&sco->metadata_cache_mtx);
+	while ((entry = TAILQ_FIRST(&sco->metadata_cache_lru)) != NULL)
+		sco_metadata_cache_remove_locked(sco, entry);
+	pthread_mutex_unlock(&sco->metadata_cache_mtx);
 }
 
 static uint32_t
@@ -752,24 +918,110 @@ sco_validate_map_page_header(uint8_t page[SCO_METADATA_PAGE_SIZE],
 }
 
 static int
+sco_read_metadata_page(struct sco_image *sco, uint64_t offset,
+    bool expected_crc_from_page, uint32_t expected_crc,
+    uint8_t page[SCO_METADATA_PAGE_SIZE], uint32_t *entry_countp,
+    uint64_t *first_indexp)
+{
+	struct sco_metadata_cache_entry *entry;
+	uint32_t actual_expected_crc, entry_count;
+	uint64_t first_index;
+	int error;
+
+	if (sco == NULL || page == NULL)
+		return (EINVAL);
+	if (!range_before_data(offset, SCO_METADATA_PAGE_SIZE,
+	    sco->sb.data_area_offset))
+		return (EINVAL);
+
+	pthread_mutex_lock(&sco->metadata_cache_mtx);
+	entry = sco_metadata_cache_find_locked(sco, offset);
+	if (entry != NULL &&
+	    (expected_crc_from_page || entry->page_crc32c == expected_crc)) {
+		TAILQ_REMOVE(&sco->metadata_cache_lru, entry, lru_link);
+		TAILQ_INSERT_HEAD(&sco->metadata_cache_lru, entry, lru_link);
+		memcpy(page, entry->page, SCO_METADATA_PAGE_SIZE);
+		entry_count = entry->entry_count;
+		first_index = entry->first_index;
+		pthread_mutex_unlock(&sco->metadata_cache_mtx);
+		if (sco->trace)
+			sco_trace_add(&sco->trace_metadata_cache_hits, 1);
+		if (entry_countp != NULL)
+			*entry_countp = entry_count;
+		if (first_indexp != NULL)
+			*first_indexp = first_index;
+		return (0);
+	}
+	if (entry != NULL)
+		sco_metadata_cache_remove_locked(sco, entry);
+	pthread_mutex_unlock(&sco->metadata_cache_mtx);
+	if (sco->trace)
+		sco_trace_add(&sco->trace_metadata_cache_misses, 1);
+
+	error = read_exact(sco->fd, offset, page, SCO_METADATA_PAGE_SIZE);
+	if (error != 0)
+		return (error);
+	actual_expected_crc = expected_crc_from_page ?
+	    le32dec(page + 0x0008) : expected_crc;
+	error = sco_validate_map_page_header(page, actual_expected_crc,
+	    &entry_count, &first_index);
+	if (error != 0)
+		return (error);
+	(void)sco_metadata_cache_store(sco, offset, page,
+	    actual_expected_crc, entry_count, first_index);
+	if (entry_countp != NULL)
+		*entry_countp = entry_count;
+	if (first_indexp != NULL)
+		*first_indexp = first_index;
+	return (0);
+}
+
+static int
+sco_metadata_cache_store_root_run(struct sco_image *sco, uint64_t offset,
+    const uint8_t *root, uint64_t length)
+{
+	uint8_t page[SCO_METADATA_PAGE_SIZE];
+	uint64_t i, page_count, first_index;
+	uint32_t entry_count, expected_crc;
+	int error;
+
+	if (sco == NULL || root == NULL || length == 0 ||
+	    (length % SCO_METADATA_PAGE_SIZE) != 0)
+		return (EINVAL);
+	page_count = length / SCO_METADATA_PAGE_SIZE;
+	for (i = 0; i < page_count; i++) {
+		memcpy(page, root + i * SCO_METADATA_PAGE_SIZE,
+		    sizeof(page));
+		expected_crc = le32dec(page + 0x0008);
+		error = sco_validate_map_page_header(page, expected_crc,
+		    &entry_count, &first_index);
+		if (error != 0)
+			return (error);
+		error = sco_metadata_cache_store(sco,
+		    offset + i * SCO_METADATA_PAGE_SIZE, page,
+		    expected_crc, entry_count, first_index);
+		if (error != 0 && error != ENOMEM)
+			return (error);
+	}
+	return (0);
+}
+
+static int
 sco_find_root_entry(struct sco_image *sco, uint64_t root_index,
     uint64_t *map_page_offsetp, uint32_t *map_page_crc32cp)
 {
 	uint8_t page[SCO_METADATA_PAGE_SIZE];
 	uint64_t page_offset, first_root_index, last_root_index;
 	uint64_t root_page_count, i, entry_index;
-	uint32_t entry_count, expected_crc, flags;
+	uint32_t entry_count, flags;
 	int error;
 
 	root_page_count = sco->sb.map_root_length / SCO_METADATA_PAGE_SIZE;
 	for (i = 0; i < root_page_count; i++) {
 		page_offset = sco->sb.map_root_offset +
 		    i * SCO_METADATA_PAGE_SIZE;
-		error = read_exact(sco->fd, page_offset, page, sizeof(page));
-		if (error != 0)
-			return (error);
-		expected_crc = le32dec(page + 0x0008);
-		error = sco_validate_map_page_header(page, expected_crc,
+		error = sco_read_metadata_page(sco, page_offset, true, 0,
+		    page,
 		    &entry_count, &first_root_index);
 		if (error != 0)
 			return (error);
@@ -808,7 +1060,7 @@ sco_read_root_entry_ref(struct sco_image *sco, uint64_t root_index,
 {
 	uint64_t page_offset, first_root_index, last_root_index;
 	uint64_t root_page_count, i, entry_index;
-	uint32_t entry_count, expected_crc, flags;
+	uint32_t entry_count, flags;
 	int error;
 
 	if (sco == NULL || ref == NULL)
@@ -818,12 +1070,8 @@ sco_read_root_entry_ref(struct sco_image *sco, uint64_t root_index,
 	for (i = 0; i < root_page_count; i++) {
 		page_offset = sco->sb.map_root_offset +
 		    i * SCO_METADATA_PAGE_SIZE;
-		error = read_exact(sco->fd, page_offset, ref->page,
-		    sizeof(ref->page));
-		if (error != 0)
-			return (error);
-		expected_crc = le32dec(ref->page + 0x0008);
-		error = sco_validate_map_page_header(ref->page, expected_crc,
+		error = sco_read_metadata_page(sco, page_offset, true, 0,
+		    ref->page,
 		    &entry_count, &first_root_index);
 		if (error != 0)
 			return (error);
@@ -933,7 +1181,7 @@ sco_metadata_allocator_init(struct sco_image *sco)
 	uint8_t page[SCO_METADATA_PAGE_SIZE];
 	uint64_t page_offset, first_root_index;
 	uint64_t root_page_count, i, j, map_page_offset;
-	uint32_t entry_count, expected_crc, flags;
+	uint32_t entry_count, flags;
 	int error;
 
 	if (sco == NULL || sco->metadata_page_used != NULL)
@@ -968,11 +1216,8 @@ sco_metadata_allocator_init(struct sco_image *sco)
 	for (i = 0; i < root_page_count; i++) {
 		page_offset = sco->sb.map_root_offset +
 		    i * SCO_METADATA_PAGE_SIZE;
-		error = read_exact(sco->fd, page_offset, page, sizeof(page));
-		if (error != 0)
-			goto fail;
-		expected_crc = le32dec(page + 0x0008);
-		error = sco_validate_map_page_header(page, expected_crc,
+		error = sco_read_metadata_page(sco, page_offset, true, 0,
+		    page,
 		    &entry_count, &first_root_index);
 		if (error != 0)
 			goto fail;
@@ -1166,10 +1411,8 @@ sco_lookup_extent(struct sco_image *sco, uint64_t offset, uint64_t length,
 	    sco->sb.data_area_offset))
 		return (EINVAL);
 
-	error = read_exact(sco->fd, map_page_offset, page, sizeof(page));
-	if (error != 0)
-		return (error);
-	error = sco_validate_map_page_header(page, map_page_crc32c,
+	error = sco_read_metadata_page(sco, map_page_offset, false,
+	    map_page_crc32c, page,
 	    &entry_count, &first_cluster_index);
 	if (error != 0)
 		return (error);
@@ -1337,12 +1580,9 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 		if (!range_before_data(map_page_offset, SCO_METADATA_PAGE_SIZE,
 		    sco->sb.data_area_offset))
 			return (EINVAL);
-		error = read_exact(sco->fd, map_page_offset, page,
-		    sizeof(page));
-		if (error != 0)
-			return (error);
-		error = sco_validate_map_page_header(page,
-		    ref.map_page_crc32c, &entry_count, &first_cluster_index);
+		error = sco_read_metadata_page(sco, map_page_offset, false,
+		    ref.map_page_crc32c, page, &entry_count,
+		    &first_cluster_index);
 		if (error != 0)
 			return (error);
 		if (!reserved_zero(page,
@@ -1382,10 +1622,18 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 	root = malloc(sco->sb.map_root_length);
 	if (root == NULL)
 		return (ENOMEM);
-	error = read_exact(sco->fd, sco->sb.map_root_offset, root,
-	    sco->sb.map_root_length);
-	if (error != 0)
-		goto out;
+	for (root_page_index = 0; root_page_index < root_page_count;
+	    root_page_index++) {
+		uint8_t *root_page;
+
+		root_page = root + root_page_index * SCO_METADATA_PAGE_SIZE;
+		error = sco_read_metadata_page(sco,
+		    sco->sb.map_root_offset +
+		    root_page_index * SCO_METADATA_PAGE_SIZE, true, 0,
+		    root_page, NULL, NULL);
+		if (error != 0)
+			goto out;
+	}
 	root_page_index = (ref.page_offset - sco->sb.map_root_offset) /
 	    SCO_METADATA_PAGE_SIZE;
 	if (root_page_index >= root_page_count) {
@@ -1427,6 +1675,14 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 			    false);
 		(void)sco_metadata_mark_range(sco, old_root_offset,
 		    old_root_length, false);
+		(void)sco_metadata_cache_store(sco, new_map_page_offset,
+		    page, map_page_crc32c, entry_count, first_cluster_index);
+		(void)sco_metadata_cache_store_root_run(sco, new_root_offset,
+		    root, old_root_length);
+		if (old_map_page_offset != 0)
+			sco_metadata_cache_remove(sco, old_map_page_offset);
+		sco_metadata_cache_remove_range(sco, old_root_offset,
+		    old_root_length);
 	}
 out:
 	trace_end = sco_trace_now_ns();
@@ -1671,6 +1927,14 @@ sco_open(const char *path __attribute__((unused)), int fd, bool readonly,
 		free(sco);
 		return (error);
 	}
+	error = pthread_mutex_init(&sco->metadata_cache_mtx, NULL);
+	if (error != 0) {
+		sco_data_locks_destroy(sco);
+		pthread_rwlock_destroy(&sco->lock);
+		free(sco);
+		return (error);
+	}
+	sco_metadata_cache_init(sco);
 	sco->fd = fd;
 	sco->readonly = readonly;
 	sco->trace = getenv("SCORPI_SCO_TRACE") != NULL;
@@ -1678,6 +1942,8 @@ sco_open(const char *path __attribute__((unused)), int fd, bool readonly,
 	error = sco_select_superblock(fd, readonly, file_id_uuid, file_size,
 	    &sco->sb, &sco->active_superblock_offset);
 	if (error != 0) {
+		sco_metadata_cache_destroy(sco);
+		pthread_mutex_destroy(&sco->metadata_cache_mtx);
 		sco_data_locks_destroy(sco);
 		pthread_rwlock_destroy(&sco->lock);
 		free(sco);
@@ -1685,6 +1951,8 @@ sco_open(const char *path __attribute__((unused)), int fd, bool readonly,
 	}
 	if (!readonly && (sco->sb.readonly_compatible_features &
 	    SCO_RO_COMPAT_SEALED) != 0) {
+		sco_metadata_cache_destroy(sco);
+		pthread_mutex_destroy(&sco->metadata_cache_mtx);
 		sco_data_locks_destroy(sco);
 		pthread_rwlock_destroy(&sco->lock);
 		free(sco);
@@ -1693,6 +1961,8 @@ sco_open(const char *path __attribute__((unused)), int fd, bool readonly,
 	error = sco_read_base_descriptor(sco);
 	if (error != 0) {
 		free(sco->base_uri);
+		sco_metadata_cache_destroy(sco);
+		pthread_mutex_destroy(&sco->metadata_cache_mtx);
 		sco_data_locks_destroy(sco);
 		pthread_rwlock_destroy(&sco->lock);
 		free(sco);
@@ -2152,8 +2422,10 @@ sco_close(void *statep)
 		error = errno;
 	free(sco->base_uri);
 	free(sco->metadata_page_used);
+	sco_metadata_cache_destroy(sco);
 	pthread_rwlock_unlock(&sco->lock);
 	sco_data_locks_destroy(sco);
+	pthread_mutex_destroy(&sco->metadata_cache_mtx);
 	pthread_rwlock_destroy(&sco->lock);
 	free(sco);
 	return (error);

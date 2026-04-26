@@ -1017,7 +1017,7 @@ Validation performed:
 
 ### Task 20C: Add Bounded `.sco` Metadata Page Cache
 
-Status: Pending
+Status: Done
 
 Scope:
 
@@ -1072,7 +1072,8 @@ Validation criteria:
 
 Validation performed:
 
-- Pending
+- `ninja -C builddir`
+- `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test scorpi_image_cli_test scorpi_image_chain_resolver_test`
 
 ### Task 21: Add Resolved Chain Diagnostics
 
