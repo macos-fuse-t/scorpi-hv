@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -39,6 +40,15 @@ run_fail(const char *cmd)
 	assert(status != -1);
 	assert(WIFEXITED(status));
 	assert(WEXITSTATUS(status) != 0);
+}
+
+static uint64_t
+test_le64dec(const uint8_t *p)
+{
+	return ((uint64_t)p[0] | ((uint64_t)p[1] << 8) |
+	    ((uint64_t)p[2] << 16) | ((uint64_t)p[3] << 24) |
+	    ((uint64_t)p[4] << 32) | ((uint64_t)p[5] << 40) |
+	    ((uint64_t)p[6] << 48) | ((uint64_t)p[7] << 56));
 }
 
 static void
@@ -78,6 +88,41 @@ test_create_info_check_mb_suffix(void)
 	assert(strstr(output, "cluster_size=262144\n") != NULL);
 	assert(strstr(output, "base_uri=") == NULL);
 	assert(unlink(output_path) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_large_sco_reserves_all_map_metadata(void)
+{
+	char path[] = "/tmp/scorpi-image-cli-large-meta-XXXXXX";
+	char cmd[1024];
+	struct stat sb;
+	uint8_t data_area_offset_buf[8];
+	uint64_t data_area_offset;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(path) == 0);
+
+	snprintf(cmd, sizeof(cmd),
+	    "%s create --format sco --size 64gb %s",
+	    cli_path(), path);
+	run_ok(cmd);
+
+	fd = open(path, O_RDONLY);
+	assert(fd >= 0);
+	assert(pread(fd, data_area_offset_buf, sizeof(data_area_offset_buf),
+	    0x1000 + 0x0048) == (ssize_t)sizeof(data_area_offset_buf));
+	assert(fstat(fd, &sb) == 0);
+	assert(close(fd) == 0);
+
+	data_area_offset = test_le64dec(data_area_offset_buf);
+	assert(data_area_offset >= 0x440000);
+	assert(sb.st_size == (off_t)data_area_offset);
+	snprintf(cmd, sizeof(cmd), "%s check %s", cli_path(), path);
+	run_ok(cmd);
 	assert(unlink(path) == 0);
 }
 
@@ -281,6 +326,7 @@ int
 main(void)
 {
 	test_create_info_check_mb_suffix();
+	test_large_sco_reserves_all_map_metadata();
 	test_create_with_positional_base();
 	test_create_info_check_raw_bytes();
 	test_check_rejects_corrupt_image_gb_suffix();

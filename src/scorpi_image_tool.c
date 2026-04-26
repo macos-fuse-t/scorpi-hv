@@ -208,6 +208,7 @@ create_sco(const struct sco_create_options *opts)
 	uint8_t *base_descriptor;
 	uint64_t cluster_count, map_page_count, root_page_count;
 	uint64_t base_descriptor_offset, data_area_offset, metadata_end;
+	uint64_t metadata_dynamic_pages;
 	uint32_t base_descriptor_length, root_entries, map_root_length;
 	uint64_t i, remaining_root_entries;
 	int fd, error;
@@ -232,6 +233,8 @@ create_sco(const struct sco_create_options *opts)
 	    SCO_MAP_ENTRIES_PER_PAGE;
 	root_page_count = (map_page_count + SCO_MAP_ENTRIES_PER_PAGE - 1) /
 	    SCO_MAP_ENTRIES_PER_PAGE;
+	if (root_page_count > UINT32_MAX / SCO_METADATA_PAGE_SIZE)
+		return (EFBIG);
 	map_root_length = (uint32_t)(root_page_count * SCO_METADATA_PAGE_SIZE);
 	metadata_end = SCO_METADATA_AREA_OFFSET + map_root_length;
 	base_descriptor_offset = 0;
@@ -240,8 +243,19 @@ create_sco(const struct sco_create_options *opts)
 		base_descriptor_offset = metadata_end;
 		base_descriptor_length = (uint32_t)align_up_u64(0x50 +
 		    strlen(opts->base_uri), SCO_METADATA_PAGE_SIZE);
+		if (base_descriptor_length > UINT64_MAX - metadata_end)
+			return (EFBIG);
 		metadata_end += base_descriptor_length;
 	}
+	if (map_page_count > UINT64_MAX - root_page_count - 1)
+		return (EFBIG);
+	metadata_dynamic_pages = map_page_count + root_page_count + 1;
+	if (metadata_dynamic_pages >
+	    (UINT64_MAX - metadata_end) / SCO_METADATA_PAGE_SIZE)
+		return (EFBIG);
+	metadata_end += metadata_dynamic_pages * SCO_METADATA_PAGE_SIZE;
+	if (metadata_end > UINT64_MAX - opts->cluster_size + 1)
+		return (EFBIG);
 	data_area_offset = align_up_u64(metadata_end, opts->cluster_size);
 
 	error = fill_uuid(uuid);

@@ -1015,6 +1015,65 @@ Validation performed:
 - `meson test -C builddir scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test`
 - `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 
+### Task 20C: Add Bounded `.sco` Metadata Page Cache
+
+Status: Pending
+
+Scope:
+
+- keep frequently used `.sco` metadata pages in memory
+- cache root metadata pages and allocation-map pages behind one metadata-cache
+  layer
+- cap metadata cache memory at 32 MiB per opened `.sco` image
+- evict cached metadata pages with LRU when the cache reaches its size limit
+- keep the cache entirely internal to the `.sco` backend
+
+Dependencies:
+
+- Task 16A
+- Task 19
+- Task 20
+
+Implementation notes:
+
+- this is a performance cache only; the on-disk `.sco` superblock, root, and
+  map pages remain authoritative
+- cache entries should be keyed by metadata page offset and should include the
+  decoded/validated page contents needed by lookup and commit paths
+- the cache must preserve crash safety:
+  - write new map/root pages to disk first
+  - fsync as required by the existing commit protocol
+  - commit the new superblock
+  - update in-memory metadata cache state only after the new superblock commit
+    succeeds
+- if a metadata commit fails, cached state must continue to reflect the old
+  committed superblock generation
+- if the process exits uncleanly, the cache disappears and is rebuilt from the
+  active superblock on next open
+- LRU accounting should be protected by `.sco` backend synchronization and must
+  be safe with concurrent read/write threads
+- cache memory accounting should include page buffers and per-entry overhead;
+  the default maximum is 32 MiB
+- images whose full metadata fits under 32 MiB may effectively keep all active
+  metadata resident
+- very large images should continue to work correctly with cache churn
+
+Validation criteria:
+
+- repeated reads/writes to hot clusters hit cached root/map metadata pages
+- cache eviction does not change visible read/write/discard semantics
+- corrupt metadata is still rejected when first loaded into the cache
+- metadata updates invalidate or replace stale cached pages after successful
+  commit
+- crash-safety tests continue to pass
+- memory use remains bounded by the configured 32 MiB maximum
+- trace counters or tests demonstrate reduced metadata page reads on a Windows
+  install-style tiny-iovec workload
+
+Validation performed:
+
+- Pending
+
 ### Task 21: Add Resolved Chain Diagnostics
 
 Status: Done

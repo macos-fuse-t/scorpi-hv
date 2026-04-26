@@ -462,6 +462,42 @@ scorpi_image_chain_read_nolock(struct scorpi_image_chain *chain, void *buf,
 }
 
 static int
+scorpi_image_chain_sco_partial_write_direct(struct scorpi_image_chain *chain,
+    struct scorpi_image *top, uint64_t offset, size_t len, bool *directp)
+{
+	struct scorpi_image_extent extent;
+	uint64_t covered;
+	int error;
+
+	if (chain == NULL || top == NULL || directp == NULL || len == 0)
+		return (EINVAL);
+	*directp = false;
+	memset(&extent, 0, sizeof(extent));
+	error = top->ops->map(top->state, offset, len, &extent);
+	if (error != 0)
+		return (error);
+	error = scorpi_image_extent_cover(&extent, offset, len, &covered);
+	if (error != 0)
+		return (error);
+	if (covered < len)
+		return (EINVAL);
+
+	switch (extent.state) {
+	case SCORPI_IMAGE_EXTENT_PRESENT:
+	case SCORPI_IMAGE_EXTENT_ZERO:
+	case SCORPI_IMAGE_EXTENT_DISCARDED:
+		*directp = true;
+		break;
+	case SCORPI_IMAGE_EXTENT_ABSENT:
+		*directp = chain->image_count == 1;
+		break;
+	default:
+		return (EINVAL);
+	}
+	return (0);
+}
+
+static int
 scorpi_image_chain_write_nolock(struct scorpi_image_chain *chain,
     const void *buf, uint64_t offset, size_t len)
 {
@@ -471,6 +507,7 @@ scorpi_image_chain_write_nolock(struct scorpi_image_chain *chain,
 	uint8_t *cluster;
 	uint64_t end, cluster_size, cluster_start, cluster_len;
 	uint64_t write_start, write_end, chunk_len;
+	bool direct;
 	int error;
 
 	if (chain == NULL || chain->image_count == 0)
@@ -514,6 +551,20 @@ scorpi_image_chain_write_nolock(struct scorpi_image_chain *chain,
 			if (error != 0)
 				return (error);
 		} else {
+			error = scorpi_image_chain_sco_partial_write_direct(
+			    chain, top, write_start, (size_t)chunk_len,
+			    &direct);
+			if (error != 0)
+				return (error);
+			if (direct) {
+				error = top->ops->write(top->state, p,
+				    write_start, (size_t)chunk_len);
+				if (error != 0)
+					return (error);
+				offset += chunk_len;
+				p += chunk_len;
+				continue;
+			}
 			cluster = malloc((size_t)cluster_len);
 			if (cluster == NULL)
 				return (ENOMEM);

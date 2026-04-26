@@ -413,6 +413,20 @@ than or equal to `data_area_offset`.
 
 V1 does not require data-cluster checksums.
 
+`data_area_offset` must leave enough metadata space before the data area for:
+
+- the active map root pages
+- every allocation map page needed by the virtual disk
+- one replacement map root run for copy-on-write commits
+- one replacement map page for copy-on-write commits
+- the base descriptor, when present
+
+For example, with the default 256 KiB clusters, a 64 GiB image has 262144
+clusters, 1033 allocation map pages, and 5 map root pages. Its data area must
+therefore start after at least 1033 map pages plus the active and replacement
+root pages. Aligning that to 256 KiB gives a `data_area_offset` of 0x440000,
+not 0x40000.
+
 ## Cluster Size Limits
 
 V1 accepts:

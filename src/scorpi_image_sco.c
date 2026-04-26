@@ -11,8 +11,10 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <support/endian.h>
@@ -83,15 +85,35 @@ struct sco_image {
 	pthread_rwlock_t lock;
 	pthread_rwlock_t data_locks[SCO_DATA_LOCK_STRIPES];
 	bool readonly;
+	bool trace;
 	uint64_t file_size;
 	uint64_t active_superblock_offset;
 	struct sco_superblock_decoded sb;
+	uint8_t *metadata_page_used;
+	uint64_t metadata_page_count;
+	uint64_t metadata_alloc_cursor;
 	bool has_base;
 	char *base_uri;
 	uint8_t base_uuid[16];
 	bool has_base_uuid;
 	uint8_t base_digest[32];
 	bool has_base_digest;
+	uint64_t trace_read_calls;
+	uint64_t trace_read_bytes;
+	uint64_t trace_write_calls;
+	uint64_t trace_write_bytes;
+	uint64_t trace_data_only_writes;
+	uint64_t trace_metadata_writes;
+	uint64_t trace_materialize_writes;
+	uint64_t trace_alloc_data_calls;
+	uint64_t trace_alloc_data_bytes;
+	uint64_t trace_commit_map_calls;
+	uint64_t trace_commit_map_ns;
+	uint64_t trace_metadata_candidates;
+	uint64_t trace_metadata_page_used_calls;
+	uint64_t trace_fsync_calls;
+	uint64_t trace_fsync_ns;
+	uint64_t trace_flush_calls;
 };
 
 struct sco_lookup {
@@ -106,6 +128,77 @@ struct sco_root_entry_ref {
 	uint64_t map_page_offset;
 	uint32_t map_page_crc32c;
 };
+
+static uint64_t
+sco_trace_now_ns(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+		return (0);
+	return ((uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec);
+}
+
+static uint64_t
+sco_trace_add(uint64_t *counter, uint64_t value)
+{
+	return (__atomic_add_fetch(counter, value, __ATOMIC_RELAXED));
+}
+
+static uint64_t
+sco_trace_load(const uint64_t *counter)
+{
+	return (__atomic_load_n(counter, __ATOMIC_RELAXED));
+}
+
+static void
+sco_trace_report(struct sco_image *sco, const char *where)
+{
+	if (sco == NULL || !sco->trace)
+		return;
+	fprintf(stderr,
+	    "SCO_TRACE[%s]: reads=%llu read_bytes=%llu writes=%llu "
+	    "write_bytes=%llu data_only=%llu metadata_writes=%llu "
+	    "materialize=%llu alloc_data=%llu alloc_data_bytes=%llu "
+	    "commit_map=%llu commit_map_ms=%llu metadata_candidates=%llu "
+	    "metadata_page_used=%llu fsyncs=%llu fsync_ms=%llu flushes=%llu\n",
+	    where,
+	    (unsigned long long)sco_trace_load(&sco->trace_read_calls),
+	    (unsigned long long)sco_trace_load(&sco->trace_read_bytes),
+	    (unsigned long long)sco_trace_load(&sco->trace_write_calls),
+	    (unsigned long long)sco_trace_load(&sco->trace_write_bytes),
+	    (unsigned long long)sco_trace_load(&sco->trace_data_only_writes),
+	    (unsigned long long)sco_trace_load(&sco->trace_metadata_writes),
+	    (unsigned long long)sco_trace_load(&sco->trace_materialize_writes),
+	    (unsigned long long)sco_trace_load(&sco->trace_alloc_data_calls),
+	    (unsigned long long)sco_trace_load(&sco->trace_alloc_data_bytes),
+	    (unsigned long long)sco_trace_load(&sco->trace_commit_map_calls),
+	    (unsigned long long)(sco_trace_load(&sco->trace_commit_map_ns) /
+	    1000000ULL),
+	    (unsigned long long)sco_trace_load(&sco->trace_metadata_candidates),
+	    (unsigned long long)sco_trace_load(&sco->trace_metadata_page_used_calls),
+	    (unsigned long long)sco_trace_load(&sco->trace_fsync_calls),
+	    (unsigned long long)(sco_trace_load(&sco->trace_fsync_ns) /
+	    1000000ULL),
+	    (unsigned long long)sco_trace_load(&sco->trace_flush_calls));
+}
+
+static int
+sco_trace_fsync(struct sco_image *sco)
+{
+	uint64_t start, end;
+
+	start = sco_trace_now_ns();
+	if (fsync(sco->fd) != 0)
+		return (errno);
+	end = sco_trace_now_ns();
+	if (sco->trace) {
+		sco_trace_add(&sco->trace_fsync_calls, 1);
+		if (end >= start)
+			sco_trace_add(&sco->trace_fsync_ns, end - start);
+	}
+	return (0);
+}
 
 static int
 sco_data_locks_init(struct sco_image *sco)
@@ -764,22 +857,78 @@ sco_read_root_entry_ref(struct sco_image *sco, uint64_t root_index,
 	return (ENOENT);
 }
 
-static bool
-sco_metadata_fixed_range_used(const struct sco_image *sco, uint64_t offset)
+static int
+sco_metadata_page_index(const struct sco_image *sco, uint64_t offset,
+    uint64_t *indexp)
 {
-	uint64_t end;
+	uint64_t index;
 
-	end = sco->sb.map_root_offset + sco->sb.map_root_length;
-	if (offset >= sco->sb.map_root_offset && offset < end)
-		return (true);
-	if (sco->sb.base_descriptor_offset == 0)
-		return (false);
-	end = sco->sb.base_descriptor_offset + sco->sb.base_descriptor_length;
-	return (offset >= sco->sb.base_descriptor_offset && offset < end);
+	if (sco == NULL || indexp == NULL)
+		return (EINVAL);
+	if (offset < SCO_METADATA_AREA_OFFSET ||
+	    offset >= sco->sb.data_area_offset ||
+	    (offset % SCO_METADATA_PAGE_SIZE) != 0)
+		return (EINVAL);
+	index = (offset - SCO_METADATA_AREA_OFFSET) / SCO_METADATA_PAGE_SIZE;
+	if (index >= sco->metadata_page_count)
+		return (EINVAL);
+	*indexp = index;
+	return (0);
 }
 
 static int
-sco_metadata_page_used(struct sco_image *sco, uint64_t offset, bool *usedp)
+sco_metadata_mark_page(struct sco_image *sco, uint64_t offset, bool used)
+{
+	uint64_t index;
+	int error;
+
+	if (sco == NULL || sco->metadata_page_used == NULL)
+		return (EINVAL);
+	error = sco_metadata_page_index(sco, offset, &index);
+	if (error != 0)
+		return (error);
+	sco->metadata_page_used[index] = used ? 1 : 0;
+	return (0);
+}
+
+static int
+sco_metadata_mark_range(struct sco_image *sco, uint64_t offset,
+    uint64_t length, bool used)
+{
+	uint64_t i, page_count;
+	int error;
+
+	if (sco == NULL || length == 0 ||
+	    (length % SCO_METADATA_PAGE_SIZE) != 0)
+		return (EINVAL);
+	if (!range_before_data(offset, length, sco->sb.data_area_offset))
+		return (EINVAL);
+	page_count = length / SCO_METADATA_PAGE_SIZE;
+	for (i = 0; i < page_count; i++) {
+		error = sco_metadata_mark_page(sco,
+		    offset + i * SCO_METADATA_PAGE_SIZE, used);
+		if (error != 0)
+			return (error);
+	}
+	return (0);
+}
+
+static bool
+sco_metadata_page_used(struct sco_image *sco, uint64_t offset)
+{
+	uint64_t index;
+
+	if (sco == NULL || sco->metadata_page_used == NULL)
+		return (true);
+	if (sco_metadata_page_index(sco, offset, &index) != 0)
+		return (true);
+	if (sco->trace)
+		sco_trace_add(&sco->trace_metadata_page_used_calls, 1);
+	return (sco->metadata_page_used[index] != 0);
+}
+
+static int
+sco_metadata_allocator_init(struct sco_image *sco)
 {
 	uint8_t page[SCO_METADATA_PAGE_SIZE];
 	uint64_t page_offset, first_root_index;
@@ -787,11 +936,32 @@ sco_metadata_page_used(struct sco_image *sco, uint64_t offset, bool *usedp)
 	uint32_t entry_count, expected_crc, flags;
 	int error;
 
-	if (sco == NULL || usedp == NULL)
+	if (sco == NULL || sco->metadata_page_used != NULL)
 		return (EINVAL);
-	if (sco_metadata_fixed_range_used(sco, offset)) {
-		*usedp = true;
-		return (0);
+	if (sco->sb.data_area_offset < SCO_METADATA_AREA_OFFSET ||
+	    (sco->sb.data_area_offset % SCO_METADATA_PAGE_SIZE) != 0)
+		return (EINVAL);
+	sco->metadata_page_count =
+	    (sco->sb.data_area_offset - SCO_METADATA_AREA_OFFSET) /
+	    SCO_METADATA_PAGE_SIZE;
+	if (sco->metadata_page_count == 0 ||
+	    sco->metadata_page_count > SIZE_MAX)
+		return (EINVAL);
+	sco->metadata_page_used = calloc((size_t)sco->metadata_page_count,
+	    sizeof(*sco->metadata_page_used));
+	if (sco->metadata_page_used == NULL)
+		return (ENOMEM);
+
+	error = sco_metadata_mark_range(sco, sco->sb.map_root_offset,
+	    sco->sb.map_root_length, true);
+	if (error != 0)
+		goto fail;
+	if (sco->sb.base_descriptor_offset != 0) {
+		error = sco_metadata_mark_range(sco,
+		    sco->sb.base_descriptor_offset,
+		    sco->sb.base_descriptor_length, true);
+		if (error != 0)
+			goto fail;
 	}
 
 	root_page_count = sco->sb.map_root_length / SCO_METADATA_PAGE_SIZE;
@@ -800,40 +970,53 @@ sco_metadata_page_used(struct sco_image *sco, uint64_t offset, bool *usedp)
 		    i * SCO_METADATA_PAGE_SIZE;
 		error = read_exact(sco->fd, page_offset, page, sizeof(page));
 		if (error != 0)
-			return (error);
+			goto fail;
 		expected_crc = le32dec(page + 0x0008);
 		error = sco_validate_map_page_header(page, expected_crc,
 		    &entry_count, &first_root_index);
 		if (error != 0)
-			return (error);
-		if (first_root_index + entry_count < first_root_index)
-			return (EINVAL);
+			goto fail;
+		if (first_root_index + entry_count < first_root_index) {
+			error = EINVAL;
+			goto fail;
+		}
 		if (!reserved_zero(page,
 		    SCO_MAP_PAGE_HEADER_SIZE + entry_count * SCO_MAP_ENTRY_SIZE,
 		    SCO_METADATA_PAGE_SIZE - SCO_MAP_PAGE_HEADER_SIZE -
-		    entry_count * SCO_MAP_ENTRY_SIZE))
-			return (EINVAL);
+		    entry_count * SCO_MAP_ENTRY_SIZE)) {
+			error = EINVAL;
+			goto fail;
+		}
 		for (j = 0; j < entry_count; j++) {
 			page_offset = SCO_MAP_PAGE_HEADER_SIZE +
 			    j * SCO_MAP_ENTRY_SIZE;
 			flags = le32dec(page + page_offset + 0x000c);
-			if (flags != 0)
-				return (EINVAL);
+			if (flags != 0) {
+				error = EINVAL;
+				goto fail;
+			}
 			map_page_offset = le64dec(page + page_offset);
 			if (map_page_offset == 0)
 				continue;
 			if (!range_before_data(map_page_offset,
-			    SCO_METADATA_PAGE_SIZE, sco->sb.data_area_offset))
-				return (EINVAL);
-			if (map_page_offset == offset) {
-				*usedp = true;
-				return (0);
+			    SCO_METADATA_PAGE_SIZE, sco->sb.data_area_offset)) {
+				error = EINVAL;
+				goto fail;
 			}
+			error = sco_metadata_mark_page(sco, map_page_offset,
+			    true);
+			if (error != 0)
+				goto fail;
 		}
 	}
 
-	*usedp = false;
 	return (0);
+fail:
+	free(sco->metadata_page_used);
+	sco->metadata_page_used = NULL;
+	sco->metadata_page_count = 0;
+	sco->metadata_alloc_cursor = 0;
+	return (error);
 }
 
 static bool
@@ -853,21 +1036,31 @@ static int
 sco_alloc_metadata_page_reserved(struct sco_image *sco, uint64_t *offsetp,
     const uint64_t *reserved, size_t reserved_count)
 {
-	uint64_t offset;
-	bool used;
-	int error;
+	uint64_t checked, index, offset;
 
 	if (sco == NULL || offsetp == NULL)
 		return (EINVAL);
-	for (offset = SCO_METADATA_AREA_OFFSET;
-	    offset + SCO_METADATA_PAGE_SIZE <= sco->sb.data_area_offset;
-	    offset += SCO_METADATA_PAGE_SIZE) {
-		if (sco_offset_reserved(offset, reserved, reserved_count))
-			continue;
-		error = sco_metadata_page_used(sco, offset, &used);
+	if (sco->metadata_page_used == NULL) {
+		int error;
+
+		error = sco_metadata_allocator_init(sco);
 		if (error != 0)
 			return (error);
-		if (!used) {
+	}
+	if (sco->metadata_page_count == 0)
+		return (EINVAL);
+	for (checked = 0; checked < sco->metadata_page_count; checked++) {
+		index = (sco->metadata_alloc_cursor + checked) %
+		    sco->metadata_page_count;
+		offset = SCO_METADATA_AREA_OFFSET +
+		    index * SCO_METADATA_PAGE_SIZE;
+		if (sco_offset_reserved(offset, reserved, reserved_count))
+			continue;
+		if (sco->trace)
+			sco_trace_add(&sco->trace_metadata_candidates, 1);
+		if (!sco_metadata_page_used(sco, offset)) {
+			sco->metadata_alloc_cursor =
+			    (index + 1) % sco->metadata_page_count;
 			*offsetp = offset;
 			return (0);
 		}
@@ -879,28 +1072,43 @@ static int
 sco_alloc_metadata_run_reserved(struct sco_image *sco, size_t page_count,
     uint64_t *offsetp, const uint64_t *reserved, size_t reserved_count)
 {
-	uint64_t offset, candidate;
+	uint64_t checked, index, candidate_index, offset, candidate;
 	size_t i;
-	bool used;
-	int error;
 
 	if (sco == NULL || offsetp == NULL || page_count == 0)
 		return (EINVAL);
-	for (offset = SCO_METADATA_AREA_OFFSET;
-	    offset + page_count * SCO_METADATA_PAGE_SIZE <=
-	    sco->sb.data_area_offset; offset += SCO_METADATA_PAGE_SIZE) {
+	if (sco->metadata_page_used == NULL) {
+		int error;
+
+		error = sco_metadata_allocator_init(sco);
+		if (error != 0)
+			return (error);
+	}
+	if (sco->metadata_page_count == 0 ||
+	    page_count > sco->metadata_page_count)
+		return (EINVAL);
+	for (checked = 0; checked < sco->metadata_page_count; checked++) {
+		index = (sco->metadata_alloc_cursor + checked) %
+		    sco->metadata_page_count;
+		if (index + page_count > sco->metadata_page_count)
+			continue;
+		offset = SCO_METADATA_AREA_OFFSET +
+		    index * SCO_METADATA_PAGE_SIZE;
 		for (i = 0; i < page_count; i++) {
-			candidate = offset + i * SCO_METADATA_PAGE_SIZE;
+			candidate_index = index + i;
+			candidate = SCO_METADATA_AREA_OFFSET +
+			    candidate_index * SCO_METADATA_PAGE_SIZE;
 			if (sco_offset_reserved(candidate, reserved,
 			    reserved_count))
 				break;
-			error = sco_metadata_page_used(sco, candidate, &used);
-			if (error != 0)
-				return (error);
-			if (used)
+			if (sco->trace)
+				sco_trace_add(&sco->trace_metadata_candidates, 1);
+			if (sco_metadata_page_used(sco, candidate))
 				break;
 		}
 		if (i == page_count) {
+			sco->metadata_alloc_cursor =
+			    (index + page_count) % sco->metadata_page_count;
 			*offsetp = offset;
 			return (0);
 		}
@@ -1052,6 +1260,10 @@ sco_alloc_data_cluster(struct sco_image *sco, uint64_t cluster_index,
 		return (error);
 	if (end > sco->file_size)
 		sco->file_size = end;
+	if (sco->trace) {
+		sco_trace_add(&sco->trace_alloc_data_calls, 1);
+		sco_trace_add(&sco->trace_alloc_data_bytes, stored_length);
+	}
 	*physical_offsetp = physical_offset;
 	return (0);
 }
@@ -1092,17 +1304,25 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 	uint64_t root_index, first_cluster_index, last_cluster_index;
 	uint64_t entry_index, entry_offset, map_page_offset;
 	uint64_t new_map_page_offset, new_root_offset;
+	uint64_t old_root_offset, old_root_length, old_map_page_offset;
 	uint64_t reserved[2];
+	uint64_t trace_start, trace_end;
 	size_t root_page_index, root_page_count;
 	uint32_t entry_count, map_page_crc32c;
 	int error;
 
 	if (sco == NULL)
 		return (EINVAL);
+	trace_start = sco_trace_now_ns();
+	if (sco->trace)
+		sco_trace_add(&sco->trace_commit_map_calls, 1);
 	root_index = cluster_index / SCO_MAP_ENTRIES_PER_PAGE;
 	error = sco_read_root_entry_ref(sco, root_index, &ref);
 	if (error != 0)
 		return (error);
+	old_root_offset = sco->sb.map_root_offset;
+	old_root_length = sco->sb.map_root_length;
+	old_map_page_offset = ref.map_page_offset;
 
 	if (ref.map_page_offset == 0) {
 		if (ref.map_page_crc32c != 0)
@@ -1188,10 +1408,9 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 	    sco->sb.map_root_length);
 	if (error != 0)
 		goto out;
-	if (fsync(sco->fd) != 0) {
-		error = errno;
+	error = sco_trace_fsync(sco);
+	if (error != 0)
 		goto out;
-	}
 
 	next_sb = sco->sb;
 	next_sb.generation++;
@@ -1199,7 +1418,21 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 	if (state == SCO_MAP_STATE_ZERO || state == SCO_MAP_STATE_DISCARDED)
 		next_sb.incompatible_features |= SCO_INCOMPAT_ZERO_DISCARD;
 	error = sco_commit_superblock(sco, &next_sb);
+	if (error == 0) {
+		(void)sco_metadata_mark_page(sco, new_map_page_offset, true);
+		(void)sco_metadata_mark_range(sco, new_root_offset,
+		    old_root_length, true);
+		if (old_map_page_offset != 0)
+			(void)sco_metadata_mark_page(sco, old_map_page_offset,
+			    false);
+		(void)sco_metadata_mark_range(sco, old_root_offset,
+		    old_root_length, false);
+	}
 out:
+	trace_end = sco_trace_now_ns();
+	if (sco->trace && trace_end >= trace_start)
+		sco_trace_add(&sco->trace_commit_map_ns,
+		    trace_end - trace_start);
 	free(root);
 	return (error);
 }
@@ -1272,6 +1505,8 @@ sco_write_materialized_cluster(struct sco_image *sco, uint64_t cluster_index,
 
 	if (sco == NULL || buf == NULL || len == 0)
 		return (EINVAL);
+	if (sco->trace)
+		sco_trace_add(&sco->trace_materialize_writes, 1);
 	stored_length = sco_cluster_stored_length(sco, cluster_index);
 	if (stored_length == 0 || stored_length > SIZE_MAX ||
 	    cluster_offset > stored_length || len > stored_length -
@@ -1438,6 +1673,7 @@ sco_open(const char *path __attribute__((unused)), int fd, bool readonly,
 	}
 	sco->fd = fd;
 	sco->readonly = readonly;
+	sco->trace = getenv("SCORPI_SCO_TRACE") != NULL;
 	sco->file_size = file_size;
 	error = sco_select_superblock(fd, readonly, file_id_uuid, file_size,
 	    &sco->sb, &sco->active_superblock_offset);
@@ -1570,6 +1806,10 @@ sco_read(void *statep, void *buf, uint64_t offset, size_t len)
 	if (statep == NULL || (buf == NULL && len != 0))
 		return (EINVAL);
 	sco = statep;
+	if (sco->trace) {
+		sco_trace_add(&sco->trace_read_calls, 1);
+		sco_trace_add(&sco->trace_read_bytes, len);
+	}
 	error = pthread_rwlock_rdlock(&sco->lock);
 	if (error != 0)
 		return (error);
@@ -1679,6 +1919,8 @@ sco_try_write_present_data_only(struct sco_image *sco, uint64_t cluster_index,
 	error = pthread_rwlock_wrlock(data_lock);
 	if (error != 0)
 		goto out;
+	if (sco->trace)
+		sco_trace_add(&sco->trace_data_only_writes, 1);
 	error = sco_write_present_cluster_data(sco, &lookup, cluster_offset,
 	    buf, len);
 	pthread_rwlock_unlock(data_lock);
@@ -1698,6 +1940,8 @@ sco_write_metadata_cluster(struct sco_image *sco, uint64_t cluster_index,
 	error = pthread_rwlock_wrlock(&sco->lock);
 	if (error != 0)
 		return (error);
+	if (sco->trace)
+		sco_trace_add(&sco->trace_metadata_writes, 1);
 	error = sco_validate_write_locked(sco, cluster_index *
 	    sco->sb.cluster_size + cluster_offset, len);
 	if (error == 0)
@@ -1720,6 +1964,14 @@ sco_write(void *statep, const void *buf, uint64_t offset, size_t len)
 	if (statep == NULL || (buf == NULL && len != 0))
 		return (EINVAL);
 	sco = statep;
+	if (sco->trace) {
+		uint64_t calls;
+
+		calls = sco_trace_add(&sco->trace_write_calls, 1);
+		sco_trace_add(&sco->trace_write_bytes, len);
+		if ((calls % 1000) == 0)
+			sco_trace_report(sco, "write");
+	}
 	error = pthread_rwlock_rdlock(&sco->lock);
 	if (error != 0)
 		return (error);
@@ -1833,10 +2085,8 @@ sco_flush(void *statep)
 	error = pthread_rwlock_wrlock(&sco->lock);
 	if (error != 0)
 		return (error);
-	if (fsync(sco->fd) != 0)
-		error = errno;
-	else
-		error = 0;
+	sco_trace_add(&sco->trace_flush_calls, 1);
+	error = sco_trace_fsync(sco);
 	pthread_rwlock_unlock(&sco->lock);
 	return (error);
 }
@@ -1897,9 +2147,11 @@ sco_close(void *statep)
 	if (error != 0)
 		return (error);
 	error = 0;
+	sco_trace_report(sco, "close");
 	if (sco->fd >= 0 && close(sco->fd) != 0)
 		error = errno;
 	free(sco->base_uri);
+	free(sco->metadata_page_used);
 	pthread_rwlock_unlock(&sco->lock);
 	sco_data_locks_destroy(sco);
 	pthread_rwlock_destroy(&sco->lock);
