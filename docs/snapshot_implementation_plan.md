@@ -551,6 +551,10 @@ Validation performed:
 
 ### Task 13: Implement `.sco` Read-Through Chains
 
+Status:
+
+- Done
+
 Scope:
 
 - combine `.sco` read map with chain read resolver
@@ -573,6 +577,11 @@ Validation criteria:
 - `.sco -> .sco -> raw` reads correct data
 - top zero/discard prevents parent fallthrough
 - chain diagnostics report expected depth and formats
+
+Validation performed:
+
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson compile -C builddir`
 
 ### Task 14: Implement `.sco` Creation Tooling For Tests
 
