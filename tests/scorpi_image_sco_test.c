@@ -15,6 +15,7 @@
 
 #include <support/endian.h>
 
+#include "scorpi_crc32c.h"
 #include "scorpi_host_sparse.h"
 #include "scorpi_image.h"
 #include "scorpi_image_chain.h"
@@ -81,32 +82,18 @@ struct superblock_fixture {
 	uint8_t data_byte;
 };
 
-static uint32_t
-crc32c(const void *buf, size_t len)
-{
-	const uint8_t *p;
-	uint32_t crc;
-	size_t i;
-	int bit;
-
-	p = buf;
-	crc = 0xffffffffU;
-	for (i = 0; i < len; i++) {
-		crc ^= p[i];
-		for (bit = 0; bit < 8; bit++) {
-			if ((crc & 1) != 0)
-				crc = (crc >> 1) ^ 0x82f63b78U;
-			else
-				crc >>= 1;
-		}
-	}
-	return (~crc);
-}
-
 static uint64_t
 cluster_count(uint64_t virtual_size)
 {
 	return ((virtual_size + SCO_CLUSTER_SIZE - 1) / SCO_CLUSTER_SIZE);
+}
+
+static void
+test_crc32c_known_vector(void)
+{
+	static const char vector[] = "123456789";
+
+	assert(scorpi_crc32c(vector, strlen(vector)) == 0xe3069283U);
 }
 
 static void
@@ -157,7 +144,7 @@ build_file_id(uint8_t buf[SCO_FILE_ID_SIZE], bool bad_magic,
 	le32enc(buf + 0x000c, SCO_FILE_ID_SIZE);
 	memcpy(buf + 0x0010, test_uuid, sizeof(test_uuid));
 	le32enc(buf + 0x0020, SCO_CHECKSUM_CRC32C);
-	crc = crc32c(buf, SCO_FILE_ID_SIZE);
+	crc = scorpi_crc32c(buf, SCO_FILE_ID_SIZE);
 	if (corrupt_crc)
 		crc ^= 0xffffffffU;
 	le32enc(buf + 0x0024, crc);
@@ -196,7 +183,7 @@ build_superblock(uint8_t buf[SCO_SUPERBLOCK_SIZE],
 	le32enc(buf + 0x0070, fixture->incompatible_features);
 	le32enc(buf + 0x0074, fixture->readonly_compatible_features);
 	memcpy(buf + 0x0080, test_uuid, sizeof(test_uuid));
-	crc = crc32c(buf, SCO_SUPERBLOCK_SIZE);
+	crc = scorpi_crc32c(buf, SCO_SUPERBLOCK_SIZE);
 	if (fixture->corrupt_crc)
 		crc ^= 0xffffffffU;
 	le32enc(buf + 0x0014, crc);
@@ -221,7 +208,7 @@ build_base_descriptor(uint8_t buf[0x1000],
 	memcpy(buf + 0x0050, fixture->base_uri, uri_len);
 	if (fixture->corrupt_base_descriptor_padding)
 		buf[0x0050 + uri_len] = 0xa5;
-	crc = crc32c(buf, 0x1000);
+	crc = scorpi_crc32c(buf, 0x1000);
 	if (fixture->corrupt_base_descriptor_crc)
 		crc ^= 0xffffffffU;
 	le32enc(buf + 0x0008, crc);
@@ -240,7 +227,7 @@ build_map_page(uint8_t buf[0x1000], const struct superblock_fixture *fixture)
 	buf[0x0018] = fixture->map_state;
 	if (fixture->map_state == SCO_MAP_STATE_PRESENT)
 		le64enc(buf + 0x0018 + 0x0008, SCO_DATA_AREA_OFFSET);
-	crc = crc32c(buf, 0x1000);
+	crc = scorpi_crc32c(buf, 0x1000);
 	if (fixture->corrupt_map_page_crc)
 		crc ^= 0xffffffffU;
 	le32enc(buf + 0x0008, crc);
@@ -262,7 +249,7 @@ build_root_page(uint8_t buf[0x1000], uint32_t map_page_crc32c,
 		le64enc(buf + 0x0018, SCO_MAP_PAGE_OFFSET);
 		le32enc(buf + 0x0018 + 0x0008, map_page_crc32c);
 	}
-	crc = crc32c(buf, 0x1000);
+	crc = scorpi_crc32c(buf, 0x1000);
 	le32enc(buf + 0x0008, crc);
 }
 
@@ -2126,6 +2113,7 @@ test_read_through_zero_discard_stop_raw(void)
 int
 main(void)
 {
+	test_crc32c_known_vector();
 	test_host_punch_hole_preserves_size_and_reads_zero();
 	test_valid_sco_opens();
 	test_bad_magic_rejected();

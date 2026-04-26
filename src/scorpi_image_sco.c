@@ -20,6 +20,7 @@
 
 #include <support/endian.h>
 
+#include "scorpi_crc32c.h"
 #include "scorpi_host_sparse.h"
 #include "scorpi_image.h"
 #include "scorpi_image_sco.h"
@@ -402,28 +403,6 @@ sco_metadata_cache_destroy(struct sco_image *sco)
 	pthread_mutex_unlock(&sco->metadata_cache_mtx);
 }
 
-static uint32_t
-sco_crc32c(const void *buf, size_t len)
-{
-	const uint8_t *p;
-	uint32_t crc;
-	size_t i;
-	int bit;
-
-	p = buf;
-	crc = 0xffffffffU;
-	for (i = 0; i < len; i++) {
-		crc ^= p[i];
-		for (bit = 0; bit < 8; bit++) {
-			if ((crc & 1) != 0)
-				crc = (crc >> 1) ^ 0x82f63b78U;
-			else
-				crc >>= 1;
-		}
-	}
-	return (~crc);
-}
-
 static bool
 is_power_of_two_u64(uint64_t value)
 {
@@ -519,7 +498,7 @@ crc32c_valid(uint8_t *buf, size_t len, size_t checksum_offset,
 
 	memcpy(saved, buf + checksum_offset, sizeof(saved));
 	memset(buf + checksum_offset, 0, sizeof(saved));
-	actual = sco_crc32c(buf, len);
+	actual = scorpi_crc32c(buf, len);
 	memcpy(buf + checksum_offset, saved, sizeof(saved));
 	return (actual == expected);
 }
@@ -530,7 +509,7 @@ page_crc32c_update(uint8_t page[SCO_METADATA_PAGE_SIZE])
 	uint32_t crc;
 
 	le32enc(page + 0x0008, 0);
-	crc = sco_crc32c(page, SCO_METADATA_PAGE_SIZE);
+	crc = scorpi_crc32c(page, SCO_METADATA_PAGE_SIZE);
 	le32enc(page + 0x0008, crc);
 	return (crc);
 }
@@ -578,7 +557,7 @@ sco_build_superblock(uint8_t buf[SCO_SUPERBLOCK_SIZE],
 		    sizeof(sb->image_digest));
 	le32enc(buf + 0x00b0, sb->has_image_digest ? 1 : 0);
 	le32enc(buf + 0x00b4, 0);
-	crc = sco_crc32c(buf, SCO_SUPERBLOCK_SIZE);
+	crc = scorpi_crc32c(buf, SCO_SUPERBLOCK_SIZE);
 	le32enc(buf + 0x0014, crc);
 }
 

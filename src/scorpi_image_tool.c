@@ -19,6 +19,7 @@
 #include <libutil.h>
 #include <support/endian.h>
 
+#include "scorpi_crc32c.h"
 #include "scorpi_image.h"
 #include "scorpi_image_sco.h"
 
@@ -48,28 +49,6 @@ struct sco_create_options {
 	uint32_t logical_sector_size;
 	uint32_t physical_sector_size;
 };
-
-static uint32_t
-crc32c(const void *buf, size_t len)
-{
-	const uint8_t *p;
-	uint32_t crc;
-	size_t i;
-	int bit;
-
-	p = buf;
-	crc = 0xffffffffU;
-	for (i = 0; i < len; i++) {
-		crc ^= p[i];
-		for (bit = 0; bit < 8; bit++) {
-			if ((crc & 1) != 0)
-				crc = (crc >> 1) ^ 0x82f63b78U;
-			else
-				crc >>= 1;
-		}
-	}
-	return (~crc);
-}
 
 static uint64_t
 align_up_u64(uint64_t value, uint64_t alignment)
@@ -133,7 +112,7 @@ build_file_id(uint8_t buf[SCO_FILE_ID_SIZE], const uint8_t uuid[16])
 	le32enc(buf + 0x000c, SCO_FILE_ID_SIZE);
 	memcpy(buf + 0x0010, uuid, 16);
 	le32enc(buf + 0x0020, SCO_CHECKSUM_CRC32C);
-	crc = crc32c(buf, SCO_FILE_ID_SIZE);
+	crc = scorpi_crc32c(buf, SCO_FILE_ID_SIZE);
 	le32enc(buf + 0x0024, crc);
 }
 
@@ -148,7 +127,7 @@ build_root_page(uint8_t buf[SCO_METADATA_PAGE_SIZE], uint32_t entry_count,
 	le32enc(buf + 0x0004, SCO_CHECKSUM_CRC32C);
 	le32enc(buf + 0x000c, entry_count);
 	le64enc(buf + 0x0010, first_root_index);
-	crc = crc32c(buf, SCO_METADATA_PAGE_SIZE);
+	crc = scorpi_crc32c(buf, SCO_METADATA_PAGE_SIZE);
 	le32enc(buf + 0x0008, crc);
 }
 
@@ -164,7 +143,7 @@ build_base_descriptor(uint8_t *buf, uint32_t size, const char *base_uri)
 	le32enc(buf + 0x0004, SCO_CHECKSUM_CRC32C);
 	le32enc(buf + 0x0010, (uint32_t)uri_len);
 	memcpy(buf + 0x0050, base_uri, uri_len);
-	crc = crc32c(buf, size);
+	crc = scorpi_crc32c(buf, size);
 	le32enc(buf + 0x0008, crc);
 }
 
@@ -197,7 +176,7 @@ build_superblock(uint8_t buf[SCO_SUPERBLOCK_SIZE],
 	le32enc(buf + 0x006c, SCO_MAP_ENTRY_SIZE);
 	le32enc(buf + 0x0070, SCO_INCOMPAT_ALLOC_MAP_V1);
 	memcpy(buf + 0x0080, uuid, 16);
-	crc = crc32c(buf, SCO_SUPERBLOCK_SIZE);
+	crc = scorpi_crc32c(buf, SCO_SUPERBLOCK_SIZE);
 	le32enc(buf + 0x0014, crc);
 }
 
