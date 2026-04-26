@@ -585,6 +585,10 @@ Validation performed:
 
 ### Task 14: Implement `.sco` Creation Tooling For Tests
 
+Status:
+
+- Done
+
 Scope:
 
 - add a small internal fixture generator or test helper for `.sco` images
@@ -606,6 +610,11 @@ Validation criteria:
 - tests can generate `.sco` fixtures reproducibly
 - generated fixtures pass parser tests
 - corrupt fixtures fail as expected
+
+Validation performed:
+
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson compile -C builddir`
 
 ### Task 15: Add `scorpi_image` CLI Tool
 
