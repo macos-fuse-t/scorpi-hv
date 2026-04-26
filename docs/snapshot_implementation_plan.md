@@ -741,6 +741,8 @@ Validation performed:
 
 ### Task 16B: Add Fine-Grained `.sco` Write Locking
 
+Status: Done
+
 Scope:
 
 - reduce unnecessary serialization after `.sco` supports in-place overwrite
@@ -776,6 +778,12 @@ Validation criteria:
 - metadata-changing writes remain serialized with all reads and writes that
   need a consistent map view
 - existing Task 16A thread-safety tests still pass
+
+Validation performed:
+
+- `meson compile -C builddir`
+- `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 
 ### Task 17: Implement Whole-Cluster Materialization
 

@@ -54,6 +54,8 @@
 #define	SCO_MAP_STATE_ZERO		2
 #define	SCO_MAP_STATE_DISCARDED		3
 
+#define	SCO_DATA_LOCK_STRIPES		64
+
 struct sco_superblock_decoded {
 	uint64_t generation;
 	uint64_t virtual_size;
@@ -77,6 +79,7 @@ struct sco_superblock_decoded {
 struct sco_image {
 	int fd;
 	pthread_rwlock_t lock;
+	pthread_rwlock_t data_locks[SCO_DATA_LOCK_STRIPES];
 	bool readonly;
 	uint64_t file_size;
 	uint64_t active_superblock_offset;
@@ -101,6 +104,42 @@ struct sco_root_entry_ref {
 	uint64_t map_page_offset;
 	uint32_t map_page_crc32c;
 };
+
+static int
+sco_data_locks_init(struct sco_image *sco)
+{
+	size_t i, j;
+	int error;
+
+	if (sco == NULL)
+		return (EINVAL);
+	for (i = 0; i < SCO_DATA_LOCK_STRIPES; i++) {
+		error = pthread_rwlock_init(&sco->data_locks[i], NULL);
+		if (error != 0) {
+			for (j = 0; j < i; j++)
+				pthread_rwlock_destroy(&sco->data_locks[j]);
+			return (error);
+		}
+	}
+	return (0);
+}
+
+static void
+sco_data_locks_destroy(struct sco_image *sco)
+{
+	size_t i;
+
+	if (sco == NULL)
+		return;
+	for (i = 0; i < SCO_DATA_LOCK_STRIPES; i++)
+		pthread_rwlock_destroy(&sco->data_locks[i]);
+}
+
+static pthread_rwlock_t *
+sco_data_lock_for_cluster(struct sco_image *sco, uint64_t cluster_index)
+{
+	return (&sco->data_locks[cluster_index % SCO_DATA_LOCK_STRIPES]);
+}
 
 static uint32_t
 sco_crc32c(const void *buf, size_t len)
@@ -1199,6 +1238,41 @@ sco_write_present_cluster(struct sco_image *sco,
 }
 
 static int
+sco_write_present_cluster_data(struct sco_image *sco,
+    const struct sco_lookup *lookup, uint64_t cluster_offset,
+    const void *buf, size_t len)
+{
+	uint8_t *cluster;
+	uint64_t cluster_index, stored_length;
+	int error;
+
+	if (sco == NULL || lookup == NULL || buf == NULL || len == 0)
+		return (EINVAL);
+	cluster_index = lookup->extent.offset / sco->sb.cluster_size;
+	stored_length = sco_cluster_stored_length(sco, cluster_index);
+	if (cluster_offset > stored_length || len > stored_length -
+	    cluster_offset)
+		return (EINVAL);
+	if (cluster_offset == 0 && len == stored_length)
+		return (write_exact(sco->fd, lookup->physical_offset, buf, len));
+
+	if (stored_length > SIZE_MAX)
+		return (EINVAL);
+	cluster = malloc((size_t)stored_length);
+	if (cluster == NULL)
+		return (ENOMEM);
+	error = read_exact(sco->fd, lookup->physical_offset, cluster,
+	    (size_t)stored_length);
+	if (error == 0) {
+		memcpy(cluster + cluster_offset, buf, len);
+		error = write_exact(sco->fd, lookup->physical_offset, cluster,
+		    (size_t)stored_length);
+	}
+	free(cluster);
+	return (error);
+}
+
+static int
 sco_write_materialized_cluster(struct sco_image *sco, uint64_t cluster_index,
     uint64_t cluster_offset, const void *buf, size_t len)
 {
@@ -1360,18 +1434,26 @@ sco_open(const char *path __attribute__((unused)), int fd, bool readonly,
 		free(sco);
 		return (error);
 	}
+	error = sco_data_locks_init(sco);
+	if (error != 0) {
+		pthread_rwlock_destroy(&sco->lock);
+		free(sco);
+		return (error);
+	}
 	sco->fd = fd;
 	sco->readonly = readonly;
 	sco->file_size = file_size;
 	error = sco_select_superblock(fd, readonly, file_id_uuid, file_size,
 	    &sco->sb, &sco->active_superblock_offset);
 	if (error != 0) {
+		sco_data_locks_destroy(sco);
 		pthread_rwlock_destroy(&sco->lock);
 		free(sco);
 		return (error);
 	}
 	if (!readonly && (sco->sb.readonly_compatible_features &
 	    SCO_RO_COMPAT_SEALED) != 0) {
+		sco_data_locks_destroy(sco);
 		pthread_rwlock_destroy(&sco->lock);
 		free(sco);
 		return (EROFS);
@@ -1379,6 +1461,7 @@ sco_open(const char *path __attribute__((unused)), int fd, bool readonly,
 	error = sco_read_base_descriptor(sco);
 	if (error != 0) {
 		free(sco->base_uri);
+		sco_data_locks_destroy(sco);
 		pthread_rwlock_destroy(&sco->lock);
 		free(sco);
 		return (error);
@@ -1464,12 +1547,27 @@ sco_map(void *statep, uint64_t offset, uint64_t length,
 }
 
 static int
+sco_validate_write_locked(struct sco_image *sco, uint64_t offset, size_t len)
+{
+	if (sco == NULL)
+		return (EINVAL);
+	if (sco->readonly ||
+	    (sco->sb.readonly_compatible_features & SCO_RO_COMPAT_SEALED) != 0)
+		return (EROFS);
+	if (offset > sco->sb.virtual_size ||
+	    (uint64_t)len > sco->sb.virtual_size - offset)
+		return (EINVAL);
+	return (0);
+}
+
+static int
 sco_read(void *statep, void *buf, uint64_t offset, size_t len)
 {
 	struct sco_image *sco;
 	struct sco_lookup lookup;
 	uint8_t *p;
 	uint64_t physical_offset;
+	pthread_rwlock_t *data_lock;
 	size_t n;
 	int error;
 
@@ -1499,9 +1597,15 @@ sco_read(void *statep, void *buf, uint64_t offset, size_t len)
 		n = (size_t)lookup.extent.length;
 		switch (lookup.extent.state) {
 		case SCORPI_IMAGE_EXTENT_PRESENT:
+			data_lock = sco_data_lock_for_cluster(sco,
+			    offset / sco->sb.cluster_size);
+			error = pthread_rwlock_rdlock(data_lock);
+			if (error != 0)
+				goto out;
 			physical_offset = lookup.physical_offset +
 			    (offset % sco->sb.cluster_size);
 			error = read_exact(sco->fd, physical_offset, p, n);
+			pthread_rwlock_unlock(data_lock);
 			if (error != 0)
 				goto out;
 			break;
@@ -1524,64 +1628,148 @@ out:
 	return (error);
 }
 
+static bool
+sco_write_is_data_only(const struct sco_lookup *lookup,
+    uint64_t cluster_offset, const void *buf, size_t len,
+    uint64_t stored_length)
+{
+	if (lookup == NULL || buf == NULL)
+		return (false);
+	if (lookup->extent.state != SCORPI_IMAGE_EXTENT_PRESENT)
+		return (false);
+	if (cluster_offset == 0 && len == stored_length &&
+	    buffer_all_zero(buf, len))
+		return (false);
+	return (true);
+}
+
+static int
+sco_try_write_present_data_only(struct sco_image *sco, uint64_t cluster_index,
+    uint64_t cluster_offset, const void *buf, size_t len, bool *donep)
+{
+	struct sco_lookup lookup;
+	pthread_rwlock_t *data_lock;
+	uint64_t cluster_start, stored_length;
+	int error;
+
+	if (sco == NULL || buf == NULL || len == 0 || donep == NULL)
+		return (EINVAL);
+	*donep = false;
+	error = pthread_rwlock_rdlock(&sco->lock);
+	if (error != 0)
+		return (error);
+	error = sco_validate_write_locked(sco, cluster_index *
+	    sco->sb.cluster_size + cluster_offset, len);
+	if (error != 0)
+		goto out;
+	cluster_start = cluster_index * sco->sb.cluster_size;
+	stored_length = sco_cluster_stored_length(sco, cluster_index);
+	if (stored_length == 0 || cluster_offset >= stored_length ||
+	    len > stored_length - cluster_offset) {
+		error = EINVAL;
+		goto out;
+	}
+	memset(&lookup, 0, sizeof(lookup));
+	error = sco_lookup_extent(sco, cluster_start, stored_length, &lookup);
+	if (error != 0)
+		goto out;
+	if (!sco_write_is_data_only(&lookup, cluster_offset, buf, len,
+	    stored_length)) {
+		error = 0;
+		goto out;
+	}
+
+	data_lock = sco_data_lock_for_cluster(sco, cluster_index);
+	error = pthread_rwlock_wrlock(data_lock);
+	if (error != 0)
+		goto out;
+	error = sco_write_present_cluster_data(sco, &lookup, cluster_offset,
+	    buf, len);
+	pthread_rwlock_unlock(data_lock);
+	if (error == 0)
+		*donep = true;
+out:
+	pthread_rwlock_unlock(&sco->lock);
+	return (error);
+}
+
+static int
+sco_write_metadata_cluster(struct sco_image *sco, uint64_t cluster_index,
+    uint64_t cluster_offset, const void *buf, size_t len)
+{
+	int error;
+
+	error = pthread_rwlock_wrlock(&sco->lock);
+	if (error != 0)
+		return (error);
+	error = sco_validate_write_locked(sco, cluster_index *
+	    sco->sb.cluster_size + cluster_offset, len);
+	if (error == 0)
+		error = sco_write_cluster_range(sco, cluster_index,
+		    cluster_offset, buf, len);
+	pthread_rwlock_unlock(&sco->lock);
+	return (error);
+}
+
 static int
 sco_write(void *statep, const void *buf, uint64_t offset, size_t len)
 {
 	struct sco_image *sco;
 	const uint8_t *p;
 	uint64_t end, cluster_index, cluster_offset, stored_length, chunk;
+	uint64_t cluster_size, virtual_size;
+	bool done;
 	int error;
 
 	if (statep == NULL || (buf == NULL && len != 0))
 		return (EINVAL);
 	sco = statep;
-	error = pthread_rwlock_wrlock(&sco->lock);
+	error = pthread_rwlock_rdlock(&sco->lock);
 	if (error != 0)
 		return (error);
-	if (sco->readonly ||
-	    (sco->sb.readonly_compatible_features & SCO_RO_COMPAT_SEALED) != 0) {
-		error = EROFS;
-		goto out;
-	}
-	if (offset > sco->sb.virtual_size ||
-	    (uint64_t)len > sco->sb.virtual_size - offset) {
-		error = EINVAL;
-		goto out;
-	}
-	if (len == 0) {
-		error = 0;
-		goto out;
-	}
+	error = sco_validate_write_locked(sco, offset, len);
+	cluster_size = sco->sb.cluster_size;
+	virtual_size = sco->sb.virtual_size;
+	pthread_rwlock_unlock(&sco->lock);
+	if (error != 0 || len == 0)
+		return (error);
 
 	p = buf;
 	end = offset + (uint64_t)len;
 	while (offset < end) {
-		cluster_index = offset / sco->sb.cluster_size;
-		cluster_offset = offset % sco->sb.cluster_size;
-		stored_length = sco_cluster_stored_length(sco, cluster_index);
+		cluster_index = offset / cluster_size;
+		cluster_offset = offset % cluster_size;
+		stored_length = virtual_size - cluster_index * cluster_size;
+		if (stored_length > cluster_size)
+			stored_length = cluster_size;
 		if (stored_length == 0 || cluster_offset >= stored_length) {
 			error = EINVAL;
-			goto out;
+			return (error);
 		}
 		chunk = stored_length - cluster_offset;
 		if (chunk > end - offset)
 			chunk = end - offset;
 		if (chunk > SIZE_MAX) {
 			error = EINVAL;
-			goto out;
+			return (error);
 		}
-		error = sco_write_cluster_range(sco, cluster_index,
-		    cluster_offset, p, (size_t)chunk);
+
+		done = false;
+		error = sco_try_write_present_data_only(sco, cluster_index,
+		    cluster_offset, p, (size_t)chunk, &done);
 		if (error != 0)
-			goto out;
+			return (error);
+		if (!done) {
+			error = sco_write_metadata_cluster(sco, cluster_index,
+			    cluster_offset, p, (size_t)chunk);
+			if (error != 0)
+				return (error);
+		}
 
 		offset += chunk;
 		p += chunk;
 	}
-	error = 0;
-out:
-	pthread_rwlock_unlock(&sco->lock);
-	return (error);
+	return (0);
 }
 
 static int
@@ -1675,6 +1863,7 @@ sco_close(void *statep)
 		error = errno;
 	free(sco->base_uri);
 	pthread_rwlock_unlock(&sco->lock);
+	sco_data_locks_destroy(sco);
 	pthread_rwlock_destroy(&sco->lock);
 	free(sco);
 	return (error);

@@ -53,6 +53,12 @@ struct concurrent_sco_write_arg {
 	int error;
 };
 
+struct concurrent_sco_rw_arg {
+	const struct scorpi_image_ops *sco;
+	void *state;
+	int error;
+};
+
 struct superblock_fixture {
 	bool present;
 	bool corrupt_crc;
@@ -1051,6 +1057,121 @@ test_concurrent_sco_writes_preserve_map_updates(void)
 	assert(unlink(path) == 0);
 }
 
+static void *
+concurrent_sco_overwrite_thread(void *argp)
+{
+	struct concurrent_sco_rw_arg *arg;
+	uint8_t *cluster;
+	size_t i;
+
+	arg = argp;
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	if (cluster == NULL) {
+		arg->error = ENOMEM;
+		return (NULL);
+	}
+	for (i = 0; i < 100; i++) {
+		memset(cluster, (i % 2) == 0 ? 0x51 : 0x52,
+		    SCO_CLUSTER_SIZE);
+		arg->error = arg->sco->write(arg->state, cluster, 0,
+		    SCO_CLUSTER_SIZE);
+		if (arg->error != 0)
+			break;
+	}
+	free(cluster);
+	return (NULL);
+}
+
+static void *
+concurrent_sco_read_thread(void *argp)
+{
+	struct concurrent_sco_rw_arg *arg;
+	uint8_t *cluster;
+	uint8_t expected;
+	size_t i, j;
+
+	arg = argp;
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	if (cluster == NULL) {
+		arg->error = ENOMEM;
+		return (NULL);
+	}
+	for (i = 0; i < 100; i++) {
+		arg->error = arg->sco->read(arg->state, cluster, 0,
+		    SCO_CLUSTER_SIZE);
+		if (arg->error != 0)
+			break;
+		expected = cluster[0];
+		if (expected != 0x51 && expected != 0x52) {
+			arg->error = EIO;
+			break;
+		}
+		for (j = 1; j < SCO_CLUSTER_SIZE; j++) {
+			if (cluster[j] != expected) {
+				arg->error = EIO;
+				break;
+			}
+		}
+		if (arg->error != 0)
+			break;
+	}
+	free(cluster);
+	return (NULL);
+}
+
+static void
+test_concurrent_present_overwrite_read_is_not_torn(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct concurrent_sco_rw_arg writer_arg, reader_arg;
+	struct superblock_fixture a, b;
+	pthread_t writer, reader;
+	uint8_t *cluster;
+	char path[] = "/tmp/scorpi-sco-rw-race-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	assert(cluster != NULL);
+	memset(cluster, 0x51, SCO_CLUSTER_SIZE);
+	assert(open_sco_rw(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->write(state, cluster, 0, SCO_CLUSTER_SIZE) == 0);
+
+	writer_arg = (struct concurrent_sco_rw_arg){
+		.sco = sco,
+		.state = state,
+	};
+	reader_arg = writer_arg;
+	assert(pthread_create(&writer, NULL, concurrent_sco_overwrite_thread,
+	    &writer_arg) == 0);
+	assert(pthread_create(&reader, NULL, concurrent_sco_read_thread,
+	    &reader_arg) == 0);
+	assert(pthread_join(writer, NULL) == 0);
+	assert(pthread_join(reader, NULL) == 0);
+	assert(writer_arg.error == 0);
+	assert(reader_arg.error == 0);
+	assert(sco->close(state) == 0);
+
+	free(cluster);
+	assert(unlink(path) == 0);
+}
+
 static void
 test_partial_absent_write_zero_fills_unwritten_ranges(void)
 {
@@ -1974,6 +2095,7 @@ main(void)
 	test_corrupt_map_page_rejected();
 	test_full_cluster_write_persists_after_reopen();
 	test_concurrent_sco_writes_preserve_map_updates();
+	test_concurrent_present_overwrite_read_is_not_torn();
 	test_partial_absent_write_zero_fills_unwritten_ranges();
 	test_partial_chain_write_preserves_base_bytes();
 	test_full_cluster_chain_discard_stops_base_fallthrough();
