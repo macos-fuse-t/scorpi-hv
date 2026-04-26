@@ -979,6 +979,111 @@ sco_write_map_entry(struct sco_image *sco, uint64_t cluster_index,
 }
 
 static int
+sco_write_present_cluster(struct sco_image *sco,
+    const struct sco_lookup *lookup, uint64_t cluster_offset,
+    const void *buf, size_t len)
+{
+	uint8_t *cluster;
+	uint64_t cluster_index, stored_length;
+	int error;
+
+	if (sco == NULL || lookup == NULL || buf == NULL || len == 0)
+		return (EINVAL);
+	cluster_index = lookup->extent.offset / sco->sb.cluster_size;
+	stored_length = sco_cluster_stored_length(sco, cluster_index);
+	if (cluster_offset > stored_length || len > stored_length -
+	    cluster_offset)
+		return (EINVAL);
+	if (cluster_offset == 0 && len == stored_length)
+		return (write_exact(sco->fd, lookup->physical_offset, buf, len));
+
+	if (stored_length > SIZE_MAX)
+		return (EINVAL);
+	cluster = malloc((size_t)stored_length);
+	if (cluster == NULL)
+		return (ENOMEM);
+	error = read_exact(sco->fd, lookup->physical_offset, cluster,
+	    (size_t)stored_length);
+	if (error == 0) {
+		memcpy(cluster + cluster_offset, buf, len);
+		error = write_exact(sco->fd, lookup->physical_offset, cluster,
+		    (size_t)stored_length);
+	}
+	free(cluster);
+	return (error);
+}
+
+static int
+sco_write_materialized_cluster(struct sco_image *sco, uint64_t cluster_index,
+    uint64_t cluster_offset, const void *buf, size_t len)
+{
+	uint8_t *cluster;
+	uint64_t stored_length, physical_offset;
+	int error;
+
+	if (sco == NULL || buf == NULL || len == 0)
+		return (EINVAL);
+	stored_length = sco_cluster_stored_length(sco, cluster_index);
+	if (stored_length == 0 || stored_length > SIZE_MAX ||
+	    cluster_offset > stored_length || len > stored_length -
+	    cluster_offset)
+		return (EINVAL);
+	if (cluster_offset == 0 && len == stored_length) {
+		error = sco_alloc_data_cluster(sco, cluster_index, buf,
+		    &physical_offset);
+		if (error != 0)
+			return (error);
+		return (sco_write_map_entry(sco, cluster_index,
+		    physical_offset));
+	}
+
+	cluster = calloc(1, (size_t)stored_length);
+	if (cluster == NULL)
+		return (ENOMEM);
+	memcpy(cluster + cluster_offset, buf, len);
+	error = sco_alloc_data_cluster(sco, cluster_index, cluster,
+	    &physical_offset);
+	if (error == 0)
+		error = sco_write_map_entry(sco, cluster_index,
+		    physical_offset);
+	free(cluster);
+	return (error);
+}
+
+static int
+sco_write_cluster_range(struct sco_image *sco, uint64_t cluster_index,
+    uint64_t cluster_offset, const void *buf, size_t len)
+{
+	struct sco_lookup lookup;
+	uint64_t cluster_start, stored_length;
+	int error;
+
+	if (sco == NULL || buf == NULL || len == 0)
+		return (EINVAL);
+	cluster_start = cluster_index * sco->sb.cluster_size;
+	stored_length = sco_cluster_stored_length(sco, cluster_index);
+	if (stored_length == 0 || len > stored_length - cluster_offset)
+		return (EINVAL);
+
+	memset(&lookup, 0, sizeof(lookup));
+	error = sco_lookup_extent(sco, cluster_start, stored_length, &lookup);
+	if (error != 0)
+		return (error);
+	switch (lookup.extent.state) {
+	case SCORPI_IMAGE_EXTENT_PRESENT:
+		return (sco_write_present_cluster(sco, &lookup,
+		    cluster_offset, buf, len));
+	case SCORPI_IMAGE_EXTENT_ABSENT:
+	case SCORPI_IMAGE_EXTENT_ZERO:
+	case SCORPI_IMAGE_EXTENT_DISCARDED:
+		return (sco_write_materialized_cluster(sco, cluster_index,
+		    cluster_offset, buf, len));
+	default:
+		return (EINVAL);
+	}
+}
+
+static int
 sco_probe(int fd, uint32_t *score)
 {
 	char magic[SCO_MAGIC_SIZE];
@@ -1190,7 +1295,7 @@ sco_write(void *statep, const void *buf, uint64_t offset, size_t len)
 {
 	struct sco_image *sco;
 	const uint8_t *p;
-	uint64_t cluster_index, stored_length, physical_offset;
+	uint64_t end, cluster_index, cluster_offset, stored_length, chunk;
 	int error;
 
 	if (statep == NULL || (buf == NULL && len != 0))
@@ -1213,38 +1318,31 @@ sco_write(void *statep, const void *buf, uint64_t offset, size_t len)
 		error = 0;
 		goto out;
 	}
-	if ((offset % sco->sb.cluster_size) != 0 ||
-	    (len % sco->sb.cluster_size) != 0) {
-		error = EINVAL;
-		goto out;
-	}
 
 	p = buf;
-	while (len > 0) {
+	end = offset + (uint64_t)len;
+	while (offset < end) {
 		cluster_index = offset / sco->sb.cluster_size;
+		cluster_offset = offset % sco->sb.cluster_size;
 		stored_length = sco_cluster_stored_length(sco, cluster_index);
-		if (stored_length == 0 || stored_length > len) {
+		if (stored_length == 0 || cluster_offset >= stored_length) {
 			error = EINVAL;
 			goto out;
 		}
-		if (stored_length != sco->sb.cluster_size &&
-		    stored_length != len) {
+		chunk = stored_length - cluster_offset;
+		if (chunk > end - offset)
+			chunk = end - offset;
+		if (chunk > SIZE_MAX) {
 			error = EINVAL;
 			goto out;
 		}
-
-		error = sco_alloc_data_cluster(sco, cluster_index, p,
-		    &physical_offset);
-		if (error != 0)
-			goto out;
-		error = sco_write_map_entry(sco, cluster_index,
-		    physical_offset);
+		error = sco_write_cluster_range(sco, cluster_index,
+		    cluster_offset, p, (size_t)chunk);
 		if (error != 0)
 			goto out;
 
-		offset += stored_length;
-		p += stored_length;
-		len -= (size_t)stored_length;
+		offset += chunk;
+		p += chunk;
 	}
 	error = 0;
 out:

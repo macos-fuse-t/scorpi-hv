@@ -779,6 +779,8 @@ Validation criteria:
 
 ### Task 17: Implement Whole-Cluster Materialization
 
+Status: Done
+
 Scope:
 
 - handle partial writes to absent clusters
@@ -811,6 +813,12 @@ Validation criteria:
 - write crossing cluster boundary materializes each affected cluster correctly
 - overwrite of an already-present top cluster does not grow the `.sco` file
 - overwrite of an already-present top cluster does not rewrite map/root metadata
+
+Validation performed:
+
+- `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson compile -C builddir`
 
 ### Task 18: Implement `.sco` Discard And Zero State
 
