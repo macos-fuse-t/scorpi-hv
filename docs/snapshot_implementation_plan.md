@@ -783,6 +783,8 @@ Scope:
 
 - handle partial writes to absent clusters
 - materialize previous chain-visible data before applying partial write
+- overwrite already-present top clusters in place when no metadata change is
+  required
 
 Dependencies:
 
@@ -793,12 +795,22 @@ Implementation notes:
 - v1 does not support subcluster allocation
 - partial write to absent cluster reads full cluster from chain or zero-fills
 - then patches guest write bytes and stores a full local cluster
+- partial write to an already-present top cluster reads that local cluster,
+  patches guest bytes, and writes it back to the same physical offset
+- full-cluster write to an already-present top cluster writes directly to the
+  existing physical offset
+- in-place overwrites must not allocate a replacement data cluster or update
+  map/root metadata
+- absent, zero, discarded, or lower-layer-visible clusters still allocate a new
+  local cluster before becoming present in the top image
 
 Validation criteria:
 
 - partial write preserves parent bytes before and after written range
 - partial write with no parent zero-fills unwritten ranges
 - write crossing cluster boundary materializes each affected cluster correctly
+- overwrite of an already-present top cluster does not grow the `.sco` file
+- overwrite of an already-present top cluster does not rewrite map/root metadata
 
 ### Task 18: Implement `.sco` Discard And Zero State
 
