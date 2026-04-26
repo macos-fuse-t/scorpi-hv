@@ -792,6 +792,41 @@ Validation criteria:
 - flush errors are returned to block request completion
 - tests cover no-space or injected flush failure where practical
 
+### Task 20A: Add `scorpi-image` Seal And Unseal Commands
+
+Scope:
+
+- add explicit `scorpi-image seal path.sco` command
+- add explicit `scorpi-image unseal path.sco` command
+- update `.sco` readonly-compatible sealed state through a new superblock
+  generation
+- keep sealing as an image-state transition, not a `create` flag
+
+Dependencies:
+
+- Task 19
+- Task 20
+
+Implementation notes:
+
+- `seal` sets the `.sco` readonly-compatible sealed bit
+- `unseal` clears the sealed bit only for local images where policy allows it
+- `unseal` should likely require `--force` once repository/published-layer
+  policy exists
+- both commands must use the same crash-safe metadata commit path as writable
+  `.sco` updates
+- both commands should reject unsupported image formats
+- sealing should not change base descriptors, allocation maps, or data clusters
+
+Validation criteria:
+
+- `scorpi-image seal path.sco` marks the image sealed
+- sealed image rejects writable opens
+- `scorpi-image unseal path.sco` clears sealed state for allowed local images
+- seal and unseal survive close/reopen
+- interrupted seal/unseal leaves either the previous valid generation or the
+  new valid generation usable
+
 ### Task 21: Add Resolved Chain Diagnostics
 
 Scope:
