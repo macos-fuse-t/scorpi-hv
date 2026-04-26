@@ -153,6 +153,49 @@ test_concurrent_chain_read_write_serializes_cache(void)
 	assert(unlink(path) == 0);
 }
 
+static void
+test_raw_chain_diagnostics(void)
+{
+	struct scorpi_image_chain_diagnostics diagnostics;
+	struct scorpi_image_chain *chain;
+	struct scorpi_image_chain_open_options options;
+	char path[] = "/tmp/scorpi-chain-diag-XXXXXX";
+	uint8_t buf[32];
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	memset(buf, 0x5a, sizeof(buf));
+	write_all(fd, buf, sizeof(buf));
+	assert(close(fd) == 0);
+
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	fd = open(path, O_RDONLY);
+	assert(fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(path, fd, true, &options,
+	    &chain) == 0);
+	memset(&diagnostics, 0, sizeof(diagnostics));
+	assert(scorpi_image_chain_get_diagnostics(chain, &diagnostics) == 0);
+	assert(diagnostics.layer_count == 1);
+	assert(diagnostics.layers[0].index == 0);
+	assert(diagnostics.layers[0].chain_depth == 1);
+	assert(diagnostics.layers[0].format == SCORPI_IMAGE_FORMAT_RAW);
+	assert(strcmp(diagnostics.layers[0].format_name, "raw") == 0);
+	assert(diagnostics.layers[0].readonly);
+	assert(diagnostics.layers[0].virtual_size == sizeof(buf));
+	assert(diagnostics.layers[0].logical_sector_size == 512);
+	assert(!diagnostics.layers[0].has_base);
+	assert(strcmp(diagnostics.layers[0].source_uri, path) == 0);
+	assert(strcmp(diagnostics.layers[0].resolved_path, path) == 0);
+	scorpi_image_chain_diagnostics_free(&diagnostics);
+	assert(diagnostics.layer_count == 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+	assert(unlink(path) == 0);
+}
+
 int
 main(void)
 {
@@ -204,6 +247,7 @@ main(void)
 	assert(scorpi_image_chain_close(chain) == 0);
 
 	assert(unlink(path) == 0);
+	test_raw_chain_diagnostics();
 	test_concurrent_chain_read_write_serializes_cache();
 	return (0);
 }

@@ -1009,6 +1009,8 @@ Validation performed:
 
 ### Task 21: Add Resolved Chain Diagnostics
 
+Status: Done
+
 Scope:
 
 - expose resolved chain metadata for debugging and parent integration
@@ -1038,6 +1040,12 @@ Validation criteria:
 - tests verify diagnostics for raw
 - tests verify diagnostics for `.sco -> raw`
 - unsupported feature errors include enough context to identify the layer
+
+Validation performed:
+
+- `meson compile -C builddir`
+- `meson test -C builddir scorpi_image_chain_test scorpi_image_sco_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 
 ### Task 22: Add Readonly Qcow2 Backend
 

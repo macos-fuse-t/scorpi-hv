@@ -75,6 +75,7 @@ struct scorpi_image {
 	void *state;
 	struct scorpi_image_info info;
 	char *path;
+	char *source_uri;
 	dev_t dev;
 	ino_t ino;
 	bool has_file_id;

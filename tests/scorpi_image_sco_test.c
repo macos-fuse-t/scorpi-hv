@@ -1911,6 +1911,7 @@ static void
 test_read_through_sco_present_over_raw(void)
 {
 	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain_diagnostics diagnostics;
 	struct scorpi_image_chain *chain;
 	struct superblock_fixture a, b;
 	const struct scorpi_image_info *info;
@@ -1956,6 +1957,23 @@ test_read_through_sco_present_over_raw(void)
 	assert(info != NULL && info->format == SCORPI_IMAGE_FORMAT_SCO);
 	info = scorpi_image_chain_layer_info(chain, 1);
 	assert(info != NULL && info->format == SCORPI_IMAGE_FORMAT_RAW);
+	memset(&diagnostics, 0, sizeof(diagnostics));
+	assert(scorpi_image_chain_get_diagnostics(chain, &diagnostics) == 0);
+	assert(diagnostics.layer_count == 2);
+	assert(diagnostics.layers[0].chain_depth == 2);
+	assert(diagnostics.layers[0].format == SCORPI_IMAGE_FORMAT_SCO);
+	assert(strcmp(diagnostics.layers[0].format_name, "sco") == 0);
+	assert(strcmp(diagnostics.layers[0].source_uri, child) == 0);
+	assert(strcmp(diagnostics.layers[0].resolved_path, child) == 0);
+	assert(diagnostics.layers[0].has_base);
+	assert(strcmp(diagnostics.layers[0].base_uri, uri) == 0);
+	assert(diagnostics.layers[1].format == SCORPI_IMAGE_FORMAT_RAW);
+	assert(strcmp(diagnostics.layers[1].format_name, "raw") == 0);
+	assert(diagnostics.layers[1].readonly);
+	assert(strcmp(diagnostics.layers[1].source_uri, uri) == 0);
+	assert(strcmp(diagnostics.layers[1].resolved_path, base) == 0);
+	assert(!diagnostics.layers[1].has_base);
+	scorpi_image_chain_diagnostics_free(&diagnostics);
 	memset(buf, 0, sizeof(buf));
 	assert(scorpi_image_chain_read(chain, buf, 0, sizeof(buf)) == 0);
 	assert_buffer_value(buf, sizeof(buf), 0x72);

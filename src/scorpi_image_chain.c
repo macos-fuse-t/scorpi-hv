@@ -81,6 +81,7 @@ scorpi_image_close_image(struct scorpi_image *image)
 	if (image->ops != NULL)
 		error = image->ops->close(image->state);
 	free(image->path);
+	free(image->source_uri);
 	free(image->info.base_uri);
 	free(image);
 	return (error);
@@ -88,7 +89,8 @@ scorpi_image_close_image(struct scorpi_image *image)
 
 static int
 scorpi_image_alloc(const struct scorpi_image_ops *ops, void *state,
-    const char *path, const struct stat *sb, struct scorpi_image **imagep)
+    const char *path, const char *source_uri, const struct stat *sb,
+    struct scorpi_image **imagep)
 {
 	struct scorpi_image *image;
 	int error;
@@ -105,6 +107,14 @@ scorpi_image_alloc(const struct scorpi_image_ops *ops, void *state,
 			return (ENOMEM);
 		}
 	}
+	if (source_uri != NULL) {
+		image->source_uri = strdup(source_uri);
+		if (image->source_uri == NULL) {
+			free(image->path);
+			free(image);
+			return (ENOMEM);
+		}
+	}
 	if (sb != NULL) {
 		image->dev = sb->st_dev;
 		image->ino = sb->st_ino;
@@ -112,6 +122,7 @@ scorpi_image_alloc(const struct scorpi_image_ops *ops, void *state,
 	}
 	error = ops->get_info(state, &image->info);
 	if (error != 0) {
+		free(image->source_uri);
 		free(image->path);
 		free(image);
 		return (error);
@@ -155,7 +166,8 @@ scorpi_image_chain_has_file_id(const struct scorpi_image_chain *chain,
 
 static int
 scorpi_image_open_one(const char *path, int fd, bool readonly,
-    bool raw_fallback, struct scorpi_image **imagep, struct stat *sbp)
+    bool raw_fallback, const char *source_uri, struct scorpi_image **imagep,
+    struct stat *sbp)
 {
 	const struct scorpi_image_ops *ops;
 	struct scorpi_image *image;
@@ -190,7 +202,7 @@ scorpi_image_open_one(const char *path, int fd, bool readonly,
 		return (error);
 	}
 	image = NULL;
-	error = scorpi_image_alloc(ops, state, path, sbp, &image);
+	error = scorpi_image_alloc(ops, state, path, source_uri, sbp, &image);
 	if (error != 0) {
 		ops->close(state);
 		return (error);
@@ -610,7 +622,7 @@ scorpi_image_chain_open_single_backend(const struct scorpi_image_ops *ops,
 		return (error);
 	}
 	image = NULL;
-	error = scorpi_image_alloc(ops, state, NULL, NULL, &image);
+	error = scorpi_image_alloc(ops, state, NULL, NULL, NULL, &image);
 	if (error != 0) {
 		ops->close(state);
 		scorpi_image_chain_close(chain);
@@ -643,7 +655,9 @@ scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
 	struct scorpi_image *image;
 	struct stat sb;
 	const char *current_path;
+	const char *current_source_uri;
 	char *owned_path;
+	char *owned_source_uri;
 	size_t max_depth;
 	bool require_writable_top;
 	int error;
@@ -667,11 +681,13 @@ scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
 	max_depth = scorpi_image_chain_max_depth(options);
 	require_writable_top = !readonly;
 	current_path = path;
+	current_source_uri = path;
 	owned_path = NULL;
+	owned_source_uri = NULL;
 	for (;;) {
 		image = NULL;
 		error = scorpi_image_open_one(current_path, fd, readonly,
-		    options->raw_fallback, &image, &sb);
+		    options->raw_fallback, current_source_uri, &image, &sb);
 		fd = -1;
 		if (error != 0)
 			goto err;
@@ -686,7 +702,9 @@ scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
 			goto err;
 		}
 		free(owned_path);
+		free(owned_source_uri);
 		owned_path = NULL;
+		owned_source_uri = NULL;
 
 		image = chain->images[chain->image_count - 1];
 		if (!image->info.has_base)
@@ -704,8 +722,9 @@ scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
 		if (error != 0)
 			goto err;
 		owned_path = strdup(location->resolved_path);
+		owned_source_uri = strdup(location->original_uri);
 		scorpi_image_base_location_free(location);
-		if (owned_path == NULL) {
+		if (owned_path == NULL || owned_source_uri == NULL) {
 			error = ENOMEM;
 			goto err;
 		}
@@ -715,6 +734,7 @@ scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
 			goto err;
 		}
 		current_path = owned_path;
+		current_source_uri = owned_source_uri;
 		readonly = true;
 	}
 
@@ -723,10 +743,12 @@ scorpi_image_chain_open_single(const char *path, int fd, bool readonly,
 		goto err;
 
 	free(owned_path);
+	free(owned_source_uri);
 	*chainp = chain;
 	return (0);
 err:
 	free(owned_path);
+	free(owned_source_uri);
 	if (fd >= 0)
 		close(fd);
 	scorpi_image_chain_close(chain);
@@ -780,6 +802,119 @@ scorpi_image_chain_layer_info(const struct scorpi_image_chain *chain,
 	info = index >= chain->image_count ? NULL : &chain->images[index]->info;
 	pthread_rwlock_unlock(&mutable_chain->lock);
 	return (info);
+}
+
+const char *
+scorpi_image_format_name(enum scorpi_image_format format)
+{
+	switch (format) {
+	case SCORPI_IMAGE_FORMAT_RAW:
+		return ("raw");
+	case SCORPI_IMAGE_FORMAT_QCOW2:
+		return ("qcow2");
+	case SCORPI_IMAGE_FORMAT_SCO:
+		return ("sco");
+	default:
+		return ("unknown");
+	}
+}
+
+void
+scorpi_image_chain_diagnostics_free(
+    struct scorpi_image_chain_diagnostics *diagnostics)
+{
+	size_t i;
+
+	if (diagnostics == NULL)
+		return;
+	for (i = 0; i < diagnostics->layer_count; i++) {
+		free(diagnostics->layers[i].base_uri);
+		free(diagnostics->layers[i].source_uri);
+		free(diagnostics->layers[i].resolved_path);
+	}
+	free(diagnostics->layers);
+	*diagnostics = (struct scorpi_image_chain_diagnostics){ 0 };
+}
+
+int
+scorpi_image_chain_get_diagnostics(const struct scorpi_image_chain *chain,
+    struct scorpi_image_chain_diagnostics *diagnosticsp)
+{
+	struct scorpi_image_chain *mutable_chain;
+	struct scorpi_image_chain_diagnostics diagnostics;
+	struct scorpi_image_chain_layer_diagnostic *layer;
+	struct scorpi_image *image;
+	const struct scorpi_image_info *info;
+	size_t i;
+	int error;
+
+	if (chain == NULL || diagnosticsp == NULL)
+		return (EINVAL);
+	*diagnosticsp = (struct scorpi_image_chain_diagnostics){ 0 };
+	mutable_chain = (struct scorpi_image_chain *)chain;
+	error = pthread_rwlock_rdlock(&mutable_chain->lock);
+	if (error != 0)
+		return (error);
+	if (chain->image_count == 0) {
+		pthread_rwlock_unlock(&mutable_chain->lock);
+		return (EINVAL);
+	}
+	diagnostics = (struct scorpi_image_chain_diagnostics){
+		.layer_count = chain->image_count,
+	};
+	diagnostics.layers = calloc(chain->image_count,
+	    sizeof(diagnostics.layers[0]));
+	if (diagnostics.layers == NULL) {
+		pthread_rwlock_unlock(&mutable_chain->lock);
+		return (ENOMEM);
+	}
+
+	for (i = 0; i < chain->image_count; i++) {
+		image = chain->images[i];
+		info = &image->info;
+		layer = &diagnostics.layers[i];
+		*layer = (struct scorpi_image_chain_layer_diagnostic){
+			.index = i,
+			.chain_depth = chain->image_count,
+			.format = info->format,
+			.format_name = scorpi_image_format_name(info->format),
+			.readonly = info->readonly,
+			.sealed = info->sealed,
+			.virtual_size = info->virtual_size,
+			.logical_sector_size = info->logical_sector_size,
+			.physical_sector_size = info->physical_sector_size,
+			.cluster_size = info->cluster_size,
+			.has_base = info->has_base,
+		};
+		if (info->base_uri != NULL) {
+			layer->base_uri = strdup(info->base_uri);
+			if (layer->base_uri == NULL) {
+				error = ENOMEM;
+				goto err;
+			}
+		}
+		if (image->source_uri != NULL) {
+			layer->source_uri = strdup(image->source_uri);
+			if (layer->source_uri == NULL) {
+				error = ENOMEM;
+				goto err;
+			}
+		}
+		if (image->path != NULL) {
+			layer->resolved_path = strdup(image->path);
+			if (layer->resolved_path == NULL) {
+				error = ENOMEM;
+				goto err;
+			}
+		}
+	}
+	pthread_rwlock_unlock(&mutable_chain->lock);
+	*diagnosticsp = diagnostics;
+	return (0);
+err:
+	pthread_rwlock_unlock(&mutable_chain->lock);
+	scorpi_image_chain_diagnostics_free(&diagnostics);
+	return (error);
 }
 
 int

@@ -22,6 +22,28 @@ struct scorpi_image_chain_open_options {
 	bool has_uri_policy;
 };
 
+struct scorpi_image_chain_layer_diagnostic {
+	size_t index;
+	size_t chain_depth;
+	enum scorpi_image_format format;
+	const char *format_name;
+	bool readonly;
+	bool sealed;
+	uint64_t virtual_size;
+	uint32_t logical_sector_size;
+	uint32_t physical_sector_size;
+	uint32_t cluster_size;
+	bool has_base;
+	char *base_uri;
+	char *source_uri;
+	char *resolved_path;
+};
+
+struct scorpi_image_chain_diagnostics {
+	size_t layer_count;
+	struct scorpi_image_chain_layer_diagnostic *layers;
+};
+
 /*
  * Takes ownership of fd on both success and failure.
  */
@@ -35,6 +57,12 @@ const struct scorpi_image_info *scorpi_image_chain_top_info(
 size_t	scorpi_image_chain_layer_count(const struct scorpi_image_chain *chain);
 const struct scorpi_image_info *scorpi_image_chain_layer_info(
 	    const struct scorpi_image_chain *chain, size_t index);
+const char *scorpi_image_format_name(enum scorpi_image_format format);
+int	scorpi_image_chain_get_diagnostics(
+	    const struct scorpi_image_chain *chain,
+	    struct scorpi_image_chain_diagnostics *diagnosticsp);
+void	scorpi_image_chain_diagnostics_free(
+	    struct scorpi_image_chain_diagnostics *diagnostics);
 int	scorpi_image_chain_read(struct scorpi_image_chain *chain, void *buf,
 	    uint64_t offset, size_t len);
 int	scorpi_image_chain_write(struct scorpi_image_chain *chain,
