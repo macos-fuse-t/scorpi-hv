@@ -7,7 +7,6 @@
 #include <sys/errno.h>
 #include <sys/stat.h>
 
-#include <ctype.h>
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -17,6 +16,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <libutil.h>
 #include <support/endian.h>
 
 #include "scorpi_image.h"
@@ -79,34 +79,6 @@ static bool
 is_power_of_two_u64(uint64_t value)
 {
 	return (value != 0 && (value & (value - 1)) == 0);
-}
-
-static int
-parse_size(const char *value, uint64_t *out)
-{
-	char *end;
-	uint64_t multiplier, number;
-
-	errno = 0;
-	number = strtoull(value, &end, 0);
-	if (errno != 0 || end == value)
-		return (EINVAL);
-	if (*end == '\0') {
-		multiplier = 1;
-	} else if (tolower((unsigned char)end[0]) == 'm' &&
-	    tolower((unsigned char)end[1]) == 'b' && end[2] == '\0') {
-		multiplier = 1024ULL * 1024ULL;
-	} else if (tolower((unsigned char)end[0]) == 'g' &&
-	    tolower((unsigned char)end[1]) == 'b' && end[2] == '\0') {
-		multiplier = 1024ULL * 1024ULL * 1024ULL;
-	} else {
-		return (EINVAL);
-	}
-	if (number > UINT64_MAX / multiplier)
-		return (EOVERFLOW);
-	number *= multiplier;
-	*out = number;
-	return (0);
 }
 
 static int
@@ -406,9 +378,9 @@ cmd_create(int argc, char **argv)
 		if (strcmp(argv[i], "--format") == 0 && i + 1 < argc) {
 			format = argv[++i];
 		} else if (strcmp(argv[i], "--size") == 0 && i + 1 < argc) {
-			error = parse_size(argv[++i], &opts.virtual_size);
+			error = expand_number(argv[++i], &opts.virtual_size);
 			if (error != 0)
-				return (error);
+				return (errno != 0 ? errno : EINVAL);
 		} else if (argv[i][0] == '-') {
 			return (EINVAL);
 		} else if (opts.path == NULL) {
