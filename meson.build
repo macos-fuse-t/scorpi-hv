@@ -124,7 +124,7 @@ endif
 runtime_core_sources += arch_src
 
 scorpi_image_executable = executable(
-  'scorpi_image',
+  'scorpi-image',
   files(
     'src/scorpi_image_tool.c',
     'src/scorpi_image.c',

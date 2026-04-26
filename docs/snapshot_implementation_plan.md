@@ -616,7 +616,7 @@ Validation performed:
 - `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 - `meson compile -C builddir`
 
-### Task 15: Add `scorpi_image` CLI Tool
+### Task 15: Add `scorpi-image` CLI Tool
 
 Status:
 
@@ -624,7 +624,7 @@ Status:
 
 Scope:
 
-- add a Meson executable target for a user-facing `scorpi_image` utility
+- add a Meson executable target for a user-facing `scorpi-image` utility
 - support creating `.sco` images from command-line arguments
 - support inspecting image metadata without launching a VM
 - keep snapshot graph, compaction, repository, push, and pull behavior outside
@@ -640,8 +640,9 @@ Implementation notes:
   - `create`
   - `info`
   - `check`
-- `create` should support `.sco` output, virtual size, cluster size, readonly
-  or sealed mode where applicable, and optional base image URI
+- `create` should support `.sco` output and virtual size
+- `create` should use a fixed v1 cluster size for now
+- `--size` should accept raw bytes and `mb`/`gb` suffixes
 - `info` should use the same parser/probing path as runtime image opening
 - raw input should remain explicit because raw has no magic
 - the tool may reuse the test fixture creation code, but it should be built as
@@ -651,11 +652,11 @@ Implementation notes:
 
 Validation criteria:
 
-- `meson compile` builds the `scorpi_image` executable
-- `scorpi_image create` creates a valid `.sco` image
-- `scorpi_image info` reports format, virtual size, sector sizes, cluster size,
+- `meson compile` builds the `scorpi-image` executable
+- `scorpi-image create` creates a valid `.sco` image
+- `scorpi-image info` reports format, virtual size, sector sizes, cluster size,
   readonly or sealed state, and base URI when present
-- `scorpi_image check` rejects corrupt `.sco` metadata
+- `scorpi-image check` rejects corrupt `.sco` metadata
 - generated images can be opened by the runtime image backend tests
 
 Validation performed:

@@ -1,4 +1,4 @@
-/* scorpi_image CLI coverage. */
+/* scorpi-image CLI coverage. */
 
 #include <assert.h>
 #include <fcntl.h>
@@ -57,7 +57,7 @@ test_create_info_check(void)
 	assert(unlink(path) == 0);
 
 	snprintf(cmd, sizeof(cmd),
-	    "%s create --format sco --size 134217728 --base file:base.raw %s",
+	    "%s create --format sco --size 128mb %s",
 	    cli_path(), path);
 	run_ok(cmd);
 
@@ -76,7 +76,7 @@ test_create_info_check(void)
 	assert(strstr(output, "format=sco\n") != NULL);
 	assert(strstr(output, "virtual_size=134217728\n") != NULL);
 	assert(strstr(output, "cluster_size=262144\n") != NULL);
-	assert(strstr(output, "base_uri=file:base.raw\n") != NULL);
+	assert(strstr(output, "base_uri=") == NULL);
 	assert(unlink(output_path) == 0);
 	assert(unlink(path) == 0);
 }
@@ -95,7 +95,7 @@ test_check_rejects_corrupt_image(void)
 	assert(unlink(path) == 0);
 
 	snprintf(cmd, sizeof(cmd),
-	    "%s create --format sco --size 134217728 %s", cli_path(), path);
+	    "%s create --format sco --size 1gb %s", cli_path(), path);
 	run_ok(cmd);
 	fd = open(path, O_RDWR);
 	assert(fd >= 0);
@@ -108,10 +108,37 @@ test_check_rejects_corrupt_image(void)
 	assert(unlink(path) == 0);
 }
 
+static void
+test_removed_create_options_rejected(void)
+{
+	char path[] = "/tmp/scorpi-image-cli-options-XXXXXX";
+	char cmd[1024];
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(path) == 0);
+
+	snprintf(cmd, sizeof(cmd),
+	    "%s create --format sco --size 128mb --cluster-size 65536 %s",
+	    cli_path(), path);
+	run_fail(cmd);
+	snprintf(cmd, sizeof(cmd),
+	    "%s create --format sco --size 128mb --base file:base.raw %s",
+	    cli_path(), path);
+	run_fail(cmd);
+	snprintf(cmd, sizeof(cmd),
+	    "%s create --format sco --size 128mb --sealed %s",
+	    cli_path(), path);
+	run_fail(cmd);
+}
+
 int
 main(void)
 {
 	test_create_info_check();
 	test_check_rejects_corrupt_image();
+	test_removed_create_options_rejected();
 	return (0);
 }

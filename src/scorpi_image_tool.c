@@ -7,6 +7,7 @@
 #include <sys/errno.h>
 #include <sys/stat.h>
 
+#include <ctype.h>
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -37,16 +38,13 @@
 #define	SCO_MIN_CLUSTER_SIZE		0x10000U
 #define	SCO_MAX_CLUSTER_SIZE		0x400000U
 #define	SCO_INCOMPAT_ALLOC_MAP_V1	(1U << 0)
-#define	SCO_RO_COMPAT_SEALED		(1U << 0)
 
 struct sco_create_options {
 	const char *path;
-	const char *base_uri;
 	uint64_t virtual_size;
 	uint32_t cluster_size;
 	uint32_t logical_sector_size;
 	uint32_t physical_sector_size;
-	bool sealed;
 };
 
 static uint32_t
@@ -84,15 +82,29 @@ is_power_of_two_u64(uint64_t value)
 }
 
 static int
-parse_u64(const char *value, uint64_t *out)
+parse_size(const char *value, uint64_t *out)
 {
 	char *end;
-	uint64_t number;
+	uint64_t multiplier, number;
 
 	errno = 0;
 	number = strtoull(value, &end, 0);
-	if (errno != 0 || end == value || *end != '\0')
+	if (errno != 0 || end == value)
 		return (EINVAL);
+	if (*end == '\0') {
+		multiplier = 1;
+	} else if (tolower((unsigned char)end[0]) == 'm' &&
+	    tolower((unsigned char)end[1]) == 'b' && end[2] == '\0') {
+		multiplier = 1024ULL * 1024ULL;
+	} else if (tolower((unsigned char)end[0]) == 'g' &&
+	    tolower((unsigned char)end[1]) == 'b' && end[2] == '\0') {
+		multiplier = 1024ULL * 1024ULL * 1024ULL;
+	} else {
+		return (EINVAL);
+	}
+	if (number > UINT64_MAX / multiplier)
+		return (EOVERFLOW);
+	number *= multiplier;
 	*out = number;
 	return (0);
 }
@@ -167,26 +179,9 @@ build_root_page(uint8_t buf[SCO_METADATA_PAGE_SIZE], uint32_t entry_count,
 }
 
 static void
-build_base_descriptor(uint8_t *buf, uint32_t size, const char *base_uri)
-{
-	uint32_t crc;
-	size_t uri_len;
-
-	memset(buf, 0, size);
-	uri_len = strlen(base_uri);
-	le32enc(buf + 0x0000, size);
-	le32enc(buf + 0x0004, SCO_CHECKSUM_CRC32C);
-	le32enc(buf + 0x0010, (uint32_t)uri_len);
-	memcpy(buf + 0x0050, base_uri, uri_len);
-	crc = crc32c(buf, size);
-	le32enc(buf + 0x0008, crc);
-}
-
-static void
 build_superblock(uint8_t buf[SCO_SUPERBLOCK_SIZE],
     const struct sco_create_options *opts, const uint8_t uuid[16],
     uint64_t cluster_count, uint64_t data_area_offset,
-    uint64_t base_descriptor_offset, uint32_t base_descriptor_length,
     uint64_t map_root_offset, uint32_t map_root_length)
 {
 	uint32_t crc;
@@ -204,14 +199,10 @@ build_superblock(uint8_t buf[SCO_SUPERBLOCK_SIZE],
 	le64enc(buf + 0x0038, cluster_count);
 	le64enc(buf + 0x0040, SCO_METADATA_AREA_OFFSET);
 	le64enc(buf + 0x0048, data_area_offset);
-	le64enc(buf + 0x0050, base_descriptor_offset);
-	le32enc(buf + 0x0058, base_descriptor_length);
 	le64enc(buf + 0x0060, map_root_offset);
 	le32enc(buf + 0x0068, map_root_length);
 	le32enc(buf + 0x006c, SCO_MAP_ENTRY_SIZE);
 	le32enc(buf + 0x0070, SCO_INCOMPAT_ALLOC_MAP_V1);
-	if (opts->sealed)
-		le32enc(buf + 0x0074, SCO_RO_COMPAT_SEALED);
 	memcpy(buf + 0x0080, uuid, 16);
 	crc = crc32c(buf, SCO_SUPERBLOCK_SIZE);
 	le32enc(buf + 0x0014, crc);
@@ -221,10 +212,9 @@ static int
 create_sco(const struct sco_create_options *opts)
 {
 	uint8_t page[SCO_METADATA_PAGE_SIZE], uuid[16];
-	uint8_t *base_descriptor;
 	uint64_t cluster_count, map_page_count, root_page_count;
-	uint64_t base_descriptor_offset, data_area_offset, metadata_end;
-	uint32_t base_descriptor_length, root_entries, map_root_length;
+	uint64_t data_area_offset, metadata_end;
+	uint32_t root_entries, map_root_length;
 	uint64_t i, remaining_root_entries;
 	int fd, error;
 
@@ -241,8 +231,6 @@ create_sco(const struct sco_create_options *opts)
 	    (!is_power_of_two_u64(opts->physical_sector_size) ||
 	    opts->physical_sector_size < opts->logical_sector_size))
 		return (EINVAL);
-	if (opts->base_uri != NULL && strncmp(opts->base_uri, "file:", 5) != 0)
-		return (ENOTSUP);
 
 	cluster_count = (opts->virtual_size + opts->cluster_size - 1) /
 	    opts->cluster_size;
@@ -251,15 +239,7 @@ create_sco(const struct sco_create_options *opts)
 	root_page_count = (map_page_count + SCO_MAP_ENTRIES_PER_PAGE - 1) /
 	    SCO_MAP_ENTRIES_PER_PAGE;
 	map_root_length = (uint32_t)(root_page_count * SCO_METADATA_PAGE_SIZE);
-	base_descriptor_offset = 0;
-	base_descriptor_length = 0;
 	metadata_end = SCO_METADATA_AREA_OFFSET + map_root_length;
-	if (opts->base_uri != NULL) {
-		base_descriptor_offset = metadata_end;
-		base_descriptor_length = (uint32_t)align_up_u64(0x50 +
-		    strlen(opts->base_uri), SCO_METADATA_PAGE_SIZE);
-		metadata_end += base_descriptor_length;
-	}
 	data_area_offset = align_up_u64(metadata_end, opts->cluster_size);
 
 	error = fill_uuid(uuid);
@@ -274,7 +254,6 @@ create_sco(const struct sco_create_options *opts)
 	if (error != 0)
 		goto out;
 	build_superblock(page, opts, uuid, cluster_count, data_area_offset,
-	    base_descriptor_offset, base_descriptor_length,
 	    SCO_METADATA_AREA_OFFSET, map_root_length);
 	error = write_exact(fd, SCO_SUPERBLOCK_A_OFFSET, page, sizeof(page));
 	if (error != 0)
@@ -295,20 +274,6 @@ create_sco(const struct sco_create_options *opts)
 		if (error != 0)
 			goto out;
 		remaining_root_entries -= root_entries;
-	}
-	if (opts->base_uri != NULL) {
-		base_descriptor = calloc(1, base_descriptor_length);
-		if (base_descriptor == NULL) {
-			error = ENOMEM;
-			goto out;
-		}
-		build_base_descriptor(base_descriptor, base_descriptor_length,
-		    opts->base_uri);
-		error = write_exact(fd, base_descriptor_offset,
-		    base_descriptor, base_descriptor_length);
-		free(base_descriptor);
-		if (error != 0)
-			goto out;
 	}
 	if (ftruncate(fd, (off_t)data_area_offset) != 0) {
 		error = errno;
@@ -419,16 +384,15 @@ usage(void)
 {
 	fprintf(stderr,
 	    "usage:\n"
-	    "  scorpi_image create --format sco --size bytes [--cluster-size bytes] [--base file:uri] [--sealed] path\n"
-	    "  scorpi_image info path\n"
-	    "  scorpi_image check path\n");
+	    "  scorpi-image create --format sco --size bytes|Nmb|Ngb path\n"
+	    "  scorpi-image info path\n"
+	    "  scorpi-image check path\n");
 }
 
 static int
 cmd_create(int argc, char **argv)
 {
 	struct sco_create_options opts;
-	uint64_t value;
 	const char *format;
 	int i, error;
 
@@ -442,31 +406,9 @@ cmd_create(int argc, char **argv)
 		if (strcmp(argv[i], "--format") == 0 && i + 1 < argc) {
 			format = argv[++i];
 		} else if (strcmp(argv[i], "--size") == 0 && i + 1 < argc) {
-			error = parse_u64(argv[++i], &opts.virtual_size);
+			error = parse_size(argv[++i], &opts.virtual_size);
 			if (error != 0)
 				return (error);
-		} else if (strcmp(argv[i], "--cluster-size") == 0 &&
-		    i + 1 < argc) {
-			error = parse_u64(argv[++i], &value);
-			if (error != 0 || value > UINT32_MAX)
-				return (EINVAL);
-			opts.cluster_size = (uint32_t)value;
-		} else if (strcmp(argv[i], "--logical-sector-size") == 0 &&
-		    i + 1 < argc) {
-			error = parse_u64(argv[++i], &value);
-			if (error != 0 || value > UINT32_MAX)
-				return (EINVAL);
-			opts.logical_sector_size = (uint32_t)value;
-		} else if (strcmp(argv[i], "--physical-sector-size") == 0 &&
-		    i + 1 < argc) {
-			error = parse_u64(argv[++i], &value);
-			if (error != 0 || value > UINT32_MAX)
-				return (EINVAL);
-			opts.physical_sector_size = (uint32_t)value;
-		} else if (strcmp(argv[i], "--base") == 0 && i + 1 < argc) {
-			opts.base_uri = argv[++i];
-		} else if (strcmp(argv[i], "--sealed") == 0) {
-			opts.sealed = true;
 		} else if (argv[i][0] == '-') {
 			return (EINVAL);
 		} else if (opts.path == NULL) {
@@ -500,7 +442,7 @@ main(int argc, char **argv)
 		return (2);
 	}
 	if (error != 0) {
-		fprintf(stderr, "scorpi_image: %s\n", strerror(error));
+		fprintf(stderr, "scorpi-image: %s\n", strerror(error));
 		return (1);
 	}
 	return (0);
