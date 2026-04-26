@@ -135,6 +135,10 @@ Validation performed:
 
 ### Task 2: Move Current Raw File I/O Behind Raw Backend
 
+Status:
+
+- Done
+
 Scope:
 
 - implement a raw image backend that preserves current flat-file behavior
@@ -161,6 +165,12 @@ Validation criteria:
   before
 - unit tests verify raw read, write, flush, readonly rejection, and size
   reporting
+
+Validation performed:
+
+- `meson setup builddir --reconfigure`
+- `meson test -C builddir scorpi_image_backend_test scorpi_image_raw_test`
+- `meson compile -C builddir`
 
 ### Task 3: Add Image Chain Object
 

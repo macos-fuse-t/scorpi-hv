@@ -56,6 +56,8 @@
 #include "debug.h"
 #include "mevent.h"
 #include "pci_emul.h"
+#include "scorpi_image.h"
+#include "scorpi_image_raw.h"
 
 #define BLOCKIF_SIG    0xb109b109
 
@@ -78,6 +80,8 @@ struct blockif_elem {
 struct blockif_ctxt {
 	unsigned int bc_magic;
 	int bc_fd;
+	const struct scorpi_image_ops *bc_image_ops;
+	void *bc_image_state;
 	int bc_ischr;
 	int bc_isgeom;
 	int bc_candelete;
@@ -201,144 +205,88 @@ blockif_complete(struct blockif_ctxt *bc, struct blockif_elem *be)
 static int
 blockif_flush_bc(struct blockif_ctxt *bc)
 {
-	if (bc->bc_ischr) {
-		if (ioctl(bc->bc_fd, /*DIOCGFLUSH*/ DKIOCSYNCHRONIZECACHE))
-			return (errno);
-	} else if (fsync(bc->bc_fd))
-		return (errno);
+	return (bc->bc_image_ops->flush(bc->bc_image_state));
+}
 
+static int
+blockif_read_iov(struct blockif_ctxt *bc, struct blockif_req *br)
+{
+	off_t offset;
+	size_t len;
+	int error, i;
+
+	offset = br->br_offset;
+	for (i = 0; i < br->br_iovcnt && br->br_resid > 0; i++) {
+		len = MIN((size_t)br->br_resid, br->br_iov[i].iov_len);
+		if (len == 0)
+			continue;
+		error = bc->bc_image_ops->read(bc->bc_image_state,
+		    br->br_iov[i].iov_base, (uint64_t)offset, len);
+		if (error != 0)
+			return (error);
+		offset += len;
+		br->br_resid -= len;
+	}
+	return (0);
+}
+
+static int
+blockif_write_iov(struct blockif_ctxt *bc, struct blockif_req *br)
+{
+	off_t offset;
+	size_t len;
+	int error, i;
+
+	if (bc->bc_rdonly)
+		return (EROFS);
+
+	offset = br->br_offset;
+	for (i = 0; i < br->br_iovcnt && br->br_resid > 0; i++) {
+		len = MIN((size_t)br->br_resid, br->br_iov[i].iov_len);
+		if (len == 0)
+			continue;
+		error = bc->bc_image_ops->write(bc->bc_image_state,
+		    br->br_iov[i].iov_base, (uint64_t)offset, len);
+		if (error != 0)
+			return (error);
+		offset += len;
+		br->br_resid -= len;
+	}
 	return (0);
 }
 
 static void
-blockif_proc(struct blockif_ctxt *bc, struct blockif_elem *be, uint8_t *buf)
+blockif_proc(struct blockif_ctxt *bc, struct blockif_elem *be,
+    uint8_t *buf __unused)
 {
-	// struct spacectl_range range;
 	struct blockif_req *br;
-	// off_t arg[2];
-	ssize_t n;
-	size_t clen, len, off, boff, voff;
-	int i, err;
+	int err;
 
 	br = be->be_req;
 	assert(br->br_resid >= 0);
 
-	if (br->br_iovcnt <= 1)
-		buf = NULL;
 	err = 0;
 	switch (be->be_op) {
 	case BOP_READ:
-		if (buf == NULL) {
-			if ((n = preadv(bc->bc_fd, br->br_iov, br->br_iovcnt,
-				 br->br_offset)) < 0)
-				err = errno;
-			else
-				br->br_resid -= n;
-			break;
-		}
-		i = 0;
-		off = voff = 0;
-		while (br->br_resid > 0) {
-			len = MIN(br->br_resid, MAXPHYS);
-			n = pread(bc->bc_fd, buf, len, br->br_offset + off);
-			if (n < 0) {
-				err = errno;
-				break;
-			}
-			len = (size_t)n;
-			boff = 0;
-			do {
-				clen = MIN(len - boff,
-				    br->br_iov[i].iov_len - voff);
-				memcpy((uint8_t *)br->br_iov[i].iov_base + voff,
-				    buf + boff, clen);
-				if (clen < br->br_iov[i].iov_len - voff)
-					voff += clen;
-				else {
-					i++;
-					voff = 0;
-				}
-				boff += clen;
-			} while (boff < len);
-			off += len;
-			br->br_resid -= len;
-		}
+		err = blockif_read_iov(bc, br);
 		break;
 	case BOP_WRITE:
-		if (bc->bc_rdonly) {
-			err = EROFS;
-			break;
-		}
-		if (buf == NULL) {
-			if ((n = pwritev(bc->bc_fd, br->br_iov, br->br_iovcnt,
-				 br->br_offset)) < 0)
-				err = errno;
-			else
-				br->br_resid -= n;
-			break;
-		}
-		i = 0;
-		off = voff = 0;
-		while (br->br_resid > 0) {
-			len = MIN(br->br_resid, MAXPHYS);
-			boff = 0;
-			do {
-				clen = MIN(len - boff,
-				    br->br_iov[i].iov_len - voff);
-				memcpy(buf + boff,
-				    (uint8_t *)br->br_iov[i].iov_base + voff,
-				    clen);
-				if (clen < br->br_iov[i].iov_len - voff)
-					voff += clen;
-				else {
-					i++;
-					voff = 0;
-				}
-				boff += clen;
-			} while (boff < len);
-
-			n = pwrite(bc->bc_fd, buf, len, br->br_offset + off);
-			if (n < 0) {
-				err = errno;
-				break;
-			}
-			off += n;
-			br->br_resid -= n;
-		}
+		err = blockif_write_iov(bc, br);
 		break;
 	case BOP_FLUSH:
 		err = blockif_flush_bc(bc);
 		break;
 	case BOP_DELETE:
-#if 0
 		if (!bc->bc_candelete)
 			err = EOPNOTSUPP;
 		else if (bc->bc_rdonly)
 			err = EROFS;
-		else if (bc->bc_ischr) {
-			arg[0] = br->br_offset;
-			arg[1] = br->br_resid;
-			if (ioctl(bc->bc_fd, DIOCGDELETE, arg))
-				err = errno;
-			else
-				br->br_resid = 0;
-		} else {
-			range.r_offset = br->br_offset;
-			range.r_len = br->br_resid;
-
-			while (range.r_len > 0) {
-				if (fspacectl(bc->bc_fd, SPACECTL_DEALLOC,
-				    &range, 0, &range) != 0) {
-					err = errno;
-					break;
-				}
-			}
+		else {
+			err = bc->bc_image_ops->discard(bc->bc_image_state,
+			    (uint64_t)br->br_offset, (uint64_t)br->br_resid);
 			if (err == 0)
 				br->br_resid = 0;
 		}
-#else
-		err = EOPNOTSUPP;
-#endif
 		break;
 	default:
 		err = EINVAL;
@@ -467,7 +415,9 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	const char *path, *pssval, *ssval, *bootindex_val;
 	char *cp;
 	struct blockif_ctxt *bc;
+	const struct scorpi_image_ops *image_ops;
 	struct stat sbuf;
+	void *image_state;
 	// struct diocgattr_arg arg;
 	off_t size, psectsz, psectoff;
 	int extra, fd, i, sectsz;
@@ -477,6 +427,7 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	pthread_once(&blockif_once, blockif_init);
 
 	fd = -1;
+	image_state = NULL;
 	extra = 0;
 	ssopt = 0;
 	ro = 0;
@@ -599,6 +550,10 @@ blockif_open(nvlist_t *nvl, const char *ident)
 		psectoff = 0;
 	}
 
+	image_ops = scorpi_image_raw_backend();
+	if (image_ops->open(path, fd, ro != 0, &image_state) != 0)
+		goto err;
+
 	bc = calloc(1, sizeof(struct blockif_ctxt));
 	if (bc == NULL) {
 		perror("calloc");
@@ -607,6 +562,8 @@ blockif_open(nvlist_t *nvl, const char *ident)
 
 	bc->bc_magic = BLOCKIF_SIG;
 	bc->bc_fd = fd;
+	bc->bc_image_ops = image_ops;
+	bc->bc_image_state = image_state;
 	bc->bc_ischr = S_ISCHR(sbuf.st_mode);
 	bc->bc_isgeom = geom;
 	bc->bc_candelete = candelete;
@@ -636,7 +593,9 @@ blockif_open(nvlist_t *nvl, const char *ident)
 
 	return (bc);
 err:
-	if (fd >= 0)
+	if (image_state != NULL)
+		image_ops->close(image_state);
+	else if (fd >= 0)
 		close(fd);
 	return (NULL);
 }
@@ -871,7 +830,7 @@ blockif_close(struct blockif_ctxt *bc)
 	 * Release resources
 	 */
 	bc->bc_magic = 0;
-	close(bc->bc_fd);
+	bc->bc_image_ops->close(bc->bc_image_state);
 	free(bc);
 
 	return (0);
