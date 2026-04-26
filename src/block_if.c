@@ -492,13 +492,14 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	struct stat sbuf;
 	// struct diocgattr_arg arg;
 	off_t size, psectsz, psectoff;
-	int extra, fd, i, sectsz;
+	int extra, fd, image_fd, i, sectsz;
 	int ro, candelete, geom, ssopt, pssopt;
 	int bootindex;
 
 	pthread_once(&blockif_once, blockif_init);
 
 	fd = -1;
+	image_fd = -1;
 	image_chain = NULL;
 	extra = 0;
 	ssopt = 0;
@@ -625,9 +626,13 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	image_options = (struct scorpi_image_chain_open_options){
 		.raw_fallback = true,
 	};
+	image_fd = fd;
 	if (scorpi_image_chain_open_single(path, fd, ro != 0, &image_options,
-	    &image_chain) != 0)
+	    &image_chain) != 0) {
+		fd = -1;
 		goto err;
+	}
+	fd = -1;
 	image_info = scorpi_image_chain_top_info(image_chain);
 	if (image_info == NULL)
 		goto err;
@@ -648,7 +653,7 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	}
 
 	bc->bc_magic = BLOCKIF_SIG;
-	bc->bc_fd = fd;
+	bc->bc_fd = image_fd;
 	bc->bc_image_chain = image_chain;
 	bc->bc_ischr = S_ISCHR(sbuf.st_mode);
 	bc->bc_isgeom = geom;
