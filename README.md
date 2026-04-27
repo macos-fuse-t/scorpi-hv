@@ -28,7 +28,7 @@ Currently, Scorpi runs on Mac ARM64 using Apple's Hypervisor Framework. The plan
 
 ## Build and run
 
-Build and run scorpi and samples with
+Build and run scorpi-hv and samples with
 
 ```sh
 meson setup builddir
@@ -44,7 +44,7 @@ Run a FreeBSD VM:
 Or launch it with the YAML config:
 
 ```sh
-./builddir/scorpi -f ./samples/freebsd_vm.yaml
+./builddir/scorpi-hv -f ./samples/freebsd_vm.yaml
 ```
 
 ## Running Linux VMs
@@ -97,7 +97,7 @@ Or launch it with the YAML config:
        - device: vm-control
          path: /tmp/vm_sock
    EOF
-   ./builddir/scorpi -f ./linux-vm.yaml
+   ./builddir/scorpi-hv -f ./linux-vm.yaml
    ```
    To use a graphical viewer, refer to the following reference project: [ScorpiViewer](https://github.com/macos-fuse-t/ScorpiViewer)
 
@@ -159,7 +159,7 @@ Or launch it with the YAML config:
          version: 2.0
          intf: tis
    EOF
-   ./builddir/scorpi -f ./windows-vm.yaml
+   ./builddir/scorpi-hv -f ./windows-vm.yaml
    ```
 5. Run ScorpiViewer.
 

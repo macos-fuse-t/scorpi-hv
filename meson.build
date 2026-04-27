@@ -149,7 +149,7 @@ subdir('util/console')
 subdir('samples')
 
 scorpi_executable=executable(
-  'scorpi', 
+  'scorpi-hv',
   files(
     'src/scorpi_main.c',
     'src/scorpi_cli.c',
@@ -161,9 +161,9 @@ scorpi_executable=executable(
 # Add codesigning step for macOS
 if host_machine.system() == 'darwin'
     codesign = custom_target(
-        'codesign-scorpi',
+        'codesign-scorpi-hv',
         input: scorpi_executable,
-        output: 'scorpi-signed',
+        output: 'scorpi-hv-signed',
         command: [
             'codesign',
             '--entitlements', meson.project_source_root() + '/scorpi.entitlements',
