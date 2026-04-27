@@ -23,25 +23,10 @@
 #include "scorpi_image.h"
 #include "scorpi_image_raw.h"
 #include "scorpi_image_sco.h"
+#include "scorpi_image_sco_format.h"
 #include "scorpi_image_uri.h"
 
-#define	SCO_MAGIC			"SCOIMG\0\0"
-#define	SCO_FILE_ID_SIZE		0x1000U
-#define	SCO_SUPERBLOCK_SIZE		0x1000U
-#define	SCO_SUPERBLOCK_A_OFFSET		0x1000ULL
-#define	SCO_SUPERBLOCK_B_OFFSET		0x2000ULL
-#define	SCO_METADATA_AREA_OFFSET		0x10000ULL
-#define	SCO_METADATA_PAGE_SIZE		0x1000U
-#define	SCO_MAP_PAGE_HEADER_SIZE		0x18U
-#define	SCO_MAP_ENTRY_SIZE		16U
-#define	SCO_MAP_ENTRIES_PER_PAGE \
-	((SCO_METADATA_PAGE_SIZE - SCO_MAP_PAGE_HEADER_SIZE) / \
-	SCO_MAP_ENTRY_SIZE)
-#define	SCO_CHECKSUM_CRC32C		1U
 #define	SCO_DEFAULT_CLUSTER_SIZE		0x40000U
-#define	SCO_MIN_CLUSTER_SIZE		0x10000U
-#define	SCO_MAX_CLUSTER_SIZE		0x400000U
-#define	SCO_INCOMPAT_ALLOC_MAP_V1	(1U << 0)
 
 struct sco_create_options {
 	const char *path;
