@@ -1,7 +1,5 @@
 console_src = files('tty.c', 'websock_client.c')
 
-libwebsockets_dep = dependency('libwebsockets', required: true)
-
 console_executable = executable(
   'scorpi_console',
   console_src,

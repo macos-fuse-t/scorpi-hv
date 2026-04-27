@@ -1,0 +1,4 @@
+subprojects/.wraplock
+subprojects/libslirp/
+subprojects/libwebsockets/
+subprojects/packagecache/

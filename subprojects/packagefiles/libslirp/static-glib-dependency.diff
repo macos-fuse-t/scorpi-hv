@@ -1,0 +1,71 @@
+diff --git a/meson.build b/meson.build
+index 6df6ed6..1481ce4 100644
+--- a/meson.build
++++ b/meson.build
+@@ -32,6 +32,7 @@ cc = meson.get_compiler('c')
+ add_languages('cpp', required : fuzzer_build, native : false)
+ 
+ glib_static = get_option('static')
++glib_dep_static = glib_static or meson.is_subproject()
+ 
+ if glib_static == true
+   add_global_arguments('-static', language : 'c')
+@@ -80,12 +81,12 @@ host_system = host_machine.system()
+ 
+ # libslirp_deps collects both the libslirp dependenc(y|ies) and the
+ # platform dependencies.
+-libslirp_deps = [ dependency('glib-2.0', static : glib_static) ]
++libslirp_deps = [ dependency('glib-2.0', static : glib_dep_static) ]
+ 
+ if host_system == 'windows'
+   # Windows: pkg-config fails us here because the static version of glib-2.0
+   # requires iconv, which is not emitted by 'pkg-config --libs --static'.
+-  libslirp_deps += [ dependency('iconv', static : glib_static) ]
++  libslirp_deps += [ dependency('iconv', static : glib_dep_static) ]
+ endif
+ 
+ add_project_arguments(cc.get_supported_arguments('-Wmissing-prototypes', '-Wstrict-prototypes',
+@@ -220,23 +221,25 @@ else
+   )
+ endif
+ 
+-pingtest = executable('pingtest', 'test/pingtest.c',
+-  link_with: [ lib ],
+-  c_args : cargs,
+-  link_args : vflag,
+-  include_directories: [ 'src' ],
+-  dependencies : libslirp_deps
+-)
++if not meson.is_subproject()
++  pingtest = executable('pingtest', 'test/pingtest.c',
++    link_with: [ lib ],
++    c_args : cargs,
++    link_args : vflag,
++    include_directories: [ 'src' ],
++    dependencies : libslirp_deps
++  )
+ 
+-test('ping', pingtest)
++  test('ping', pingtest)
+ 
+-ncsitest = executable('ncsitest', 'test/ncsitest.c',
+-  link_with: [lib],
+-  c_args : cargs,
+-  link_args : vflag,
+-  include_directories: ['src'],
+-  dependencies: libslirp_deps
+-)
++  ncsitest = executable('ncsitest', 'test/ncsitest.c',
++    link_with: [lib],
++    c_args : cargs,
++    link_args : vflag,
++    include_directories: ['src'],
++    dependencies: libslirp_deps
++  )
+ 
+-test('ncsi', ncsitest)
++  test('ncsi', ncsitest)
++endif
+ 
+ if install_devel
+   install_headers(['src/libslirp.h'], subdir : 'slirp')

@@ -4,10 +4,28 @@ project('scorpi', 'c',
 
 add_project_arguments('-Wno-pointer-sign', language: 'c')
 
+cmake = import('cmake')
+
 zlib_dep = dependency('zlib', required: true)
-slirp_dep = dependency('slirp', required: true, static: false)
-libwebsockets_dep = dependency('libwebsockets', required: true)
 threads_dep = dependency('threads')
+
+libslirp_proj = subproject(
+    'libslirp',
+    default_options: ['default_library=static'])
+slirp_dep = libslirp_proj.get_variable('libslirp_libdep')
+
+libwebsockets_opts = cmake.subproject_options()
+libwebsockets_opts.add_cmake_defines({
+    'LWS_WITH_SHARED': false,
+    'LWS_WITH_STATIC': true,
+    'LWS_WITH_SSL': false,
+    'LWS_WITHOUT_TESTAPPS': true,
+})
+libwebsockets_opts.set_install(false)
+libwebsockets_proj = cmake.subproject(
+    'libwebsockets',
+    options: libwebsockets_opts)
+libwebsockets_dep = libwebsockets_proj.dependency('websockets')
 
 codesign_identity = run_command('sh', '-c', 'echo $CODESIGN_IDENTITY').stdout().strip()
 
@@ -16,7 +34,6 @@ if host_machine.system() == 'darwin'
         '-framework', 'Hypervisor',
         '-framework', 'VMNet' ]
     add_project_link_arguments(hv_framework, language: 'c')
-    add_project_link_arguments(['-lresolv'], language: 'c' )
     #add_project_link_arguments(['-ld64'], language: 'c' )
 endif
 

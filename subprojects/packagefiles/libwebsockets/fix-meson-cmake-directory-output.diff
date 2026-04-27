@@ -1,0 +1,22 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d5a791fd..934f347c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1021,7 +1021,7 @@ configure_file(
+        
+ add_custom_command(
+ 		OUTPUT ${PROJECT_BINARY_DIR}/include/lws_config.h
+-			${PROJECT_BINARY_DIR}/include/libwebsockets
++			${PROJECT_BINARY_DIR}/include/libwebsockets.headers.stamp
+ 			${PROJECT_BINARY_DIR}/include/libwebsockets.h
+ 		COMMENT "Creating build include dir"
+ 		COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/include/libwebsockets.h
+@@ -1031,6 +1031,8 @@ add_custom_command(
+ 			${CMAKE_CURRENT_BINARY_DIR}/include/libwebsockets
+ 		COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/lws_config.h
+      			${CMAKE_CURRENT_BINARY_DIR}/include/lws_config.h
++		COMMAND ${CMAKE_COMMAND} -E touch
++			${CMAKE_CURRENT_BINARY_DIR}/include/libwebsockets.headers.stamp
+ 		MAIN_DEPENDENCY ${PROJECT_BINARY_DIR}/lws_config.h
+ )
+ 

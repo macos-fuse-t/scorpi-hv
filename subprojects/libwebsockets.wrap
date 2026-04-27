@@ -1,0 +1,7 @@
+[wrap-git]
+url = https://github.com/warmcat/libwebsockets.git
+revision = v4.3.6
+depth = 1
+method = cmake
+diff_files = libwebsockets/fix-meson-cmake-directory-output.diff
+

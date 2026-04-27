@@ -1,0 +1,5 @@
+[wrap-git]
+url = https://gitlab.freedesktop.org/slirp/libslirp.git
+revision = v4.9.1
+depth = 1
+diff_files = libslirp/static-glib-dependency.diff
