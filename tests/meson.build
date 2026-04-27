@@ -38,6 +38,141 @@ scorpi_header_compile_test_executable = executable(
 
 test('scorpi_header_compile_test', scorpi_header_compile_test_executable)
 
+scorpi_image_backend_test_executable = executable(
+  'scorpi_image_backend_test',
+  files(
+    'scorpi_image_backend_test.c',
+    '../src/scorpi_image.c',
+  ),
+  dependencies: threads_dep,
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_image_backend_test', scorpi_image_backend_test_executable)
+
+scorpi_image_open_test_executable = executable(
+  'scorpi_image_open_test',
+  files(
+    'scorpi_image_open_test.c',
+    '../src/scorpi_image_chain.c',
+    '../src/scorpi_image.c',
+    '../src/scorpi_image_raw.c',
+    '../src/scorpi_image_uri.c',
+  ),
+  dependencies: threads_dep,
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_image_open_test', scorpi_image_open_test_executable)
+
+scorpi_image_uri_test_executable = executable(
+  'scorpi_image_uri_test',
+  files('scorpi_image_uri_test.c', '../src/scorpi_image_uri.c'),
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_image_uri_test', scorpi_image_uri_test_executable)
+
+scorpi_image_raw_test_executable = executable(
+  'scorpi_image_raw_test',
+  files('scorpi_image_raw_test.c', '../src/scorpi_image_raw.c'),
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_image_raw_test', scorpi_image_raw_test_executable)
+
+scorpi_image_qcow2_test_executable = executable(
+  'scorpi_image_qcow2_test',
+  files(
+    'scorpi_image_qcow2_test.c',
+    '../src/scorpi_image_chain.c',
+    '../src/scorpi_image.c',
+    '../src/scorpi_image_qcow2.c',
+    '../src/scorpi_image_raw.c',
+    '../src/scorpi_image_uri.c',
+  ),
+  dependencies: [threads_dep, zlib_dep],
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_image_qcow2_test', scorpi_image_qcow2_test_executable)
+
+scorpi_image_sco_test_executable = executable(
+  'scorpi_image_sco_test',
+  files(
+    'scorpi_image_sco_test.c',
+    '../src/scorpi_image_chain.c',
+    '../src/scorpi_image.c',
+    '../src/scorpi_image_raw.c',
+    '../src/scorpi_image_sco.c',
+    '../src/scorpi_image_uri.c',
+    '../src/scorpi_crc32c.c',
+    '../src/scorpi_host_sparse.c',
+  ),
+  dependencies: threads_dep,
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_image_sco_test', scorpi_image_sco_test_executable)
+
+scorpi_sco_fixture_test_executable = executable(
+  'scorpi_sco_fixture_test',
+  files(
+    'scorpi_sco_fixture_test.c',
+    'scorpi_sco_fixture.c',
+    '../src/scorpi_image.c',
+    '../src/scorpi_image_sco.c',
+    '../src/scorpi_crc32c.c',
+    '../src/scorpi_host_sparse.c',
+  ),
+  dependencies: threads_dep,
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_sco_fixture_test', scorpi_sco_fixture_test_executable)
+
+scorpi_image_cli_test_executable = executable(
+  'scorpi_image_cli_test',
+  files('scorpi_image_cli_test.c'),
+  include_directories: [inc, include_directories('../src')],
+)
+
+scorpi_image_cli_test_env = environment()
+scorpi_image_cli_test_env.set('SCORPI_IMAGE_CLI',
+  scorpi_image_executable.full_path())
+test('scorpi_image_cli_test', scorpi_image_cli_test_executable,
+  env: scorpi_image_cli_test_env, depends: scorpi_image_executable)
+
+scorpi_image_chain_test_executable = executable(
+  'scorpi_image_chain_test',
+  files(
+    'scorpi_image_chain_test.c',
+    '../src/scorpi_image_chain.c',
+    '../src/scorpi_image.c',
+    '../src/scorpi_image_raw.c',
+    '../src/scorpi_image_uri.c',
+  ),
+  dependencies: threads_dep,
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_image_chain_test', scorpi_image_chain_test_executable)
+
+scorpi_image_chain_resolver_test_executable = executable(
+  'scorpi_image_chain_resolver_test',
+  files(
+    'scorpi_image_chain_resolver_test.c',
+    '../src/scorpi_image_chain.c',
+    '../src/scorpi_image.c',
+    '../src/scorpi_image_raw.c',
+    '../src/scorpi_image_uri.c',
+  ),
+  dependencies: threads_dep,
+  include_directories: [inc, include_directories('../src')],
+)
+
+test('scorpi_image_chain_resolver_test', scorpi_image_chain_resolver_test_executable)
+
 scorpi_error_contract_test_src = files('scorpi_error_contract_test.c')
 
 scorpi_error_contract_test_executable = executable(

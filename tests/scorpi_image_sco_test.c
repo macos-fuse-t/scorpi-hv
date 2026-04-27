@@ -1,0 +1,2152 @@
+/* .sco V1 parser and superblock selection coverage. */
+
+#include <sys/errno.h>
+#include <sys/stat.h>
+
+#include <assert.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <support/endian.h>
+
+#include "scorpi_crc32c.h"
+#include "scorpi_host_sparse.h"
+#include "scorpi_image.h"
+#include "scorpi_image_chain.h"
+
+#define	SCO_MAGIC			"SCOIMG\0\0"
+#define	SCO_FILE_ID_SIZE		0x1000
+#define	SCO_SUPERBLOCK_SIZE		0x1000
+#define	SCO_SUPERBLOCK_A_OFFSET		0x1000
+#define	SCO_SUPERBLOCK_B_OFFSET		0x2000
+#define	SCO_METADATA_AREA_OFFSET		0x10000
+#define	SCO_METADATA_PAGE_SIZE		0x1000
+#define	SCO_MAP_ROOT_OFFSET		0x10000
+#define	SCO_BASE_DESCRIPTOR_OFFSET	0x11000
+#define	SCO_MAP_PAGE_OFFSET		0x12000
+#define	SCO_DATA_AREA_OFFSET		0x40000
+#define	SCO_CLUSTER_SIZE		0x40000
+#define	SCO_CHECKSUM_CRC32C		1
+#define	SCO_INCOMPAT_ALLOC_MAP_V1	1
+#define	SCO_INCOMPAT_ZERO_DISCARD	2
+#define	SCO_RO_COMPAT_SEALED		1
+
+#define	SCO_MAP_STATE_ABSENT		0
+#define	SCO_MAP_STATE_PRESENT		1
+#define	SCO_MAP_STATE_ZERO		2
+#define	SCO_MAP_STATE_DISCARDED		3
+
+static const uint8_t test_uuid[16] = {
+	0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+	0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+};
+
+struct concurrent_sco_write_arg {
+	const struct scorpi_image_ops *sco;
+	void *state;
+	uint64_t offset;
+	uint8_t byte;
+	int error;
+};
+
+struct concurrent_sco_rw_arg {
+	const struct scorpi_image_ops *sco;
+	void *state;
+	int error;
+};
+
+struct superblock_fixture {
+	bool present;
+	bool corrupt_crc;
+	uint16_t major;
+	uint16_t minor;
+	uint64_t generation;
+	uint64_t virtual_size;
+	uint32_t incompatible_features;
+	uint32_t readonly_compatible_features;
+	const char *base_uri;
+	bool has_base_uuid;
+	bool has_base_digest;
+	bool corrupt_base_descriptor_crc;
+	bool corrupt_base_descriptor_padding;
+	bool write_map_root;
+	bool map_page_present;
+	bool corrupt_map_page_crc;
+	uint8_t map_state;
+	uint8_t data_byte;
+};
+
+static uint64_t
+cluster_count(uint64_t virtual_size)
+{
+	return ((virtual_size + SCO_CLUSTER_SIZE - 1) / SCO_CLUSTER_SIZE);
+}
+
+static void
+test_crc32c_known_vector(void)
+{
+	static const char vector[] = "123456789";
+
+	assert(scorpi_crc32c(vector, strlen(vector)) == 0xe3069283U);
+}
+
+static void
+write_exact(int fd, uint64_t offset, const void *buf, size_t len)
+{
+	assert(pwrite(fd, buf, len, (off_t)offset) == (ssize_t)len);
+}
+
+static void
+read_exact_at(int fd, uint64_t offset, void *buf, size_t len)
+{
+	assert(pread(fd, buf, len, (off_t)offset) == (ssize_t)len);
+}
+
+static void
+corrupt_superblock_crc(const char *path, uint64_t superblock_offset)
+{
+	uint32_t crc;
+	int fd;
+
+	fd = open(path, O_RDWR);
+	assert(fd >= 0);
+	read_exact_at(fd, superblock_offset + 0x0014, &crc, sizeof(crc));
+	crc ^= 1;
+	write_exact(fd, superblock_offset + 0x0014, &crc, sizeof(crc));
+	assert(close(fd) == 0);
+}
+
+static uint64_t
+file_size_of(const char *path)
+{
+	struct stat sb;
+
+	assert(stat(path, &sb) == 0);
+	return ((uint64_t)sb.st_size);
+}
+
+static void
+build_file_id(uint8_t buf[SCO_FILE_ID_SIZE], bool bad_magic,
+    uint16_t major, bool corrupt_crc)
+{
+	uint32_t crc;
+
+	memset(buf, 0, SCO_FILE_ID_SIZE);
+	memcpy(buf, bad_magic ? "BADIMG\0\0" : SCO_MAGIC, 8);
+	le16enc(buf + 0x0008, major);
+	le16enc(buf + 0x000a, 0);
+	le32enc(buf + 0x000c, SCO_FILE_ID_SIZE);
+	memcpy(buf + 0x0010, test_uuid, sizeof(test_uuid));
+	le32enc(buf + 0x0020, SCO_CHECKSUM_CRC32C);
+	crc = scorpi_crc32c(buf, SCO_FILE_ID_SIZE);
+	if (corrupt_crc)
+		crc ^= 0xffffffffU;
+	le32enc(buf + 0x0024, crc);
+}
+
+static void
+build_superblock(uint8_t buf[SCO_SUPERBLOCK_SIZE],
+    const struct superblock_fixture *fixture)
+{
+	uint32_t crc;
+
+	memset(buf, 0, SCO_SUPERBLOCK_SIZE);
+	if (!fixture->present)
+		return;
+
+	memcpy(buf, SCO_MAGIC, 8);
+	le16enc(buf + 0x0008, fixture->major);
+	le16enc(buf + 0x000a, fixture->minor);
+	le32enc(buf + 0x000c, SCO_SUPERBLOCK_SIZE);
+	le32enc(buf + 0x0010, SCO_CHECKSUM_CRC32C);
+	le64enc(buf + 0x0018, fixture->generation);
+	le64enc(buf + 0x0020, fixture->virtual_size);
+	le32enc(buf + 0x0028, 512);
+	le32enc(buf + 0x002c, 4096);
+	le32enc(buf + 0x0030, SCO_CLUSTER_SIZE);
+	le64enc(buf + 0x0038, cluster_count(fixture->virtual_size));
+	le64enc(buf + 0x0040, SCO_METADATA_AREA_OFFSET);
+	le64enc(buf + 0x0048, SCO_DATA_AREA_OFFSET);
+	if (fixture->base_uri != NULL) {
+		le64enc(buf + 0x0050, SCO_BASE_DESCRIPTOR_OFFSET);
+		le32enc(buf + 0x0058, 0x1000);
+	}
+	le64enc(buf + 0x0060, SCO_MAP_ROOT_OFFSET);
+	le32enc(buf + 0x0068, 0x1000);
+	le32enc(buf + 0x006c, 16);
+	le32enc(buf + 0x0070, fixture->incompatible_features);
+	le32enc(buf + 0x0074, fixture->readonly_compatible_features);
+	memcpy(buf + 0x0080, test_uuid, sizeof(test_uuid));
+	crc = scorpi_crc32c(buf, SCO_SUPERBLOCK_SIZE);
+	if (fixture->corrupt_crc)
+		crc ^= 0xffffffffU;
+	le32enc(buf + 0x0014, crc);
+}
+
+static void
+build_base_descriptor(uint8_t buf[0x1000],
+    const struct superblock_fixture *fixture)
+{
+	uint32_t crc;
+	size_t uri_len;
+
+	memset(buf, 0, 0x1000);
+	uri_len = strlen(fixture->base_uri);
+	le32enc(buf + 0x0000, 0x1000);
+	le32enc(buf + 0x0004, SCO_CHECKSUM_CRC32C);
+	le32enc(buf + 0x0010, (uint32_t)uri_len);
+	memcpy(buf + 0x0018, test_uuid, sizeof(test_uuid));
+	memset(buf + 0x0028, 0x5a, 32);
+	le32enc(buf + 0x0048, fixture->has_base_uuid ? 1 : 0);
+	le32enc(buf + 0x004c, fixture->has_base_digest ? 1 : 0);
+	memcpy(buf + 0x0050, fixture->base_uri, uri_len);
+	if (fixture->corrupt_base_descriptor_padding)
+		buf[0x0050 + uri_len] = 0xa5;
+	crc = scorpi_crc32c(buf, 0x1000);
+	if (fixture->corrupt_base_descriptor_crc)
+		crc ^= 0xffffffffU;
+	le32enc(buf + 0x0008, crc);
+}
+
+static uint32_t
+build_map_page(uint8_t buf[0x1000], const struct superblock_fixture *fixture)
+{
+	uint32_t crc;
+
+	memset(buf, 0, 0x1000);
+	le32enc(buf + 0x0000, 0x1000);
+	le32enc(buf + 0x0004, SCO_CHECKSUM_CRC32C);
+	le32enc(buf + 0x000c, 1);
+	le64enc(buf + 0x0010, 0);
+	buf[0x0018] = fixture->map_state;
+	if (fixture->map_state == SCO_MAP_STATE_PRESENT)
+		le64enc(buf + 0x0018 + 0x0008, SCO_DATA_AREA_OFFSET);
+	crc = scorpi_crc32c(buf, 0x1000);
+	if (fixture->corrupt_map_page_crc)
+		crc ^= 0xffffffffU;
+	le32enc(buf + 0x0008, crc);
+	return (crc);
+}
+
+static void
+build_root_page(uint8_t buf[0x1000], uint32_t map_page_crc32c,
+    const struct superblock_fixture *fixture)
+{
+	uint32_t crc;
+
+	memset(buf, 0, 0x1000);
+	le32enc(buf + 0x0000, 0x1000);
+	le32enc(buf + 0x0004, SCO_CHECKSUM_CRC32C);
+	le32enc(buf + 0x000c, 1);
+	le64enc(buf + 0x0010, 0);
+	if (fixture->map_page_present) {
+		le64enc(buf + 0x0018, SCO_MAP_PAGE_OFFSET);
+		le32enc(buf + 0x0018 + 0x0008, map_page_crc32c);
+	}
+	crc = scorpi_crc32c(buf, 0x1000);
+	le32enc(buf + 0x0008, crc);
+}
+
+static void
+write_data_cluster(int fd, uint8_t data_byte)
+{
+	uint8_t buf[512];
+
+	memset(buf, data_byte, sizeof(buf));
+	assert(ftruncate(fd, SCO_DATA_AREA_OFFSET + SCO_CLUSTER_SIZE) == 0);
+	write_exact(fd, SCO_DATA_AREA_OFFSET, buf, sizeof(buf));
+}
+
+static void
+write_raw_range_value(const char *path, uint64_t offset, size_t len,
+    uint8_t byte)
+{
+	uint8_t buf[4096];
+	size_t n;
+	int fd;
+
+	fd = open(path, O_RDWR);
+	assert(fd >= 0);
+	memset(buf, byte, sizeof(buf));
+	while (len > 0) {
+		n = len > sizeof(buf) ? sizeof(buf) : len;
+		write_exact(fd, offset, buf, n);
+		offset += n;
+		len -= n;
+	}
+	assert(close(fd) == 0);
+}
+
+static void
+write_fixture(const char *path, bool bad_magic, uint16_t file_major,
+    bool corrupt_file_id_crc, const struct superblock_fixture *a,
+    const struct superblock_fixture *b)
+{
+	uint8_t file_id[SCO_FILE_ID_SIZE], superblock[SCO_SUPERBLOCK_SIZE];
+	int fd;
+
+	fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+	assert(fd >= 0);
+	assert(ftruncate(fd, SCO_DATA_AREA_OFFSET) == 0);
+
+	build_file_id(file_id, bad_magic, file_major, corrupt_file_id_crc);
+	write_exact(fd, 0, file_id, sizeof(file_id));
+	build_superblock(superblock, a);
+	write_exact(fd, SCO_SUPERBLOCK_A_OFFSET, superblock, sizeof(superblock));
+	build_superblock(superblock, b);
+	write_exact(fd, SCO_SUPERBLOCK_B_OFFSET, superblock, sizeof(superblock));
+	if (a->base_uri != NULL || b->base_uri != NULL) {
+		const struct superblock_fixture *fixture;
+
+		fixture = a->base_uri != NULL ? a : b;
+		build_base_descriptor(superblock, fixture);
+		write_exact(fd, SCO_BASE_DESCRIPTOR_OFFSET, superblock,
+		    sizeof(superblock));
+	}
+	if (a->write_map_root || b->write_map_root) {
+		const struct superblock_fixture *fixture;
+		uint32_t map_page_crc32c;
+
+		fixture = a->write_map_root ? a : b;
+		map_page_crc32c = 0;
+		if (fixture->map_page_present) {
+			map_page_crc32c = build_map_page(superblock, fixture);
+			write_exact(fd, SCO_MAP_PAGE_OFFSET, superblock,
+			    sizeof(superblock));
+		}
+		build_root_page(superblock, map_page_crc32c, fixture);
+		write_exact(fd, SCO_MAP_ROOT_OFFSET, superblock,
+		    sizeof(superblock));
+		if (fixture->map_state == SCO_MAP_STATE_PRESENT)
+			write_data_cluster(fd, fixture->data_byte);
+	}
+
+	assert(close(fd) == 0);
+}
+
+static int
+open_sco(const char *path, void **statep)
+{
+	const struct scorpi_image_ops *sco;
+	int error, fd;
+
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	fd = open(path, O_RDONLY);
+	assert(fd >= 0);
+	*statep = NULL;
+	error = sco->open(path, fd, true, statep);
+	if (error != 0)
+		assert(close(fd) == 0);
+	return (error);
+}
+
+static int
+open_sco_rw(const char *path, void **statep)
+{
+	const struct scorpi_image_ops *sco;
+	int error, fd;
+
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	fd = open(path, O_RDWR);
+	assert(fd >= 0);
+	*statep = NULL;
+	error = sco->open(path, fd, false, statep);
+	if (error != 0)
+		assert(close(fd) == 0);
+	return (error);
+}
+
+static void
+assert_buffer_value(const uint8_t *buf, size_t len, uint8_t expected)
+{
+	size_t i;
+
+	for (i = 0; i < len; i++)
+		assert(buf[i] == expected);
+}
+
+static void
+test_host_punch_hole_preserves_size_and_reads_zero(void)
+{
+	uint8_t buf[4096];
+	struct stat sb_before, sb_after;
+	char path[] = "/tmp/scorpi-sco-punch-hole-XXXXXX";
+	int error, fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	memset(buf, 0x7c, sizeof(buf));
+	write_exact(fd, 0, buf, sizeof(buf));
+	write_exact(fd, sizeof(buf), buf, sizeof(buf));
+	assert(fstat(fd, &sb_before) == 0);
+	error = scorpi_host_punch_hole(fd, sizeof(buf), sizeof(buf));
+	if (error == 0) {
+		assert(fstat(fd, &sb_after) == 0);
+		assert(sb_after.st_size == sb_before.st_size);
+		memset(buf, 0xff, sizeof(buf));
+		read_exact_at(fd, sizeof(buf), buf, sizeof(buf));
+		assert_buffer_value(buf, sizeof(buf), 0);
+	} else {
+		assert(error == EOPNOTSUPP || error == ENOTSUP ||
+		    error == EINVAL);
+	}
+	assert(close(fd) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+write_raw_file(const char *path, uint64_t size, uint8_t byte);
+
+static void
+test_valid_sco_opens(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct scorpi_image_info info;
+	struct superblock_fixture a, b;
+	char path[] = "/tmp/scorpi-sco-valid-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.minor = 0,
+		.generation = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	state = NULL;
+	assert(open_sco(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->get_info(state, &info) == 0);
+	assert(info.format == SCORPI_IMAGE_FORMAT_SCO);
+	assert(info.virtual_size == a.virtual_size);
+	assert(info.logical_sector_size == 512);
+	assert(info.cluster_size == SCO_CLUSTER_SIZE);
+	assert(info.has_image_uuid);
+	assert(!info.has_base);
+	assert(!info.can_discard);
+	assert(sco->close(state) == 0);
+
+	assert(open_sco_rw(path, &state) == 0);
+	assert(sco->get_info(state, &info) == 0);
+	assert(info.can_discard);
+	assert(sco->close(state) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_bad_magic_rejected(void)
+{
+	struct superblock_fixture a, b;
+	char path[] = "/tmp/scorpi-sco-magic-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, true, 1, false, &a, &b);
+	assert(open_sco(path, &state) != 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_unsupported_version_rejected(void)
+{
+	struct superblock_fixture a, b;
+	char path[] = "/tmp/scorpi-sco-version-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 2, false, &a, &b);
+	assert(open_sco(path, &state) != 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_unknown_incompatible_feature_rejected(void)
+{
+	struct superblock_fixture a, b;
+	char path[] = "/tmp/scorpi-sco-feature-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1 |
+		    (1U << 31),
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+	assert(open_sco(path, &state) != 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_invalid_checksum_rejected(void)
+{
+	struct superblock_fixture a, b;
+	char path[] = "/tmp/scorpi-sco-checksum-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.corrupt_crc = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+	assert(open_sco(path, &state) != 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_newest_valid_generation_selected(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct scorpi_image_info info;
+	struct superblock_fixture a, b;
+	char path[] = "/tmp/scorpi-sco-generation-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.generation = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+	};
+	b = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.generation = 2,
+		.virtual_size = 256 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+	};
+	write_fixture(path, false, 1, false, &a, &b);
+	assert(open_sco(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->get_info(state, &info) == 0);
+	assert(info.virtual_size == b.virtual_size);
+	assert(sco->close(state) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_corrupt_newest_generation_falls_back(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct scorpi_image_info info;
+	struct superblock_fixture a, b;
+	char path[] = "/tmp/scorpi-sco-fallback-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.generation = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+	};
+	b = (struct superblock_fixture){
+		.present = true,
+		.corrupt_crc = true,
+		.major = 1,
+		.generation = 2,
+		.virtual_size = 256 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+	};
+	write_fixture(path, false, 1, false, &a, &b);
+	assert(open_sco(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->get_info(state, &info) == 0);
+	assert(info.virtual_size == a.virtual_size);
+	assert(sco->close(state) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_base_descriptor_exposed(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct scorpi_image_info info;
+	struct superblock_fixture a, b;
+	char path[] = "/tmp/scorpi-sco-base-desc-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.base_uri = "file:base.raw",
+		.has_base_uuid = true,
+		.has_base_digest = true,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	state = NULL;
+	assert(open_sco(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	memset(&info, 0, sizeof(info));
+	assert(sco->get_info(state, &info) == 0);
+	assert(info.has_base);
+	assert(strcmp(info.base_uri, "file:base.raw") == 0);
+	assert(info.has_base_uuid);
+	assert(memcmp(info.base_uuid, test_uuid, sizeof(test_uuid)) == 0);
+	assert(info.has_base_digest);
+	free(info.base_uri);
+	assert(sco->close(state) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_unsupported_base_uri_rejected(void)
+{
+	struct superblock_fixture a, b;
+	char path[] = "/tmp/scorpi-sco-bad-uri-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.base_uri = "http://example.invalid/base.sco",
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+	assert(open_sco(path, &state) != 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_base_descriptor_chain_resolves_raw(void)
+{
+	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain *chain;
+	struct superblock_fixture a, b;
+	const struct scorpi_image_info *info;
+	char child[] = "/tmp/scorpi-sco-chain-child-XXXXXX";
+	char base[] = "/tmp/scorpi-sco-chain-base-XXXXXX";
+	char uri[128];
+	int child_fd, base_fd;
+
+	child_fd = mkstemp(child);
+	assert(child_fd >= 0);
+	assert(close(child_fd) == 0);
+	base_fd = mkstemp(base);
+	assert(base_fd >= 0);
+	assert(ftruncate(base_fd, 128 * 1024 * 1024) == 0);
+	assert(close(base_fd) == 0);
+
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.base_uri = "file:scorpi-sco-chain-base-XXXXXX",
+	};
+	b = (struct superblock_fixture){ 0 };
+	a.base_uri = strrchr(base, '/') + 1;
+	snprintf(uri, sizeof(uri), "file:%s", a.base_uri);
+	a.base_uri = uri;
+	write_fixture(child, false, 1, false, &a, &b);
+
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	child_fd = open(child, O_RDONLY);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, true, &options,
+	    &chain) == 0);
+	assert(scorpi_image_chain_layer_count(chain) == 2);
+	info = scorpi_image_chain_layer_info(chain, 0);
+	assert(info != NULL && info->format == SCORPI_IMAGE_FORMAT_SCO);
+	info = scorpi_image_chain_layer_info(chain, 1);
+	assert(info != NULL && info->format == SCORPI_IMAGE_FORMAT_RAW);
+	assert(scorpi_image_chain_close(chain) == 0);
+	assert(unlink(child) == 0);
+	assert(unlink(base) == 0);
+}
+
+static void
+test_map_present_reads_from_sco(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct scorpi_image_extent extent;
+	struct superblock_fixture a, b;
+	uint8_t buf[512];
+	char path[] = "/tmp/scorpi-sco-map-present-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = true,
+		.map_state = SCO_MAP_STATE_PRESENT,
+		.data_byte = 0x34,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	assert(open_sco(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->map(state, 0, sizeof(buf), &extent) == 0);
+	assert(extent.state == SCORPI_IMAGE_EXTENT_PRESENT);
+	assert(extent.offset == 0);
+	assert(extent.length == sizeof(buf));
+	assert(sco->read(state, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0x34);
+	assert(sco->close(state) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_map_absent_reports_absent(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct scorpi_image_extent extent;
+	struct superblock_fixture a, b;
+	char path[] = "/tmp/scorpi-sco-map-absent-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	assert(open_sco(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->map(state, 0, 4096, &extent) == 0);
+	assert(extent.state == SCORPI_IMAGE_EXTENT_ABSENT);
+	assert(extent.offset == 0);
+	assert(extent.length == 4096);
+	assert(sco->close(state) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_map_zero_and_discarded_read_zero(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct superblock_fixture a, b;
+	struct scorpi_image_extent extent;
+	uint8_t buf[512];
+	char zero_path[] = "/tmp/scorpi-sco-map-zero-XXXXXX";
+	char discarded_path[] = "/tmp/scorpi-sco-map-discarded-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(zero_path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1 |
+		    SCO_INCOMPAT_ZERO_DISCARD,
+		.write_map_root = true,
+		.map_page_present = true,
+		.map_state = SCO_MAP_STATE_ZERO,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(zero_path, false, 1, false, &a, &b);
+
+	assert(open_sco(zero_path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->map(state, 0, sizeof(buf), &extent) == 0);
+	assert(extent.state == SCORPI_IMAGE_EXTENT_ZERO);
+	memset(buf, 0xff, sizeof(buf));
+	assert(sco->read(state, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(sco->close(state) == 0);
+	assert(unlink(zero_path) == 0);
+
+	fd = mkstemp(discarded_path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a.map_state = SCO_MAP_STATE_DISCARDED;
+	write_fixture(discarded_path, false, 1, false, &a, &b);
+	assert(open_sco(discarded_path, &state) == 0);
+	assert(sco->map(state, 0, sizeof(buf), &extent) == 0);
+	assert(extent.state == SCORPI_IMAGE_EXTENT_DISCARDED);
+	memset(buf, 0xff, sizeof(buf));
+	assert(sco->read(state, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(sco->close(state) == 0);
+	assert(unlink(discarded_path) == 0);
+}
+
+static void
+test_full_zero_write_maps_zero(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct superblock_fixture a, b;
+	struct scorpi_image_extent extent;
+	uint8_t *cluster;
+	uint8_t buf[512];
+	char path[] = "/tmp/scorpi-sco-zero-write-XXXXXX";
+	uint64_t size_before, size_after;
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	cluster = calloc(1, SCO_CLUSTER_SIZE);
+	assert(cluster != NULL);
+	size_before = file_size_of(path);
+	assert(open_sco_rw(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->write(state, cluster, 0, SCO_CLUSTER_SIZE) == 0);
+	assert(sco->map(state, 0, sizeof(buf), &extent) == 0);
+	assert(extent.state == SCORPI_IMAGE_EXTENT_ZERO);
+	memset(buf, 0xff, sizeof(buf));
+	assert(sco->read(state, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(sco->close(state) == 0);
+	size_after = file_size_of(path);
+	assert(size_after < size_before + SCO_CLUSTER_SIZE);
+
+	free(cluster);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_corrupt_map_page_rejected(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct scorpi_image_extent extent;
+	struct superblock_fixture a, b;
+	char path[] = "/tmp/scorpi-sco-map-corrupt-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = true,
+		.map_state = SCO_MAP_STATE_ABSENT,
+		.corrupt_map_page_crc = true,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	assert(open_sco(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->map(state, 0, 4096, &extent) != 0);
+	assert(sco->close(state) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_full_cluster_write_persists_after_reopen(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct scorpi_image_extent extent;
+	struct superblock_fixture a, b;
+	uint8_t *cluster;
+	uint8_t buf[512];
+	char path[] = "/tmp/scorpi-sco-write-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	assert(cluster != NULL);
+	memset(cluster, 0x9a, SCO_CLUSTER_SIZE);
+	assert(open_sco_rw(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->write(state, cluster, 0, SCO_CLUSTER_SIZE) == 0);
+	assert(sco->flush(state) == 0);
+	assert(sco->close(state) == 0);
+
+	state = NULL;
+	assert(open_sco(path, &state) == 0);
+	assert(sco->map(state, 0, sizeof(buf), &extent) == 0);
+	assert(extent.state == SCORPI_IMAGE_EXTENT_PRESENT);
+	assert(extent.offset == 0);
+	assert(extent.length == sizeof(buf));
+	memset(buf, 0, sizeof(buf));
+	assert(sco->read(state, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0x9a);
+	assert(sco->close(state) == 0);
+
+	free(cluster);
+	assert(unlink(path) == 0);
+}
+
+static void *
+concurrent_sco_write_thread(void *argp)
+{
+	struct concurrent_sco_write_arg *arg;
+	uint8_t *cluster;
+
+	arg = argp;
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	if (cluster == NULL) {
+		arg->error = ENOMEM;
+		return (NULL);
+	}
+	memset(cluster, arg->byte, SCO_CLUSTER_SIZE);
+	arg->error = arg->sco->write(arg->state, cluster, arg->offset,
+	    SCO_CLUSTER_SIZE);
+	free(cluster);
+	return (NULL);
+}
+
+static void
+test_concurrent_sco_writes_preserve_map_updates(void)
+{
+	enum { THREAD_COUNT = 8 };
+	const struct scorpi_image_ops *sco;
+	struct concurrent_sco_write_arg args[THREAD_COUNT];
+	struct superblock_fixture a, b;
+	pthread_t threads[THREAD_COUNT];
+	uint8_t buf[512];
+	char path[] = "/tmp/scorpi-sco-concurrent-XXXXXX";
+	void *state;
+	int fd;
+	size_t i;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	assert(open_sco_rw(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	for (i = 0; i < THREAD_COUNT; i++) {
+		args[i] = (struct concurrent_sco_write_arg){
+			.sco = sco,
+			.state = state,
+			.offset = i * SCO_CLUSTER_SIZE,
+			.byte = (uint8_t)(0x80 + i),
+		};
+		assert(pthread_create(&threads[i], NULL,
+		    concurrent_sco_write_thread, &args[i]) == 0);
+	}
+	for (i = 0; i < THREAD_COUNT; i++) {
+		assert(pthread_join(threads[i], NULL) == 0);
+		assert(args[i].error == 0);
+	}
+	assert(sco->flush(state) == 0);
+	assert(sco->close(state) == 0);
+
+	assert(open_sco(path, &state) == 0);
+	for (i = 0; i < THREAD_COUNT; i++) {
+		memset(buf, 0, sizeof(buf));
+		assert(sco->read(state, buf, i * SCO_CLUSTER_SIZE,
+		    sizeof(buf)) == 0);
+		assert_buffer_value(buf, sizeof(buf), (uint8_t)(0x80 + i));
+	}
+	assert(sco->close(state) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void *
+concurrent_sco_overwrite_thread(void *argp)
+{
+	struct concurrent_sco_rw_arg *arg;
+	uint8_t *cluster;
+	size_t i;
+
+	arg = argp;
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	if (cluster == NULL) {
+		arg->error = ENOMEM;
+		return (NULL);
+	}
+	for (i = 0; i < 100; i++) {
+		memset(cluster, (i % 2) == 0 ? 0x51 : 0x52,
+		    SCO_CLUSTER_SIZE);
+		arg->error = arg->sco->write(arg->state, cluster, 0,
+		    SCO_CLUSTER_SIZE);
+		if (arg->error != 0)
+			break;
+	}
+	free(cluster);
+	return (NULL);
+}
+
+static void *
+concurrent_sco_read_thread(void *argp)
+{
+	struct concurrent_sco_rw_arg *arg;
+	uint8_t *cluster;
+	uint8_t expected;
+	size_t i, j;
+
+	arg = argp;
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	if (cluster == NULL) {
+		arg->error = ENOMEM;
+		return (NULL);
+	}
+	for (i = 0; i < 100; i++) {
+		arg->error = arg->sco->read(arg->state, cluster, 0,
+		    SCO_CLUSTER_SIZE);
+		if (arg->error != 0)
+			break;
+		expected = cluster[0];
+		if (expected != 0x51 && expected != 0x52) {
+			arg->error = EIO;
+			break;
+		}
+		for (j = 1; j < SCO_CLUSTER_SIZE; j++) {
+			if (cluster[j] != expected) {
+				arg->error = EIO;
+				break;
+			}
+		}
+		if (arg->error != 0)
+			break;
+	}
+	free(cluster);
+	return (NULL);
+}
+
+static void
+test_concurrent_present_overwrite_read_is_not_torn(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct concurrent_sco_rw_arg writer_arg, reader_arg;
+	struct superblock_fixture a, b;
+	pthread_t writer, reader;
+	uint8_t *cluster;
+	char path[] = "/tmp/scorpi-sco-rw-race-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	assert(cluster != NULL);
+	memset(cluster, 0x51, SCO_CLUSTER_SIZE);
+	assert(open_sco_rw(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->write(state, cluster, 0, SCO_CLUSTER_SIZE) == 0);
+
+	writer_arg = (struct concurrent_sco_rw_arg){
+		.sco = sco,
+		.state = state,
+	};
+	reader_arg = writer_arg;
+	assert(pthread_create(&writer, NULL, concurrent_sco_overwrite_thread,
+	    &writer_arg) == 0);
+	assert(pthread_create(&reader, NULL, concurrent_sco_read_thread,
+	    &reader_arg) == 0);
+	assert(pthread_join(writer, NULL) == 0);
+	assert(pthread_join(reader, NULL) == 0);
+	assert(writer_arg.error == 0);
+	assert(reader_arg.error == 0);
+	assert(sco->close(state) == 0);
+
+	free(cluster);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_partial_absent_write_zero_fills_unwritten_ranges(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct superblock_fixture a, b;
+	uint8_t writebuf[3], readbuf[8192];
+	char path[] = "/tmp/scorpi-sco-partial-zero-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	assert(open_sco_rw(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	writebuf[0] = 0xa1;
+	writebuf[1] = 0xb2;
+	writebuf[2] = 0xc3;
+	assert(sco->write(state, writebuf, 4096, sizeof(writebuf)) == 0);
+	assert(sco->flush(state) == 0);
+	assert(sco->close(state) == 0);
+
+	assert(open_sco(path, &state) == 0);
+	memset(readbuf, 0xff, sizeof(readbuf));
+	assert(sco->read(state, readbuf, 0, sizeof(readbuf)) == 0);
+	assert_buffer_value(readbuf, 4096, 0);
+	assert(memcmp(readbuf + 4096, writebuf, sizeof(writebuf)) == 0);
+	assert_buffer_value(readbuf + 4096 + sizeof(writebuf),
+	    sizeof(readbuf) - 4096 - sizeof(writebuf), 0);
+	assert(sco->close(state) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_partial_chain_write_preserves_base_bytes(void)
+{
+	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain *chain;
+	struct superblock_fixture a, b;
+	uint8_t writebuf[3], readbuf[8192];
+	char child[] = "/tmp/scorpi-sco-partial-child-XXXXXX";
+	char base[] = "/tmp/scorpi-sco-partial-base-XXXXXX";
+	char uri[128];
+	int child_fd, fd;
+
+	child_fd = mkstemp(child);
+	assert(child_fd >= 0);
+	assert(close(child_fd) == 0);
+	fd = mkstemp(base);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(base) == 0);
+	write_raw_file(base, 128 * 1024 * 1024, 0x45);
+	write_raw_range_value(base, 0, SCO_CLUSTER_SIZE, 0x45);
+
+	snprintf(uri, sizeof(uri), "file:%s", strrchr(base, '/') + 1);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.base_uri = uri,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(child, false, 1, false, &a, &b);
+
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	child_fd = open(child, O_RDWR);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, false, &options,
+	    &chain) == 0);
+	writebuf[0] = 0xd1;
+	writebuf[1] = 0xd2;
+	writebuf[2] = 0xd3;
+	assert(scorpi_image_chain_write(chain, writebuf, 4096,
+	    sizeof(writebuf)) == 0);
+	assert(scorpi_image_chain_flush(chain) == 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+
+	child_fd = open(child, O_RDONLY);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, true, &options,
+	    &chain) == 0);
+	memset(readbuf, 0, sizeof(readbuf));
+	assert(scorpi_image_chain_read(chain, readbuf, 0, sizeof(readbuf)) == 0);
+	assert_buffer_value(readbuf, 4096, 0x45);
+	assert(memcmp(readbuf + 4096, writebuf, sizeof(writebuf)) == 0);
+	assert_buffer_value(readbuf + 4096 + sizeof(writebuf),
+	    sizeof(readbuf) - 4096 - sizeof(writebuf), 0x45);
+	assert(scorpi_image_chain_close(chain) == 0);
+	assert(unlink(child) == 0);
+	assert(unlink(base) == 0);
+}
+
+static void
+test_full_cluster_chain_discard_stops_base_fallthrough(void)
+{
+	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain *chain;
+	struct superblock_fixture a, b;
+	uint8_t buf[512];
+	char child[] = "/tmp/scorpi-sco-discard-child-XXXXXX";
+	char base[] = "/tmp/scorpi-sco-discard-base-XXXXXX";
+	char uri[128];
+	int child_fd, fd;
+
+	child_fd = mkstemp(child);
+	assert(child_fd >= 0);
+	assert(close(child_fd) == 0);
+	fd = mkstemp(base);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(base) == 0);
+	write_raw_file(base, 128 * 1024 * 1024, 0x45);
+	write_raw_range_value(base, 0, SCO_CLUSTER_SIZE, 0x45);
+
+	snprintf(uri, sizeof(uri), "file:%s", strrchr(base, '/') + 1);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.base_uri = uri,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(child, false, 1, false, &a, &b);
+
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	child_fd = open(child, O_RDWR);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, false, &options,
+	    &chain) == 0);
+	assert(scorpi_image_chain_discard(chain, 0, SCO_CLUSTER_SIZE) == 0);
+	assert(scorpi_image_chain_flush(chain) == 0);
+	memset(buf, 0xff, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+
+	child_fd = open(child, O_RDONLY);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, true, &options,
+	    &chain) == 0);
+	memset(buf, 0xff, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+	assert(unlink(child) == 0);
+	assert(unlink(base) == 0);
+}
+
+static void
+test_partial_chain_discard_preserves_base_bytes(void)
+{
+	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain *chain;
+	struct superblock_fixture a, b;
+	uint8_t readbuf[8192];
+	char child[] = "/tmp/scorpi-sco-partial-discard-child-XXXXXX";
+	char base[] = "/tmp/scorpi-sco-partial-discard-base-XXXXXX";
+	char uri[128];
+	int child_fd, fd;
+
+	child_fd = mkstemp(child);
+	assert(child_fd >= 0);
+	assert(close(child_fd) == 0);
+	fd = mkstemp(base);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(base) == 0);
+	write_raw_file(base, 128 * 1024 * 1024, 0x45);
+	write_raw_range_value(base, 0, SCO_CLUSTER_SIZE, 0x45);
+
+	snprintf(uri, sizeof(uri), "file:%s", strrchr(base, '/') + 1);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.base_uri = uri,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(child, false, 1, false, &a, &b);
+
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	child_fd = open(child, O_RDWR);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, false, &options,
+	    &chain) == 0);
+	assert(scorpi_image_chain_discard(chain, 4096, 3) == 0);
+	assert(scorpi_image_chain_flush(chain) == 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+
+	child_fd = open(child, O_RDONLY);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, true, &options,
+	    &chain) == 0);
+	memset(readbuf, 0xff, sizeof(readbuf));
+	assert(scorpi_image_chain_read(chain, readbuf, 0, sizeof(readbuf)) == 0);
+	assert_buffer_value(readbuf, 4096, 0x45);
+	assert_buffer_value(readbuf + 4096, 3, 0);
+	assert_buffer_value(readbuf + 4099, sizeof(readbuf) - 4099, 0x45);
+	assert(scorpi_image_chain_close(chain) == 0);
+	assert(unlink(child) == 0);
+	assert(unlink(base) == 0);
+}
+
+static void
+test_cross_cluster_partial_chain_write_materializes_each_cluster(void)
+{
+	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain *chain;
+	struct superblock_fixture a, b;
+	uint8_t writebuf[512], readbuf[1024];
+	char child[] = "/tmp/scorpi-sco-cross-child-XXXXXX";
+	char base[] = "/tmp/scorpi-sco-cross-base-XXXXXX";
+	char uri[128];
+	int child_fd, fd;
+
+	child_fd = mkstemp(child);
+	assert(child_fd >= 0);
+	assert(close(child_fd) == 0);
+	fd = mkstemp(base);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(base) == 0);
+	write_raw_file(base, 128 * 1024 * 1024, 0x11);
+	write_raw_range_value(base, 0, 2 * SCO_CLUSTER_SIZE, 0x11);
+
+	snprintf(uri, sizeof(uri), "file:%s", strrchr(base, '/') + 1);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.base_uri = uri,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(child, false, 1, false, &a, &b);
+
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	child_fd = open(child, O_RDWR);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, false, &options,
+	    &chain) == 0);
+	memset(writebuf, 0xee, sizeof(writebuf));
+	assert(scorpi_image_chain_write(chain, writebuf, SCO_CLUSTER_SIZE - 256,
+	    sizeof(writebuf)) == 0);
+	assert(scorpi_image_chain_flush(chain) == 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+
+	child_fd = open(child, O_RDONLY);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, true, &options,
+	    &chain) == 0);
+	memset(readbuf, 0, sizeof(readbuf));
+	assert(scorpi_image_chain_read(chain, readbuf, SCO_CLUSTER_SIZE - 512,
+	    sizeof(readbuf)) == 0);
+	assert_buffer_value(readbuf, 256, 0x11);
+	assert_buffer_value(readbuf + 256, sizeof(writebuf), 0xee);
+	assert_buffer_value(readbuf + 256 + sizeof(writebuf), 256, 0x11);
+	assert(scorpi_image_chain_close(chain) == 0);
+	assert(unlink(child) == 0);
+	assert(unlink(base) == 0);
+}
+
+static void
+test_present_overwrite_does_not_grow_or_rewrite_metadata(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct superblock_fixture a, b;
+	uint8_t *cluster, *metadata_before, *metadata_after;
+	char path[] = "/tmp/scorpi-sco-overwrite-XXXXXX";
+	uint64_t size_before, size_after;
+	size_t metadata_len;
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	assert(cluster != NULL);
+	memset(cluster, 0x21, SCO_CLUSTER_SIZE);
+	assert(open_sco_rw(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->write(state, cluster, 0, SCO_CLUSTER_SIZE) == 0);
+	assert(sco->flush(state) == 0);
+	size_before = file_size_of(path);
+	metadata_len = SCO_DATA_AREA_OFFSET - SCO_METADATA_AREA_OFFSET;
+	metadata_before = malloc(metadata_len);
+	metadata_after = malloc(metadata_len);
+	assert(metadata_before != NULL && metadata_after != NULL);
+	fd = open(path, O_RDONLY);
+	assert(fd >= 0);
+	read_exact_at(fd, SCO_METADATA_AREA_OFFSET, metadata_before,
+	    metadata_len);
+	assert(close(fd) == 0);
+
+	memset(cluster, 0x22, SCO_CLUSTER_SIZE);
+	assert(sco->write(state, cluster + 4096, 4096, 8192) == 0);
+	memset(cluster, 0x23, SCO_CLUSTER_SIZE);
+	assert(sco->write(state, cluster, 0, SCO_CLUSTER_SIZE) == 0);
+	assert(sco->flush(state) == 0);
+	size_after = file_size_of(path);
+	fd = open(path, O_RDONLY);
+	assert(fd >= 0);
+	read_exact_at(fd, SCO_METADATA_AREA_OFFSET, metadata_after,
+	    metadata_len);
+	assert(close(fd) == 0);
+	assert(size_after == size_before);
+	assert(memcmp(metadata_after, metadata_before, metadata_len) == 0);
+	assert(sco->close(state) == 0);
+
+	free(metadata_before);
+	free(metadata_after);
+	free(cluster);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_crash_safe_commit_uses_newest_valid_generation(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct superblock_fixture a, b;
+	uint8_t *cluster;
+	uint8_t buf[512];
+	char path[] = "/tmp/scorpi-sco-generation-commit-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.generation = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	assert(cluster != NULL);
+	memset(cluster, 0x6d, SCO_CLUSTER_SIZE);
+	assert(open_sco_rw(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->write(state, cluster, 0, SCO_CLUSTER_SIZE) == 0);
+	assert(sco->flush(state) == 0);
+	assert(sco->close(state) == 0);
+
+	assert(open_sco(path, &state) == 0);
+	memset(buf, 0, sizeof(buf));
+	assert(sco->read(state, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0x6d);
+	assert(sco->close(state) == 0);
+
+	corrupt_superblock_crc(path, SCO_SUPERBLOCK_B_OFFSET);
+	assert(open_sco(path, &state) == 0);
+	memset(buf, 0xff, sizeof(buf));
+	assert(sco->read(state, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(sco->close(state) == 0);
+
+	free(cluster);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_uncommitted_data_and_metadata_are_ignored(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct superblock_fixture a, b, uncommitted;
+	uint8_t page[0x1000], data[512], buf[512];
+	uint32_t map_page_crc32c;
+	char path[] = "/tmp/scorpi-sco-uncommitted-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.generation = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	fd = open(path, O_RDWR);
+	assert(fd >= 0);
+	assert(ftruncate(fd, SCO_DATA_AREA_OFFSET + SCO_CLUSTER_SIZE) == 0);
+	memset(data, 0x9b, sizeof(data));
+	write_exact(fd, SCO_DATA_AREA_OFFSET, data, sizeof(data));
+	uncommitted = a;
+	uncommitted.map_page_present = true;
+	uncommitted.map_state = SCO_MAP_STATE_PRESENT;
+	map_page_crc32c = build_map_page(page, &uncommitted);
+	write_exact(fd, SCO_MAP_PAGE_OFFSET, page, sizeof(page));
+	build_root_page(page, map_page_crc32c, &uncommitted);
+	write_exact(fd, SCO_MAP_PAGE_OFFSET + SCO_METADATA_PAGE_SIZE, page,
+	    sizeof(page));
+	assert(close(fd) == 0);
+
+	assert(open_sco(path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	memset(buf, 0xff, sizeof(buf));
+	assert(sco->read(state, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(sco->close(state) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_flush_exposes_committed_write_to_new_open(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct superblock_fixture a, b;
+	uint8_t *cluster;
+	uint8_t buf[512];
+	char path[] = "/tmp/scorpi-sco-flush-XXXXXX";
+	void *writer_state, *reader_state;
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.generation = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(path, false, 1, false, &a, &b);
+
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	assert(cluster != NULL);
+	memset(cluster, 0x4f, SCO_CLUSTER_SIZE);
+	assert(open_sco_rw(path, &writer_state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->write(writer_state, cluster, 0, SCO_CLUSTER_SIZE) == 0);
+	assert(sco->flush(writer_state) == 0);
+
+	assert(open_sco(path, &reader_state) == 0);
+	memset(buf, 0, sizeof(buf));
+	assert(sco->read(reader_state, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0x4f);
+	assert(sco->close(reader_state) == 0);
+	assert(sco->close(writer_state) == 0);
+
+	free(cluster);
+	assert(unlink(path) == 0);
+}
+
+static void
+test_readonly_and_sealed_sco_reject_write(void)
+{
+	const struct scorpi_image_ops *sco;
+	struct superblock_fixture a, b;
+	uint8_t *cluster;
+	char readonly_path[] = "/tmp/scorpi-sco-readonly-XXXXXX";
+	char sealed_path[] = "/tmp/scorpi-sco-sealed-XXXXXX";
+	void *state;
+	int fd;
+
+	fd = mkstemp(readonly_path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(readonly_path, false, 1, false, &a, &b);
+
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	assert(cluster != NULL);
+	memset(cluster, 0x4d, SCO_CLUSTER_SIZE);
+	assert(open_sco(readonly_path, &state) == 0);
+	sco = scorpi_image_backend_find("sco");
+	assert(sco != NULL);
+	assert(sco->write(state, cluster, 0, SCO_CLUSTER_SIZE) == EROFS);
+	assert(sco->close(state) == 0);
+	assert(unlink(readonly_path) == 0);
+
+	fd = mkstemp(sealed_path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	a.readonly_compatible_features = SCO_RO_COMPAT_SEALED;
+	write_fixture(sealed_path, false, 1, false, &a, &b);
+	state = NULL;
+	assert(open_sco_rw(sealed_path, &state) == EROFS);
+	assert(state == NULL);
+	assert(open_sco(sealed_path, &state) == 0);
+	assert(sco->write(state, cluster, 0, SCO_CLUSTER_SIZE) == EROFS);
+	assert(sco->close(state) == 0);
+	assert(unlink(sealed_path) == 0);
+	free(cluster);
+}
+
+static void
+test_writable_top_does_not_modify_base(void)
+{
+	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain *chain;
+	struct superblock_fixture a, b;
+	uint8_t *cluster;
+	uint8_t buf[512];
+	char child[] = "/tmp/scorpi-sco-write-child-XXXXXX";
+	char base[] = "/tmp/scorpi-sco-write-base-XXXXXX";
+	char uri[128];
+	int child_fd, base_fd;
+
+	child_fd = mkstemp(child);
+	assert(child_fd >= 0);
+	assert(close(child_fd) == 0);
+	base_fd = mkstemp(base);
+	assert(base_fd >= 0);
+	assert(close(base_fd) == 0);
+	assert(unlink(base) == 0);
+	write_raw_file(base, 128 * 1024 * 1024, 0x45);
+
+	snprintf(uri, sizeof(uri), "file:%s", strrchr(base, '/') + 1);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.base_uri = uri,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(child, false, 1, false, &a, &b);
+
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	child_fd = open(child, O_RDWR);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, false, &options,
+	    &chain) == 0);
+	cluster = malloc(SCO_CLUSTER_SIZE);
+	assert(cluster != NULL);
+	memset(cluster, 0x7b, SCO_CLUSTER_SIZE);
+	assert(scorpi_image_chain_write(chain, cluster, 0,
+	    SCO_CLUSTER_SIZE) == 0);
+	assert(scorpi_image_chain_flush(chain) == 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+
+	base_fd = open(base, O_RDONLY);
+	assert(base_fd >= 0);
+	assert(read(base_fd, buf, sizeof(buf)) == (ssize_t)sizeof(buf));
+	assert(close(base_fd) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0x45);
+
+	child_fd = open(child, O_RDONLY);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, true, &options,
+	    &chain) == 0);
+	memset(buf, 0, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0x7b);
+	assert(scorpi_image_chain_close(chain) == 0);
+
+	free(cluster);
+	assert(unlink(child) == 0);
+	assert(unlink(base) == 0);
+}
+
+static void
+test_absent_map_falls_through_to_base(void)
+{
+	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain *chain;
+	struct superblock_fixture a, b;
+	uint8_t buf[512], base_buf[512];
+	char child[] = "/tmp/scorpi-sco-absent-child-XXXXXX";
+	char base[] = "/tmp/scorpi-sco-absent-base-XXXXXX";
+	char uri[128];
+	int child_fd, base_fd;
+
+	child_fd = mkstemp(child);
+	assert(child_fd >= 0);
+	assert(close(child_fd) == 0);
+	base_fd = mkstemp(base);
+	assert(base_fd >= 0);
+	assert(ftruncate(base_fd, 128 * 1024 * 1024) == 0);
+	memset(base_buf, 0x45, sizeof(base_buf));
+	write_exact(base_fd, 0, base_buf, sizeof(base_buf));
+	assert(close(base_fd) == 0);
+
+	snprintf(uri, sizeof(uri), "file:%s", strrchr(base, '/') + 1);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.base_uri = uri,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(child, false, 1, false, &a, &b);
+
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	child_fd = open(child, O_RDONLY);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, true, &options,
+	    &chain) == 0);
+	memset(buf, 0, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0x45);
+	assert(scorpi_image_chain_close(chain) == 0);
+	assert(unlink(child) == 0);
+	assert(unlink(base) == 0);
+}
+
+static void
+write_raw_file(const char *path, uint64_t size, uint8_t byte)
+{
+	uint8_t buf[512];
+	int fd;
+
+	fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+	assert(fd >= 0);
+	assert(ftruncate(fd, (off_t)size) == 0);
+	memset(buf, byte, sizeof(buf));
+	write_exact(fd, 0, buf, sizeof(buf));
+	assert(close(fd) == 0);
+}
+
+static void
+test_read_through_sco_present_over_raw(void)
+{
+	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain_diagnostics diagnostics;
+	struct scorpi_image_chain *chain;
+	struct superblock_fixture a, b;
+	const struct scorpi_image_info *info;
+	uint8_t buf[512];
+	char child[] = "/tmp/scorpi-sco-present-child-XXXXXX";
+	char base[] = "/tmp/scorpi-sco-present-base-XXXXXX";
+	char uri[128];
+	int child_fd;
+
+	child_fd = mkstemp(child);
+	assert(child_fd >= 0);
+	assert(close(child_fd) == 0);
+	child_fd = mkstemp(base);
+	assert(child_fd >= 0);
+	assert(close(child_fd) == 0);
+	assert(unlink(base) == 0);
+	write_raw_file(base, 128 * 1024 * 1024, 0x45);
+	snprintf(uri, sizeof(uri), "file:%s", strrchr(base, '/') + 1);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.base_uri = uri,
+		.write_map_root = true,
+		.map_page_present = true,
+		.map_state = SCO_MAP_STATE_PRESENT,
+		.data_byte = 0x72,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(child, false, 1, false, &a, &b);
+
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	child_fd = open(child, O_RDONLY);
+	assert(child_fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, child_fd, true, &options,
+	    &chain) == 0);
+	assert(scorpi_image_chain_layer_count(chain) == 2);
+	info = scorpi_image_chain_layer_info(chain, 0);
+	assert(info != NULL && info->format == SCORPI_IMAGE_FORMAT_SCO);
+	info = scorpi_image_chain_layer_info(chain, 1);
+	assert(info != NULL && info->format == SCORPI_IMAGE_FORMAT_RAW);
+	memset(&diagnostics, 0, sizeof(diagnostics));
+	assert(scorpi_image_chain_get_diagnostics(chain, &diagnostics) == 0);
+	assert(diagnostics.layer_count == 2);
+	assert(diagnostics.layers[0].chain_depth == 2);
+	assert(diagnostics.layers[0].format == SCORPI_IMAGE_FORMAT_SCO);
+	assert(strcmp(diagnostics.layers[0].format_name, "sco") == 0);
+	assert(strcmp(diagnostics.layers[0].source_uri, child) == 0);
+	assert(strcmp(diagnostics.layers[0].resolved_path, child) == 0);
+	assert(diagnostics.layers[0].has_base);
+	assert(strcmp(diagnostics.layers[0].base_uri, uri) == 0);
+	assert(diagnostics.layers[1].format == SCORPI_IMAGE_FORMAT_RAW);
+	assert(strcmp(diagnostics.layers[1].format_name, "raw") == 0);
+	assert(diagnostics.layers[1].readonly);
+	assert(strcmp(diagnostics.layers[1].source_uri, uri) == 0);
+	assert(strcmp(diagnostics.layers[1].resolved_path, base) == 0);
+	assert(!diagnostics.layers[1].has_base);
+	scorpi_image_chain_diagnostics_free(&diagnostics);
+	memset(buf, 0, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0x72);
+	assert(scorpi_image_chain_close(chain) == 0);
+	assert(unlink(child) == 0);
+	assert(unlink(base) == 0);
+}
+
+static void
+test_read_through_sco_sco_raw(void)
+{
+	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain *chain;
+	struct superblock_fixture top, middle, empty;
+	const struct scorpi_image_info *info;
+	uint8_t buf[512];
+	char top_path[] = "/tmp/scorpi-sco-top-XXXXXX";
+	char middle_path[] = "/tmp/scorpi-sco-middle-XXXXXX";
+	char base_path[] = "/tmp/scorpi-sco-raw-XXXXXX";
+	char middle_uri[128], base_uri[128];
+	int fd;
+
+	fd = mkstemp(top_path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	fd = mkstemp(middle_path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	fd = mkstemp(base_path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(base_path) == 0);
+	write_raw_file(base_path, 128 * 1024 * 1024, 0x11);
+
+	snprintf(middle_uri, sizeof(middle_uri), "file:%s",
+	    strrchr(middle_path, '/') + 1);
+	snprintf(base_uri, sizeof(base_uri), "file:%s",
+	    strrchr(base_path, '/') + 1);
+	empty = (struct superblock_fixture){ 0 };
+	top = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.base_uri = middle_uri,
+		.write_map_root = true,
+		.map_page_present = false,
+	};
+	middle = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1,
+		.base_uri = base_uri,
+		.write_map_root = true,
+		.map_page_present = true,
+		.map_state = SCO_MAP_STATE_PRESENT,
+		.data_byte = 0x67,
+	};
+	write_fixture(middle_path, false, 1, false, &middle, &empty);
+	write_fixture(top_path, false, 1, false, &top, &empty);
+
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	fd = open(top_path, O_RDONLY);
+	assert(fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(top_path, fd, true, &options,
+	    &chain) == 0);
+	assert(scorpi_image_chain_layer_count(chain) == 3);
+	info = scorpi_image_chain_layer_info(chain, 0);
+	assert(info != NULL && info->format == SCORPI_IMAGE_FORMAT_SCO);
+	info = scorpi_image_chain_layer_info(chain, 1);
+	assert(info != NULL && info->format == SCORPI_IMAGE_FORMAT_SCO);
+	info = scorpi_image_chain_layer_info(chain, 2);
+	assert(info != NULL && info->format == SCORPI_IMAGE_FORMAT_RAW);
+	memset(buf, 0, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0x67);
+	assert(scorpi_image_chain_close(chain) == 0);
+	assert(unlink(top_path) == 0);
+	assert(unlink(middle_path) == 0);
+	assert(unlink(base_path) == 0);
+}
+
+static void
+test_read_through_zero_discard_stop_raw(void)
+{
+	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain *chain;
+	struct superblock_fixture a, b;
+	uint8_t buf[512];
+	char child[] = "/tmp/scorpi-sco-stop-child-XXXXXX";
+	char base[] = "/tmp/scorpi-sco-stop-base-XXXXXX";
+	char uri[128];
+	int fd;
+
+	fd = mkstemp(child);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	fd = mkstemp(base);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(base) == 0);
+	write_raw_file(base, 128 * 1024 * 1024, 0x55);
+	snprintf(uri, sizeof(uri), "file:%s", strrchr(base, '/') + 1);
+	a = (struct superblock_fixture){
+		.present = true,
+		.major = 1,
+		.virtual_size = 128 * 1024 * 1024,
+		.incompatible_features = SCO_INCOMPAT_ALLOC_MAP_V1 |
+		    SCO_INCOMPAT_ZERO_DISCARD,
+		.base_uri = uri,
+		.write_map_root = true,
+		.map_page_present = true,
+		.map_state = SCO_MAP_STATE_ZERO,
+	};
+	b = (struct superblock_fixture){ 0 };
+	write_fixture(child, false, 1, false, &a, &b);
+
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	fd = open(child, O_RDONLY);
+	assert(fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, fd, true, &options,
+	    &chain) == 0);
+	memset(buf, 0xff, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+
+	a.map_state = SCO_MAP_STATE_DISCARDED;
+	write_fixture(child, false, 1, false, &a, &b);
+	fd = open(child, O_RDONLY);
+	assert(fd >= 0);
+	chain = NULL;
+	assert(scorpi_image_chain_open_single(child, fd, true, &options,
+	    &chain) == 0);
+	memset(buf, 0xff, sizeof(buf));
+	assert(scorpi_image_chain_read(chain, buf, 0, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+	assert(unlink(child) == 0);
+	assert(unlink(base) == 0);
+}
+
+int
+main(void)
+{
+	test_crc32c_known_vector();
+	test_host_punch_hole_preserves_size_and_reads_zero();
+	test_valid_sco_opens();
+	test_bad_magic_rejected();
+	test_unsupported_version_rejected();
+	test_unknown_incompatible_feature_rejected();
+	test_invalid_checksum_rejected();
+	test_newest_valid_generation_selected();
+	test_corrupt_newest_generation_falls_back();
+	test_base_descriptor_exposed();
+	test_unsupported_base_uri_rejected();
+	test_base_descriptor_chain_resolves_raw();
+	test_map_present_reads_from_sco();
+	test_map_absent_reports_absent();
+	test_map_zero_and_discarded_read_zero();
+	test_full_zero_write_maps_zero();
+	test_corrupt_map_page_rejected();
+	test_full_cluster_write_persists_after_reopen();
+	test_concurrent_sco_writes_preserve_map_updates();
+	test_concurrent_present_overwrite_read_is_not_torn();
+	test_partial_absent_write_zero_fills_unwritten_ranges();
+	test_partial_chain_write_preserves_base_bytes();
+	test_full_cluster_chain_discard_stops_base_fallthrough();
+	test_partial_chain_discard_preserves_base_bytes();
+	test_cross_cluster_partial_chain_write_materializes_each_cluster();
+	test_present_overwrite_does_not_grow_or_rewrite_metadata();
+	test_crash_safe_commit_uses_newest_valid_generation();
+	test_uncommitted_data_and_metadata_are_ignored();
+	test_flush_exposes_committed_write_to_new_open();
+	test_readonly_and_sealed_sco_reject_write();
+	test_writable_top_does_not_modify_base();
+	test_absent_map_falls_through_to_base();
+	test_read_through_sco_present_over_raw();
+	test_read_through_sco_sco_raw();
+	test_read_through_zero_discard_stop_raw();
+	return (0);
+}

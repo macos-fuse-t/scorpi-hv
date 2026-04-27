@@ -57,6 +57,14 @@ runtime_core_sources = files(
     'src/qemu_fwcfg.c',
     'src/qemu_loader.c',
     'src/scorpi_runtime_bridge.c',
+    'src/scorpi_image.c',
+    'src/scorpi_image_chain.c',
+    'src/scorpi_image_qcow2.c',
+    'src/scorpi_image_raw.c',
+    'src/scorpi_image_sco.c',
+    'src/scorpi_image_uri.c',
+    'src/scorpi_crc32c.c',
+    'src/scorpi_host_sparse.c',
     'src/rtc_pl031.c',
     'src/uart_pl011.c',
     'src/uart_backend.c',
@@ -117,6 +125,23 @@ if host_machine.system() == 'darwin'
 endif
 
 runtime_core_sources += arch_src
+
+scorpi_image_executable = executable(
+  'scorpi-image',
+  files(
+    'src/scorpi_image_tool.c',
+    'src/scorpi_image.c',
+    'src/scorpi_image_chain.c',
+    'src/scorpi_image_qcow2.c',
+    'src/scorpi_image_raw.c',
+    'src/scorpi_image_sco.c',
+    'src/scorpi_image_uri.c',
+    'src/scorpi_crc32c.c',
+    'src/scorpi_host_sparse.c',
+  ),
+  dependencies: [libutil_dep, threads_dep, zlib_dep],
+  include_directories: [inc, include_directories('src')],
+)
 
 subdir('src/libscorpi')
 subdir('tests')

@@ -56,6 +56,7 @@
 #include "debug.h"
 #include "mevent.h"
 #include "pci_emul.h"
+#include "scorpi_image_chain.h"
 
 #define BLOCKIF_SIG    0xb109b109
 
@@ -78,6 +79,7 @@ struct blockif_elem {
 struct blockif_ctxt {
 	unsigned int bc_magic;
 	int bc_fd;
+	struct scorpi_image_chain *bc_image_chain;
 	int bc_ischr;
 	int bc_isgeom;
 	int bc_candelete;
@@ -88,6 +90,7 @@ struct blockif_ctxt {
 	int bc_psectoff;
 	int bc_closing;
 	int bc_paused;
+	int bc_trace;
 	pthread_t bc_btid[BLOCKIF_NUMTHR];
 	pthread_mutex_t bc_mtx;
 	pthread_cond_t bc_cond;
@@ -102,6 +105,13 @@ struct blockif_ctxt {
 	TAILQ_HEAD(, blockif_elem) bc_busyq;
 	struct blockif_elem bc_reqs[BLOCKIF_MAXREQ];
 	int bc_bootindex;
+	uint64_t bc_trace_read_reqs;
+	uint64_t bc_trace_read_iovs;
+	uint64_t bc_trace_read_bytes;
+	uint64_t bc_trace_write_reqs;
+	uint64_t bc_trace_write_iovs;
+	uint64_t bc_trace_write_bytes;
+	uint64_t bc_trace_flush_reqs;
 };
 
 static pthread_once_t blockif_once = PTHREAD_ONCE_INIT;
@@ -114,6 +124,68 @@ struct blockif_sig_elem {
 };
 
 static struct blockif_sig_elem *blockif_bse_head;
+
+static uint64_t
+blockif_trace_add(uint64_t *counter, uint64_t value)
+{
+	return (__atomic_add_fetch(counter, value, __ATOMIC_RELAXED));
+}
+
+static uint64_t
+blockif_trace_load(const uint64_t *counter)
+{
+	return (__atomic_load_n(counter, __ATOMIC_RELAXED));
+}
+
+static void
+blockif_trace_report(struct blockif_ctxt *bc, const char *where)
+{
+	if (bc == NULL || !bc->bc_trace)
+		return;
+	fprintf(stderr,
+	    "BLOCKIF_TRACE[%s]: reads=%llu read_iovs=%llu read_bytes=%llu "
+	    "writes=%llu write_iovs=%llu write_bytes=%llu flushes=%llu\n",
+	    where,
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_read_reqs),
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_read_iovs),
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_read_bytes),
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_write_reqs),
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_write_iovs),
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_write_bytes),
+	    (unsigned long long)blockif_trace_load(&bc->bc_trace_flush_reqs));
+}
+
+static inline void
+blockif_trace_read_req(struct blockif_ctxt *bc, const struct blockif_req *br)
+{
+	if (!bc->bc_trace)
+		return;
+	blockif_trace_add(&bc->bc_trace_read_reqs, 1);
+	blockif_trace_add(&bc->bc_trace_read_iovs, br->br_iovcnt);
+	blockif_trace_add(&bc->bc_trace_read_bytes, br->br_resid);
+}
+
+static inline void
+blockif_trace_write_req(struct blockif_ctxt *bc, const struct blockif_req *br)
+{
+	uint64_t calls;
+
+	if (!bc->bc_trace)
+		return;
+	calls = blockif_trace_add(&bc->bc_trace_write_reqs, 1);
+	blockif_trace_add(&bc->bc_trace_write_iovs, br->br_iovcnt);
+	blockif_trace_add(&bc->bc_trace_write_bytes, br->br_resid);
+	if ((calls % 1000) == 0)
+		blockif_trace_report(bc, "write");
+}
+
+static inline void
+blockif_trace_flush_req(struct blockif_ctxt *bc)
+{
+	if (!bc->bc_trace)
+		return;
+	blockif_trace_add(&bc->bc_trace_flush_reqs, 1);
+}
 
 static int
 blockif_enqueue(struct blockif_ctxt *bc, struct blockif_req *breq,
@@ -201,144 +273,91 @@ blockif_complete(struct blockif_ctxt *bc, struct blockif_elem *be)
 static int
 blockif_flush_bc(struct blockif_ctxt *bc)
 {
-	if (bc->bc_ischr) {
-		if (ioctl(bc->bc_fd, /*DIOCGFLUSH*/ DKIOCSYNCHRONIZECACHE))
-			return (errno);
-	} else if (fsync(bc->bc_fd))
-		return (errno);
+	return (scorpi_image_chain_flush(bc->bc_image_chain));
+}
 
+static int
+blockif_read_iov(struct blockif_ctxt *bc, struct blockif_req *br)
+{
+	off_t offset;
+	size_t len;
+	int error, i;
+
+	offset = br->br_offset;
+	blockif_trace_read_req(bc, br);
+	for (i = 0; i < br->br_iovcnt && br->br_resid > 0; i++) {
+		len = MIN((size_t)br->br_resid, br->br_iov[i].iov_len);
+		if (len == 0)
+			continue;
+		error = scorpi_image_chain_read(bc->bc_image_chain,
+		    br->br_iov[i].iov_base, (uint64_t)offset, len);
+		if (error != 0)
+			return (error);
+		offset += len;
+		br->br_resid -= len;
+	}
+	return (0);
+}
+
+static int
+blockif_write_iov(struct blockif_ctxt *bc, struct blockif_req *br)
+{
+	off_t offset;
+	size_t len;
+	int error, i;
+
+	if (bc->bc_rdonly)
+		return (EROFS);
+
+	offset = br->br_offset;
+	blockif_trace_write_req(bc, br);
+	for (i = 0; i < br->br_iovcnt && br->br_resid > 0; i++) {
+		len = MIN((size_t)br->br_resid, br->br_iov[i].iov_len);
+		if (len == 0)
+			continue;
+		error = scorpi_image_chain_write(bc->bc_image_chain,
+		    br->br_iov[i].iov_base, (uint64_t)offset, len);
+		if (error != 0)
+			return (error);
+		offset += len;
+		br->br_resid -= len;
+	}
 	return (0);
 }
 
 static void
-blockif_proc(struct blockif_ctxt *bc, struct blockif_elem *be, uint8_t *buf)
+blockif_proc(struct blockif_ctxt *bc, struct blockif_elem *be,
+    uint8_t *buf __unused)
 {
-	// struct spacectl_range range;
 	struct blockif_req *br;
-	// off_t arg[2];
-	ssize_t n;
-	size_t clen, len, off, boff, voff;
-	int i, err;
+	int err;
 
 	br = be->be_req;
 	assert(br->br_resid >= 0);
 
-	if (br->br_iovcnt <= 1)
-		buf = NULL;
 	err = 0;
 	switch (be->be_op) {
 	case BOP_READ:
-		if (buf == NULL) {
-			if ((n = preadv(bc->bc_fd, br->br_iov, br->br_iovcnt,
-				 br->br_offset)) < 0)
-				err = errno;
-			else
-				br->br_resid -= n;
-			break;
-		}
-		i = 0;
-		off = voff = 0;
-		while (br->br_resid > 0) {
-			len = MIN(br->br_resid, MAXPHYS);
-			n = pread(bc->bc_fd, buf, len, br->br_offset + off);
-			if (n < 0) {
-				err = errno;
-				break;
-			}
-			len = (size_t)n;
-			boff = 0;
-			do {
-				clen = MIN(len - boff,
-				    br->br_iov[i].iov_len - voff);
-				memcpy((uint8_t *)br->br_iov[i].iov_base + voff,
-				    buf + boff, clen);
-				if (clen < br->br_iov[i].iov_len - voff)
-					voff += clen;
-				else {
-					i++;
-					voff = 0;
-				}
-				boff += clen;
-			} while (boff < len);
-			off += len;
-			br->br_resid -= len;
-		}
+		err = blockif_read_iov(bc, br);
 		break;
 	case BOP_WRITE:
-		if (bc->bc_rdonly) {
-			err = EROFS;
-			break;
-		}
-		if (buf == NULL) {
-			if ((n = pwritev(bc->bc_fd, br->br_iov, br->br_iovcnt,
-				 br->br_offset)) < 0)
-				err = errno;
-			else
-				br->br_resid -= n;
-			break;
-		}
-		i = 0;
-		off = voff = 0;
-		while (br->br_resid > 0) {
-			len = MIN(br->br_resid, MAXPHYS);
-			boff = 0;
-			do {
-				clen = MIN(len - boff,
-				    br->br_iov[i].iov_len - voff);
-				memcpy(buf + boff,
-				    (uint8_t *)br->br_iov[i].iov_base + voff,
-				    clen);
-				if (clen < br->br_iov[i].iov_len - voff)
-					voff += clen;
-				else {
-					i++;
-					voff = 0;
-				}
-				boff += clen;
-			} while (boff < len);
-
-			n = pwrite(bc->bc_fd, buf, len, br->br_offset + off);
-			if (n < 0) {
-				err = errno;
-				break;
-			}
-			off += n;
-			br->br_resid -= n;
-		}
+		err = blockif_write_iov(bc, br);
 		break;
 	case BOP_FLUSH:
+		blockif_trace_flush_req(bc);
 		err = blockif_flush_bc(bc);
 		break;
 	case BOP_DELETE:
-#if 0
 		if (!bc->bc_candelete)
 			err = EOPNOTSUPP;
 		else if (bc->bc_rdonly)
 			err = EROFS;
-		else if (bc->bc_ischr) {
-			arg[0] = br->br_offset;
-			arg[1] = br->br_resid;
-			if (ioctl(bc->bc_fd, DIOCGDELETE, arg))
-				err = errno;
-			else
-				br->br_resid = 0;
-		} else {
-			range.r_offset = br->br_offset;
-			range.r_len = br->br_resid;
-
-			while (range.r_len > 0) {
-				if (fspacectl(bc->bc_fd, SPACECTL_DEALLOC,
-				    &range, 0, &range) != 0) {
-					err = errno;
-					break;
-				}
-			}
+		else {
+			err = scorpi_image_chain_discard(bc->bc_image_chain,
+			    (uint64_t)br->br_offset, (uint64_t)br->br_resid);
 			if (err == 0)
 				br->br_resid = 0;
 		}
-#else
-		err = EOPNOTSUPP;
-#endif
 		break;
 	default:
 		err = EINVAL;
@@ -467,16 +486,21 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	const char *path, *pssval, *ssval, *bootindex_val;
 	char *cp;
 	struct blockif_ctxt *bc;
+	struct scorpi_image_chain_open_options image_options;
+	struct scorpi_image_chain *image_chain;
+	const struct scorpi_image_info *image_info;
 	struct stat sbuf;
 	// struct diocgattr_arg arg;
 	off_t size, psectsz, psectoff;
-	int extra, fd, i, sectsz;
+	int extra, fd, image_fd, i, sectsz;
 	int ro, candelete, geom, ssopt, pssopt;
 	int bootindex;
 
 	pthread_once(&blockif_once, blockif_init);
 
 	fd = -1;
+	image_fd = -1;
+	image_chain = NULL;
 	extra = 0;
 	ssopt = 0;
 	ro = 0;
@@ -599,6 +623,29 @@ blockif_open(nvlist_t *nvl, const char *ident)
 		psectoff = 0;
 	}
 
+	image_options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	image_fd = fd;
+	if (scorpi_image_chain_open_single(path, fd, ro != 0, &image_options,
+	    &image_chain) != 0) {
+		fd = -1;
+		goto err;
+	}
+	fd = -1;
+	image_info = scorpi_image_chain_top_info(image_chain);
+	if (image_info == NULL)
+		goto err;
+	size = (off_t)image_info->virtual_size;
+	candelete = image_info->can_discard;
+	if (ssopt == 0) {
+		sectsz = (int)image_info->logical_sector_size;
+		psectsz = image_info->physical_sector_size;
+		if (psectsz == 0)
+			psectsz = sectsz;
+		psectoff = 0;
+	}
+
 	bc = calloc(1, sizeof(struct blockif_ctxt));
 	if (bc == NULL) {
 		perror("calloc");
@@ -606,7 +653,8 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	}
 
 	bc->bc_magic = BLOCKIF_SIG;
-	bc->bc_fd = fd;
+	bc->bc_fd = image_fd;
+	bc->bc_image_chain = image_chain;
 	bc->bc_ischr = S_ISCHR(sbuf.st_mode);
 	bc->bc_isgeom = geom;
 	bc->bc_candelete = candelete;
@@ -615,6 +663,7 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	bc->bc_sectsz = sectsz;
 	bc->bc_psectsz = psectsz;
 	bc->bc_psectoff = psectoff;
+	bc->bc_trace = getenv("SCORPI_BLOCKIF_TRACE") != NULL;
 	pthread_mutex_init(&bc->bc_mtx, NULL);
 	pthread_cond_init(&bc->bc_cond, NULL);
 	bc->bc_paused = 0;
@@ -636,7 +685,9 @@ blockif_open(nvlist_t *nvl, const char *ident)
 
 	return (bc);
 err:
-	if (fd >= 0)
+	if (image_chain != NULL)
+		scorpi_image_chain_close(image_chain);
+	else if (fd >= 0)
 		close(fd);
 	return (NULL);
 }
@@ -871,7 +922,8 @@ blockif_close(struct blockif_ctxt *bc)
 	 * Release resources
 	 */
 	bc->bc_magic = 0;
-	close(bc->bc_fd);
+	blockif_trace_report(bc, "close");
+	scorpi_image_chain_close(bc->bc_image_chain);
 	free(bc);
 
 	return (0);
