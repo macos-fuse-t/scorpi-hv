@@ -1224,6 +1224,42 @@ Validation performed:
   `~/vms/noble-server-cloudimg-arm64.qcow2` through Scorpi's qcow2 backend
 - compared those samples against a raw image produced with `qemu-img convert`
 
+### Task 23B: Add Sparse Raw Discard And Zero-Write Support
+
+Scope:
+
+- teach the raw backend to actively preserve host sparse-file behavior
+- implement raw discard by punching host file holes
+- optimize zero writes by punching holes instead of writing zero-filled buffers
+- keep raw virtual size unchanged
+
+Dependencies:
+
+- Task 2
+- Task 20B host sparse hole punching helper
+
+Implementation notes:
+
+- use `scorpi_host_punch_hole()` for supported host filesystems
+- report `can_discard = true` for writable raw images when hole punching is
+  available or best-effort supported
+- readonly raw discard must fail with `EROFS`
+- zero-write optimization should only apply when the full write buffer is zero
+- if hole punching is unsupported by the host, return `EOPNOTSUPP` for discard
+  and fall back to normal writes for zero-write requests
+- do not change raw virtual size or require preallocation metadata
+- optional follow-up: improve `raw_map()` with `SEEK_HOLE` / `SEEK_DATA`; not
+  required for this task
+
+Validation criteria:
+
+- sparse raw created with `truncate` opens with the correct virtual size
+- raw discard punches a hole, preserves `st_size`, and reads back zeroes
+- full-zero raw write punches a hole, preserves `st_size`, and reads back zeroes
+- non-zero raw write still writes data normally
+- readonly raw discard and write return `EROFS`
+- behavior is correct when host hole punching is unsupported
+
 ### Task 24: Add Disk Reopen/Rebind Primitive
 
 Scope:
@@ -1453,7 +1489,9 @@ Start with the runtime foundation:
 4. Task 22: readonly qcow2.
 5. Task 23A: readonly qcow2 compressed clusters for cloud-image
    compatibility.
-6. Tasks 23-25: live drain/reopen primitives.
+6. Task 23B: sparse raw discard and zero-write support.
+7. Tasks 23-25: live drain/reopen primitives, if live image manipulation is
+   later required.
 
 Then move to parent-managed behavior:
 
