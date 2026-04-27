@@ -21,6 +21,7 @@
 
 #include "scorpi_crc32c.h"
 #include "scorpi_image.h"
+#include "scorpi_image_chain.h"
 #include "scorpi_image_raw.h"
 #include "scorpi_image_sco.h"
 #include "scorpi_image_sco_format.h"
@@ -285,6 +286,24 @@ out:
 }
 
 static int
+create_raw(const char *path, uint64_t virtual_size)
+{
+	int fd, error;
+
+	if (path == NULL || virtual_size == 0 || virtual_size > INT64_MAX)
+		return (EINVAL);
+	fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+	if (fd < 0)
+		return (errno);
+	error = 0;
+	if (ftruncate(fd, (off_t)virtual_size) != 0)
+		error = errno;
+	if (close(fd) != 0 && error == 0)
+		error = errno;
+	return (error);
+}
+
+static int
 open_image_top(const char *path, const struct scorpi_image_ops **opsp,
     void **statep)
 {
@@ -425,31 +444,75 @@ format_name(enum scorpi_image_format format)
 static int
 cmd_info(const char *path)
 {
-	const struct scorpi_image_ops *ops;
-	struct scorpi_image_info info;
-	void *state;
+	struct scorpi_image_chain_open_options options;
+	struct scorpi_image_chain_diagnostics diagnostics;
+	struct scorpi_image_chain_layer_diagnostic *layer;
+	struct scorpi_image_chain *chain;
+	const struct scorpi_image_info *info;
 	int error;
+	size_t i;
+	int fd;
 
-	memset(&info, 0, sizeof(info));
-	state = NULL;
-	error = open_image_top(path, &ops, &state);
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return (errno);
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	chain = NULL;
+	error = scorpi_image_chain_open_single(path, fd, true, &options,
+	    &chain);
 	if (error != 0)
 		return (error);
-	error = ops->get_info(state, &info);
-	if (error == 0) {
-		printf("format=%s\n", format_name(info.format));
-		printf("virtual_size=%llu\n",
-		    (unsigned long long)info.virtual_size);
-		printf("logical_sector_size=%u\n", info.logical_sector_size);
-		printf("physical_sector_size=%u\n", info.physical_sector_size);
-		printf("cluster_size=%u\n", info.cluster_size);
-		printf("readonly=%s\n", info.readonly ? "true" : "false");
-		printf("sealed=%s\n", info.sealed ? "true" : "false");
-		if (info.has_base)
-			printf("base_uri=%s\n", info.base_uri);
+	info = scorpi_image_chain_top_info(chain);
+	if (info == NULL) {
+		scorpi_image_chain_close(chain);
+		return (EINVAL);
 	}
-	free(info.base_uri);
-	ops->close(state);
+	printf("format=%s\n", format_name(info->format));
+	printf("virtual_size=%llu\n",
+	    (unsigned long long)info->virtual_size);
+	printf("logical_sector_size=%u\n", info->logical_sector_size);
+	printf("physical_sector_size=%u\n", info->physical_sector_size);
+	printf("cluster_size=%u\n", info->cluster_size);
+	printf("readonly=%s\n", info->readonly ? "true" : "false");
+	printf("sealed=%s\n", info->sealed ? "true" : "false");
+	if (info->has_base)
+		printf("base_uri=%s\n", info->base_uri);
+
+	memset(&diagnostics, 0, sizeof(diagnostics));
+	error = scorpi_image_chain_get_diagnostics(chain, &diagnostics);
+	if (error == 0) {
+		printf("chain_layers=%zu\n", diagnostics.layer_count);
+		for (i = 0; i < diagnostics.layer_count; i++) {
+			layer = &diagnostics.layers[i];
+			printf("layer.%zu.format=%s\n", i, layer->format_name);
+			printf("layer.%zu.virtual_size=%llu\n", i,
+			    (unsigned long long)layer->virtual_size);
+			printf("layer.%zu.logical_sector_size=%u\n", i,
+			    layer->logical_sector_size);
+			printf("layer.%zu.physical_sector_size=%u\n", i,
+			    layer->physical_sector_size);
+			printf("layer.%zu.cluster_size=%u\n", i,
+			    layer->cluster_size);
+			printf("layer.%zu.readonly=%s\n", i,
+			    layer->readonly ? "true" : "false");
+			printf("layer.%zu.sealed=%s\n", i,
+			    layer->sealed ? "true" : "false");
+			if (layer->source_uri != NULL)
+				printf("layer.%zu.source_uri=%s\n", i,
+				    layer->source_uri);
+			if (layer->resolved_path != NULL)
+				printf("layer.%zu.resolved_path=%s\n", i,
+				    layer->resolved_path);
+			if (layer->has_base && layer->base_uri != NULL)
+				printf("layer.%zu.base_uri=%s\n", i,
+				    layer->base_uri);
+		}
+	}
+	scorpi_image_chain_diagnostics_free(&diagnostics);
+	if (scorpi_image_chain_close(chain) != 0 && error == 0)
+		error = EIO;
 	return (error);
 }
 
@@ -496,6 +559,7 @@ usage(void)
 	fprintf(stderr,
 	    "usage:\n"
 	    "  scorpi-image create --format sco [--size bytes|Nmb|Ngb] path [base]\n"
+	    "  scorpi-image create --format raw --size bytes|Nmb|Ngb path\n"
 	    "  scorpi-image seal path.sco\n"
 	    "  scorpi-image unseal path.sco\n"
 	    "  scorpi-image info path\n"
@@ -570,7 +634,20 @@ cmd_create(int argc, char **argv)
 			goto out;
 		}
 	}
-	if (format == NULL || strcmp(format, "sco") != 0) {
+	if (format == NULL) {
+		error = EINVAL;
+		goto out;
+	}
+	if (strcmp(format, "raw") == 0) {
+		if (!opts.has_explicit_size || opts.base_uri != NULL ||
+		    opts.path == NULL) {
+			error = EINVAL;
+			goto out;
+		}
+		error = create_raw(opts.path, opts.virtual_size);
+		goto out;
+	}
+	if (strcmp(format, "sco") != 0) {
 		error = EINVAL;
 		goto out;
 	}

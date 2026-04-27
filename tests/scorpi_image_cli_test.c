@@ -58,7 +58,7 @@ test_create_info_check_mb_suffix(void)
 	char cmd[1024];
 	char output_path[128];
 	FILE *fp;
-	char output[512];
+	char output[4096];
 	int fd;
 
 	fd = mkstemp(path);
@@ -133,7 +133,7 @@ test_create_info_check_raw_bytes(void)
 	char cmd[1024];
 	char output_path[128];
 	FILE *fp;
-	char output[512];
+	char output[4096];
 	int fd;
 
 	fd = mkstemp(path);
@@ -160,6 +160,46 @@ test_create_info_check_raw_bytes(void)
 }
 
 static void
+test_create_info_check_raw(void)
+{
+	char path[] = "/tmp/scorpi-image-cli-raw-XXXXXX";
+	char cmd[1024];
+	char output_path[128];
+	struct stat sb;
+	FILE *fp;
+	char output[4096];
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(path) == 0);
+
+	snprintf(cmd, sizeof(cmd),
+	    "%s create --format raw --size 64mb %s",
+	    cli_path(), path);
+	run_ok(cmd);
+	assert(stat(path, &sb) == 0);
+	assert(sb.st_size == 64 * 1024 * 1024);
+
+	snprintf(cmd, sizeof(cmd), "%s info %s > %s.info", cli_path(), path,
+	    path);
+	run_ok(cmd);
+	snprintf(output_path, sizeof(output_path), "%s.info", path);
+	fp = fopen(output_path, "r");
+	assert(fp != NULL);
+	memset(output, 0, sizeof(output));
+	assert(fread(output, 1, sizeof(output) - 1, fp) > 0);
+	assert(fclose(fp) == 0);
+	assert(strstr(output, "format=raw\n") != NULL);
+	assert(strstr(output, "virtual_size=67108864\n") != NULL);
+	assert(strstr(output, "chain_layers=1\n") != NULL);
+	assert(strstr(output, "layer.0.format=raw\n") != NULL);
+	assert(unlink(output_path) == 0);
+	assert(unlink(path) == 0);
+}
+
+static void
 test_create_with_positional_base(void)
 {
 	char path[] = "/tmp/scorpi-image-cli-base-XXXXXX";
@@ -167,7 +207,7 @@ test_create_with_positional_base(void)
 	char cmd[1024];
 	char output_path[128];
 	FILE *fp;
-	char output[512];
+	char output[4096];
 	int fd;
 
 	fd = mkstemp(path);
@@ -196,6 +236,9 @@ test_create_with_positional_base(void)
 	assert(strstr(output, "virtual_size=201326592\n") != NULL);
 	snprintf(cmd, sizeof(cmd), "base_uri=file://%s\n", raw_path);
 	assert(strstr(output, cmd) != NULL);
+	assert(strstr(output, "chain_layers=2\n") != NULL);
+	assert(strstr(output, "layer.0.format=sco\n") != NULL);
+	assert(strstr(output, "layer.1.format=raw\n") != NULL);
 	assert(unlink(output_path) == 0);
 	assert(unlink(path) == 0);
 	assert(unlink(raw_path) == 0);
@@ -277,6 +320,10 @@ test_removed_create_options_rejected(void)
 	    "%s create --format sco --size 128mb --sealed %s",
 	    cli_path(), path);
 	run_fail(cmd);
+	snprintf(cmd, sizeof(cmd),
+	    "%s create --format raw --size 128mb %s base.raw",
+	    cli_path(), path);
+	run_fail(cmd);
 }
 
 static void
@@ -303,7 +350,7 @@ test_seal_and_unseal(void)
 {
 	char path[] = "/tmp/scorpi-image-cli-seal-XXXXXX";
 	char cmd[1024];
-	char output[512];
+	char output[4096];
 	int fd;
 
 	fd = mkstemp(path);
@@ -361,6 +408,7 @@ main(void)
 {
 	test_create_info_check_mb_suffix();
 	test_large_sco_reserves_all_map_metadata();
+	test_create_info_check_raw();
 	test_create_with_positional_base();
 	test_create_with_base_rejects_mismatched_size();
 	test_create_info_check_raw_bytes();

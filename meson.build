@@ -131,6 +131,7 @@ scorpi_image_executable = executable(
   files(
     'src/scorpi_image_tool.c',
     'src/scorpi_image.c',
+    'src/scorpi_image_chain.c',
     'src/scorpi_image_qcow2.c',
     'src/scorpi_image_raw.c',
     'src/scorpi_image_sco.c',
