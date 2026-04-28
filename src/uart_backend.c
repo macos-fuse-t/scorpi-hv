@@ -30,6 +30,7 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <fcntl.h>
 
 #include "vmm.h"
@@ -42,6 +43,7 @@
 #include <err.h>
 #include <netdb.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -290,16 +292,16 @@ done:
 #endif
 
 /*
- * Listen on the TCP port, wait for a connection, then accept it.
+ * Listen on a socket, wait for a connection, then accept it.
  */
 static void
 uart_tcp_listener(int fd, enum ev_type type __unused, void *arg)
 {
-	static const char tcp_error_msg[] = "Socket already connected\n";
+	static const char socket_error_msg[] = "Socket already connected\n";
 	struct uart_socket_softc *socket_softc = (struct uart_socket_softc *)
 	    arg;
 	struct uart_softc *sc = socket_softc->softc;
-	int conn_fd;
+	int conn_fd = -1;
 
 	conn_fd = accept(fd, NULL, NULL);
 	if (conn_fd == -1)
@@ -311,7 +313,7 @@ uart_tcp_listener(int fd, enum ev_type type __unused, void *arg)
 	pthread_mutex_lock(&sc->mtx);
 
 	if (sc->tty.opened) {
-		(void)send(conn_fd, tcp_error_msg, sizeof(tcp_error_msg), 0);
+		(void)send(conn_fd, socket_error_msg, sizeof(socket_error_msg), 0);
 		pthread_mutex_unlock(&sc->mtx);
 		goto clean;
 	} else {
@@ -327,6 +329,78 @@ uart_tcp_listener(int fd, enum ev_type type __unused, void *arg)
 clean:
 	if (conn_fd != -1)
 		close(conn_fd);
+}
+
+static int
+uart_unix_backend(struct uart_softc *sc, const char *path,
+    void (*drain)(int, enum ev_type, void *), void *arg)
+{
+	int bind_fd = -1;
+	const char *socket_path;
+	struct sockaddr_un sun;
+	struct uart_socket_softc *socket_softc = NULL;
+
+	socket_path = path + strlen("unix:");
+	if (*socket_path == '\0') {
+		warnx("Unix socket path is required");
+		goto clean;
+	}
+	if (strlen(socket_path) >= sizeof(sun.sun_path)) {
+		warnx("Unix socket path too long: %s", socket_path);
+		goto clean;
+	}
+
+	signal(SIGPIPE, SIG_IGN);
+
+	bind_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (bind_fd < 0)
+		goto clean;
+
+	(void)unlink(socket_path);
+
+	memset(&sun, 0, sizeof(sun));
+	sun.sun_family = AF_UNIX;
+#ifdef __APPLE__
+	sun.sun_len = sizeof(sun);
+#endif
+	strlcpy(sun.sun_path, socket_path, sizeof(sun.sun_path));
+
+	if (bind(bind_fd, (struct sockaddr *)&sun, sizeof(sun)) == -1) {
+		warn("bind(%s)", socket_path);
+		goto clean;
+	}
+
+	if (fcntl(bind_fd, F_SETFL, O_NONBLOCK) == -1)
+		goto clean;
+
+	if (listen(bind_fd, 1) == -1) {
+		warnx("listen(%s)", socket_path);
+		goto clean;
+	}
+
+	if ((socket_softc = calloc(1, sizeof(struct uart_socket_softc))) ==
+	    NULL)
+		goto clean;
+
+	sc->tty.is_socket = true;
+
+	socket_softc->softc = sc;
+	socket_softc->drain = drain;
+	socket_softc->arg = arg;
+
+	if ((sc->mev = mevent_add(bind_fd, EVF_READ, uart_tcp_listener,
+		 socket_softc)) == NULL)
+		goto clean;
+
+	return (0);
+
+clean:
+	if (bind_fd != -1)
+		close(bind_fd);
+	(void)unlink(socket_path);
+	if (socket_softc != NULL)
+		free(socket_softc);
+	return (-1);
 }
 
 /*
@@ -399,18 +473,25 @@ uart_tcp_backend(struct uart_softc *sc, const char *path,
 	int opt = 1;
 	char addr[256], port[6];
 	int domain;
+	const char *spec;
 	struct addrinfo hints, *src_addr = NULL;
 	struct uart_socket_softc *socket_softc = NULL;
 
-	if (sscanf(path, "tcp=[%255[^]]]:%5s", addr, port) == 2) {
+	spec = path + strlen("tcp:");
+	if (*spec == '\0') {
+		warnx("TCP listen address is required");
+		goto clean;
+	}
+
+	if (sscanf(spec, "[%255[^]]]:%5s", addr, port) == 2) {
 		domain = AF_INET6;
-	} else if (sscanf(path, "tcp=:%5s", port) == 1) {
+	} else if (sscanf(spec, ":%5s", port) == 1) {
 		strcpy(addr, "127.0.0.1");
 		domain = AF_INET;
-	} else if (sscanf(path, "tcp=%255[^:]:%5s", addr, port) == 2) {
+	} else if (sscanf(spec, "%255[^:]:%5s", addr, port) == 2) {
 		domain = AF_INET;
 	} else {
-		warnx("Invalid number of parameter");
+		warnx("Invalid TCP backend path '%s'", path);
 		goto clean;
 	}
 
@@ -500,7 +581,9 @@ uart_tty_open(struct uart_softc *sc, const char *path,
 
 	if (strcmp("stdio", path) == 0)
 		retval = uart_stdio_backend(sc);
-	else if (strncmp("tcp", path, 3) == 0)
+	else if (strncmp(path, "unix:", 5) == 0)
+		retval = uart_unix_backend(sc, path, drain, arg);
+	else if (strncmp(path, "tcp:", 4) == 0)
 		retval = uart_tcp_backend(sc, path, drain, arg);
 	else
 		retval = uart_tty_backend(sc, path);
