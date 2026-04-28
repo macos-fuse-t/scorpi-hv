@@ -79,10 +79,14 @@ SYSRES_MEM(PCI_EMUL_ECFG_BASE, PCI_EMUL_ECFG_SIZE);
 #define PCI_BARMAX_WITH_ROM (PCI_BARMAX + 1)
 #define PCI_ROM_IDX (PCI_BARMAX + 1)
 
-#define	PCIE_INTA	34
-#define	PCIE_INTB	35
-#define	PCIE_INTC	36
-#define	PCIE_INTD	37
+/*
+ * ARM64 reserves SPI 32 for the PL011 UART, 33 for the PL031 RTC, and 34
+ * for the ACPI GED. Keep PCI INTx above those platform interrupts.
+ */
+#define	PCIE_INTA	35
+#define	PCIE_INTB	36
+#define	PCIE_INTC	37
+#define	PCIE_INTD	38
 
 static int pcie_intrs[] = {PCIE_INTA, PCIE_INTB, PCIE_INTC, PCIE_INTD};
 
