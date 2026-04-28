@@ -123,7 +123,7 @@ vmexit_suspend(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 		return VMEXIT_QUIT;
 	case VM_SUSPEND_POWEROFF:
 		vm_destroy(ctx);
-		exit(1);
+		exit(0);
 	case VM_SUSPEND_HALT:
 		exit(2);
 	default:

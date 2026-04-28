@@ -35,6 +35,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sysexits.h>
@@ -44,6 +45,7 @@
 
 #include "bhyverun.h"
 #include "bootrom.h"
+#include "cnc.h"
 #include "config.h"
 #include "debug.h"
 #include "fdt.h"
@@ -69,6 +71,10 @@
 #define RTC_MMIO_BASE	      0x11000
 #define RTC_MMIO_SIZE	      0x1000
 #define RTC_INTR	      33
+#define ACPI_GED_MMIO_BASE    0x13000
+#define ACPI_GED_MMIO_SIZE    0x1000
+#define ACPI_GED_INTR	      34
+#define ACPI_GED_PWR_DOWN_EVT 0x2
 
 #define FWCFG_MMIO_BASE	      0x12000
 #define FWCFG_MMIO_SIZE	      16
@@ -401,6 +407,84 @@ init_mmio_rtc(struct vmctx *ctx)
 	assert(error == 0);
 }
 
+struct acpi_ged_softc {
+	struct vmctx *ctx;
+	pthread_mutex_t mtx;
+	uint32_t selector;
+};
+
+static void
+acpi_ged_raise_event(struct acpi_ged_softc *sc, uint32_t event)
+{
+	pthread_mutex_lock(&sc->mtx);
+	sc->selector |= event;
+	pthread_mutex_unlock(&sc->mtx);
+
+	vm_assert_irq(sc->ctx, ACPI_GED_INTR);
+	vm_deassert_irq(sc->ctx, ACPI_GED_INTR);
+}
+
+static int
+acpi_ged_mem_handler(struct vcpu *vcpu __unused, int dir, uint64_t addr,
+    int size, uint64_t *val, void *arg1, long arg2)
+{
+	struct acpi_ged_softc *sc = arg1;
+	uint64_t offset;
+
+	offset = addr - arg2;
+	if (offset != 0 || size != 4)
+		return (-1);
+
+	if (dir == MEM_F_WRITE)
+		return (0);
+
+	pthread_mutex_lock(&sc->mtx);
+	*val = sc->selector;
+	sc->selector = 0;
+	pthread_mutex_unlock(&sc->mtx);
+
+	return (0);
+}
+
+static void
+acpi_ged_power_button(cnc_conn_t conn, int req_id, int argc __unused,
+    char *argv[] __unused, void *param)
+{
+	struct acpi_ged_softc *sc = param;
+
+	acpi_ged_raise_event(sc, ACPI_GED_PWR_DOWN_EVT);
+	cnc_send_response(conn, req_id, "{\"accepted\":true}");
+}
+
+static void
+init_acpi_ged(struct vmctx *ctx)
+{
+	struct acpi_ged_softc *sc;
+	struct mem_range mr;
+	int error;
+
+	sc = calloc(1, sizeof(*sc));
+	if (sc == NULL)
+		err(EX_OSERR, "calloc");
+
+	sc->ctx = ctx;
+	pthread_mutex_init(&sc->mtx, NULL);
+
+	bzero(&mr, sizeof(struct mem_range));
+	mr.name = "acpi-ged";
+	mr.base = ACPI_GED_MMIO_BASE;
+	mr.size = ACPI_GED_MMIO_SIZE;
+	mr.flags = MEM_F_RW;
+	mr.handler = acpi_ged_mem_handler;
+	mr.arg1 = sc;
+	mr.arg2 = mr.base;
+	error = register_mem(&mr);
+	assert(error == 0);
+
+	cnc_register_command("power_button", acpi_ged_power_button, sc);
+	cnc_register_command("shutdown", acpi_ged_power_button, sc);
+}
+
 static vm_paddr_t
 fdt_gpa(struct vmctx *ctx)
 {
@@ -488,6 +572,7 @@ bhyve_init_platform(struct vmctx *ctx, struct vcpu *bsp)
 
 	init_mmio_rtc(ctx);
 	fdt_add_rtc(RTC_MMIO_BASE, RTC_MMIO_SIZE, RTC_INTR);
+	init_acpi_ged(ctx);
 	fdt_add_timer();
 	fdt_add_pcie(pcie_intrs, PCI_EMUL_IOBASE, PCI_EMUL_IOLIMIT,
 	    PCI_EMUL_MEMBASE32, PCI_EMUL_MEMLIMIT32);
