@@ -33,6 +33,7 @@ if host_machine.system() == 'darwin'
     hv_framework = [
         '-framework', 'Hypervisor',
         '-framework', 'VMNet' ]
+    add_project_arguments('-fblocks', language: 'c')
     add_project_link_arguments(hv_framework, language: 'c')
     #add_project_link_arguments(['-ld64'], language: 'c' )
 endif
@@ -137,7 +138,7 @@ if host_machine.system() == 'darwin'
         'src/libvmm/hvf/vmm.c',
         'src/libvmm/hvf/vgic.c',
         'src/libvmm/hvf/vmm_instruction_emul.c',
-        #'src/vmnet_net_backend.c',
+        'src/vmnet_net_backend.c',
     )
 endif
 
