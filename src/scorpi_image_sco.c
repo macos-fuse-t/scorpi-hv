@@ -1498,7 +1498,7 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 	uint64_t entry_index, entry_offset, map_page_offset;
 	uint64_t new_map_page_offset, new_root_offset;
 	uint64_t old_root_offset, old_root_length, old_map_page_offset;
-	uint64_t reserved[2];
+	uint64_t *reserved;
 	uint64_t trace_start, trace_end;
 	size_t root_page_index, root_page_count;
 	uint32_t entry_count, map_page_crc32c;
@@ -1506,6 +1506,7 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 
 	if (sco == NULL)
 		return (EINVAL);
+	root = NULL;
 	trace_start = sco_trace_now_ns();
 	if (sco->trace)
 		sco_trace_add(&sco->trace_commit_map_calls, 1);
@@ -1557,21 +1558,28 @@ sco_commit_map_entry(struct sco_image *sco, uint64_t cluster_index,
 	le64enc(page + entry_offset + 0x0008, physical_offset);
 	map_page_crc32c = page_crc32c_update(page);
 
-	reserved[0] = 0;
-	error = sco_alloc_metadata_page_reserved(sco, &new_map_page_offset,
-	    NULL, 0);
-	if (error != 0)
-		return (error);
-	reserved[0] = new_map_page_offset;
 	root_page_count = sco->sb.map_root_length / SCO_METADATA_PAGE_SIZE;
+	reserved = calloc(root_page_count, sizeof(*reserved));
+	if (reserved == NULL)
+		return (ENOMEM);
 	error = sco_alloc_metadata_run_reserved(sco, root_page_count,
-	    &new_root_offset, reserved, 1);
+	    &new_root_offset, NULL, 0);
 	if (error != 0)
-		return (error);
+		goto out_reserved;
+	for (root_page_index = 0; root_page_index < root_page_count;
+	    root_page_index++)
+		reserved[root_page_index] = new_root_offset +
+		    root_page_index * SCO_METADATA_PAGE_SIZE;
+	error = sco_alloc_metadata_page_reserved(sco, &new_map_page_offset,
+	    reserved, root_page_count);
+	if (error != 0)
+		goto out_reserved;
 
 	root = malloc(sco->sb.map_root_length);
-	if (root == NULL)
-		return (ENOMEM);
+	if (root == NULL) {
+		error = ENOMEM;
+		goto out_reserved;
+	}
 	for (root_page_index = 0; root_page_index < root_page_count;
 	    root_page_index++) {
 		uint8_t *root_page;
@@ -1645,6 +1653,8 @@ out:
 		sco_trace_add(&sco->trace_commit_map_ns,
 		    trace_end - trace_start);
 	free(root);
+out_reserved:
+	free(reserved);
 	return (error);
 }
 
