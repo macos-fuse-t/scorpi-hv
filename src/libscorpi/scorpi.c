@@ -2466,6 +2466,50 @@ scorpi_yaml_set_device_scalar_prop(scorpi_device_t dev, const char *name,
 }
 
 static scorpi_error_t
+scorpi_yaml_set_device_prop(scorpi_device_t dev, yaml_document_t *document,
+    const char *name, yaml_node_t *node)
+{
+	yaml_node_pair_t *pair;
+	yaml_node_t *key_node, *value_node;
+	char *child_name;
+	size_t name_len;
+	scorpi_error_t error;
+
+	if (dev == NULL || document == NULL || name == NULL || node == NULL)
+		return (SCORPI_ERR_INVALID_ARG);
+
+	if (node->type == YAML_SCALAR_NODE)
+		return (scorpi_yaml_set_device_scalar_prop(dev, name, node));
+	if (node->type != YAML_MAPPING_NODE)
+		return (SCORPI_ERR_VALIDATION);
+
+	for (pair = node->data.mapping.pairs.start;
+	    pair < node->data.mapping.pairs.top; pair++) {
+		key_node = yaml_document_get_node(document, pair->key);
+		value_node = yaml_document_get_node(document, pair->value);
+		if (key_node == NULL || key_node->type != YAML_SCALAR_NODE ||
+		    value_node == NULL)
+			return (SCORPI_ERR_VALIDATION);
+
+		name_len = strlen(name) + 1 +
+		    strlen((const char *)key_node->data.scalar.value) + 1;
+		child_name = calloc(name_len, 1);
+		if (child_name == NULL)
+			return (SCORPI_ERR_RUNTIME);
+		snprintf(child_name, name_len, "%s.%s", name,
+		    (const char *)key_node->data.scalar.value);
+
+		error = scorpi_yaml_set_device_prop(dev, document, child_name,
+		    value_node);
+		free(child_name);
+		if (error != SCORPI_OK)
+			return (error);
+	}
+
+	return (SCORPI_OK);
+}
+
+static scorpi_error_t
 scorpi_yaml_build_device(yaml_document_t *document, const char *bus_name,
     yaml_node_t *device_node, scorpi_device_t *out_dev)
 {
@@ -2519,11 +2563,7 @@ scorpi_yaml_build_device(yaml_document_t *document, const char *bus_name,
 		if (scorpi_yaml_scalar_equals(key_node, "device") ||
 		    scorpi_yaml_scalar_equals(key_node, "slot"))
 			continue;
-		if (value_node->type != YAML_SCALAR_NODE) {
-			scorpi_destroy_device(dev);
-			return (SCORPI_ERR_VALIDATION);
-		}
-		error = scorpi_yaml_set_device_scalar_prop(dev,
+		error = scorpi_yaml_set_device_prop(dev, document,
 		    (const char *)key_node->data.scalar.value, value_node);
 		if (error != SCORPI_OK) {
 			scorpi_destroy_device(dev);

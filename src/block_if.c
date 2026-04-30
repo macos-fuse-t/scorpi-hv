@@ -31,6 +31,7 @@
 #include <sys/param.h>
 #include <sys/disk.h>
 #include <sys/errno.h>
+#include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/queue.h>
 #include <sys/stat.h>
@@ -153,6 +154,21 @@ blockif_trace_report(struct blockif_ctxt *bc, const char *where)
 	    (unsigned long long)blockif_trace_load(&bc->bc_trace_write_iovs),
 	    (unsigned long long)blockif_trace_load(&bc->bc_trace_write_bytes),
 	    (unsigned long long)blockif_trace_load(&bc->bc_trace_flush_reqs));
+}
+
+static int
+blockif_lock_writable(const char *path, int fd)
+{
+	if (flock(fd, LOCK_EX | LOCK_NB) == 0)
+		return (0);
+
+	if (errno == EWOULDBLOCK || errno == EAGAIN) {
+		EPRINTLN("Backing file is already in use: %s", path);
+		return (EBUSY);
+	}
+
+	warn("Could not lock backing file %s", path);
+	return (errno);
 }
 
 static inline void
@@ -559,6 +575,9 @@ blockif_open(nvlist_t *nvl, const char *ident)
 		warn("Could not open backing file: %s", path);
 		goto err;
 	}
+
+	if (!ro && blockif_lock_writable(path, fd) != 0)
+		goto err;
 
 	if (fstat(fd, &sbuf) < 0) {
 		warn("Could not stat backing file %s", path);
