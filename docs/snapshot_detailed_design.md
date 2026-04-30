@@ -263,12 +263,12 @@ Backing relationships should be stored as parent location URIs, not plain
 paths. This keeps the image metadata extensible for future network-backed image
 stores.
 
-V1 runtime support is limited to the `file:` scheme. Future schemes such as
+Current runtime support is limited to the `file:` scheme. Future schemes such as
 `https:`, `s3:`, `scorpi:`, or repository-specific schemes may be added later,
 but Scorpi should reject unsupported schemes rather than attempting best-effort
 I/O.
 
-Supported v1 `file:` URI forms:
+Supported `file:` URI forms:
 
 - `file:///absolute/path/to/parent.sco`
 - `file:relative/path/to/parent.sco`
@@ -426,20 +426,20 @@ SCOIMG\0\0
 The extension is advisory only. Format probing uses magic. The magic does not
 encode the format version; versioning is stored in explicit superblock fields.
 
-Initial version:
+Current version:
 
 ```text
-format_major = 1
+format_major = 2
 format_minor = 0
 ```
 
-The precise V1 on-disk layout is specified in
-[sco_v1_format.md](sco_v1_format.md). That document is the contract for the
-parser and deterministic test fixture generator.
+The current on-disk layout is specified in
+[sco_v1_format.md](sco_v1_format.md). That document is the parser contract.
+The old root/map V1 layout is intentionally not supported.
 
 ### File Layout
 
-Recommended v1 layout:
+Current layout:
 
 ```text
 0x00000000  File identifier block
@@ -448,9 +448,7 @@ Recommended v1 layout:
 0x00003000  Reserved
 0x00010000  Metadata area
             - parent descriptor
-            - feature descriptors
-            - allocation table root
-            - optional checksums
+            - fixed two-slot allocation table
 cluster data area
 ```
 
@@ -482,13 +480,12 @@ struct sco_superblock {
 	uint32_t physical_sector_size;
 	uint32_t cluster_size;
 	uint64_t cluster_count;
-	uint64_t metadata_offset;
-	uint64_t metadata_length;
-	uint64_t map_root_offset;
-	uint64_t map_root_length;
 	uint64_t data_area_offset;
 	uint64_t parent_descriptor_offset;
 	uint64_t parent_descriptor_length;
+	uint64_t table_offset;
+	uint32_t single_generation_table_length;
+	uint32_t table_slot_size;
 	uint8_t image_uuid[16];
 	uint8_t parent_uuid[16];
 	uint8_t parent_digest[32];
@@ -515,10 +512,10 @@ Version rules:
 - version fields describe the base structure layout
 - feature flags describe optional behavior within that layout
 
-For v1, Scorpi supports:
+Scorpi supports:
 
 ```text
-format_major = 1
+format_major = 2
 format_minor = 0
 ```
 
@@ -532,8 +529,7 @@ Feature flags are split into classes:
 
 Initial incompatible features:
 
-- v1 allocation map
-- discard tombstones
+- fixed two-slot allocation table
 - sealed layer enforcement
 
 Potential future features:
@@ -544,7 +540,7 @@ Potential future features:
 - encryption metadata
 - larger map fanout
 
-Compression and encryption should not be enabled in v1.
+Compression and encryption are not enabled in the current format.
 
 ### Parent Descriptor
 
@@ -557,7 +553,7 @@ parent_uuid = ...
 parent_digest = sha256:...
 ```
 
-Parent URI is used for chain resolution. V1 Scorpi resolves only `file:` URIs.
+Parent URI is used for chain resolution. Scorpi resolves only `file:` URIs.
 Unsupported schemes fail closed. The parent management system may materialize
 network or repository-backed images into local `file:` images before launch or
 before a live reopen.
@@ -593,7 +589,7 @@ Rationale:
 - simple alignment and caching
 - still reasonable for content-addressed storage later
 
-Allowed v1 range:
+Allowed range:
 
 ```text
 64 KiB <= cluster_size <= 4 MiB
@@ -612,36 +608,45 @@ ZERO       reads return zeroes; do not read parent
 DISCARDED  reads return zeroes; do not read parent
 ```
 
-`ZERO` and `DISCARDED` may behave the same for read I/O in v1. They are kept
+`ZERO` and `DISCARDED` may behave the same for read I/O. They are kept
 distinct so tooling can distinguish guest zero writes from guest discard intent.
 
 ### Allocation Map
 
-The allocation map should be paged rather than one giant fixed table.
+The allocation map is a fixed flat table allocated at image creation.
 
-Recommended structure:
+Each virtual cluster has two 16-byte slots:
 
 ```text
-map root
-  -> map page 0
-  -> map page 1
-  -> map page N
+cluster N
+  slot A
+  slot B
 ```
 
-Each map entry records:
+Each slot records:
 
 ```text
+generation
+physical_cluster
+crc32c
 state
-physical_offset
-checksum_offset or checksum value, optional
-reserved flags
+flags
 ```
 
-Map pages are checksummed independently.
+The valid slot with the highest generation is active. The CRC includes the
+image UUID, virtual cluster index, slot index, and slot contents with the CRC
+field zeroed. All-zero slots mean implicit `ABSENT`.
 
-For v1, map pages can be allocated from the metadata area or appended as
-metadata extents. The implementation should avoid rewriting a single giant map
-for every cluster update.
+The single-generation table size is:
+
+```text
+align_up(cluster_count * 16, 4096)
+```
+
+`scorpi-image create` keeps this size at or below 32 MiB by increasing cluster
+size when needed. The on-disk table stores two slots per cluster, so on-disk
+metadata for the table is at most 64 MiB. The runtime loads the whole resolved
+table into memory during open.
 
 ### Write Allocation
 
@@ -652,8 +657,8 @@ When writing to an absent cluster:
    chain or zero-filling as appropriate.
 3. Write the complete or partial cluster data.
 4. Flush data if required by current durability mode.
-5. Update the map entry to `PRESENT`.
-6. Commit metadata transaction.
+5. Write the inactive table slot with `generation + 1`.
+6. Flush the table slot and update the in-memory resolved table.
 
 For full-cluster writes, parent materialization is not required.
 
@@ -669,7 +674,7 @@ There are two possible designs:
 1. materialize whole cluster on first partial write
 2. support subcluster allocation bitmap
 
-V1 should use whole-cluster materialization. It is simpler and safer.
+The current format uses whole-cluster materialization. It is simpler and safer.
 
 Subcluster allocation can be added later if write amplification is too high.
 
@@ -683,10 +688,10 @@ Guest discard over a full cluster:
 
 Guest discard over a partial cluster:
 
-- v1 may materialize the cluster and zero the discarded range
+- the runtime may materialize the cluster and zero the discarded range
 - or record a future subcluster tombstone feature
 
-V1 should keep partial discard simple:
+The runtime keeps partial discard simple:
 
 - if the cluster is present, zero the discarded sector range in the local data
 - if the cluster is absent, materialize the cluster from the chain, zero the
@@ -707,17 +712,16 @@ Sealed layers are suitable for digest calculation and push/pull.
 
 ### Checksums
 
-V1 should require checksums for critical metadata:
+The current format requires checksums for critical metadata:
 
 - superblocks
 - metadata descriptors
-- map root
-- map pages
+- table slots
 
 CRC-32C is a reasonable metadata checksum because it is widely used and
 hardware-accelerated on many platforms.
 
-Per-cluster data checksums should be optional in v1 and required only for
+Per-cluster data checksums should be optional and required only for
 sealed layers if enabled. The parent repository layer may calculate stronger
 content digests independently.
 
@@ -726,29 +730,47 @@ content digests independently.
 The overlay must recover to either the old valid metadata generation or the new
 valid metadata generation after host crash.
 
-V1 should use copy-on-write metadata updates:
+Table slot updates provide the metadata publication boundary:
 
 1. Write new or changed data clusters.
-2. Write new map page versions.
-3. Write new map root or metadata descriptor.
-4. Write inactive superblock with incremented generation.
-5. Flush.
-6. On next open, select the newest valid superblock.
+2. Flush data before publishing metadata.
+3. Write the inactive slot with incremented generation and CRC.
+4. Flush the slot.
+5. On next open, select the highest-generation valid slot for each cluster.
 
-This avoids a full general-purpose metadata journal in v1.
+This avoids both a general-purpose metadata journal and runtime metadata
+allocation.
 
-Unreferenced data or metadata written before a crash may remain as leaked space
-inside the file. Offline repair can reclaim it later.
+Unreferenced data written before a crash may remain as leaked space inside the
+file. Offline repair can reclaim it later.
 
 ### Free Space Reuse
 
-V1 may append-only allocate data clusters and metadata pages.
+The runtime maintains an in-memory data-cluster free bitmap.
 
-This is simple and crash-safe but can waste space in long-lived active layers.
+The bitmap is rebuilt on open by scanning the resolved fixed table and marking
+every active `PRESENT` physical cluster as used. It is not persisted and is not
+authoritative; the fixed table is the source of truth.
 
-The parent system is expected to rotate active layers and compact offline.
+Allocation first reuses a free physical cluster, then appends to the file only
+when no reusable cluster exists. Reuse is allowed because table entries contain
+the physical cluster number instead of deriving physical placement from the
+virtual cluster index.
 
-Internal free-space reuse can be added later after correctness is proven.
+When an update makes an old `PRESENT` physical cluster unreachable, the runtime
+releases that physical cluster in memory only after the replacement table slot
+has been written and fsynced. This keeps crash recovery simple:
+
+- before the slot commit, the old entry remains active
+- after the slot commit, reopen derives the same free-space state by scanning
+  the table
+
+If allocation writes data but fails before the metadata slot is committed, the
+new physical cluster may remain leaked until reopen. That is acceptable because
+it avoids reusing a cluster whose publication status is ambiguous.
+
+The parent system should still rotate active layers and compact offline for
+long-lived images with significant churn.
 
 ## Qcow2 Support Scope
 
@@ -858,7 +880,7 @@ Lock implementation options:
 - parent daemon lease table
 - combination of OS locks and daemon ownership
 
-V1 should use OS advisory locks where available and expose diagnostics so the
+Scorpi should use OS advisory locks where available and expose diagnostics so the
 parent can reconcile open images after crashes.
 
 ## Parent Management Design Contract
@@ -1040,7 +1062,7 @@ Add tests for:
 - full-cluster write
 - partial-cluster write materializes parent data
 - discard prevents parent fallthrough
-- flush persists map updates
+- flush persists table updates
 - reopen sees previous writes
 
 ### Crash Simulation Tests
@@ -1048,7 +1070,7 @@ Add tests for:
 Add tests that interrupt overlay updates at controlled points:
 
 - data written, metadata not committed
-- map page written, superblock not committed
+- inactive table slot partially written
 - inactive superblock partially written
 - both superblocks valid with different generations
 - newest superblock checksum invalid

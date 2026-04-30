@@ -51,6 +51,13 @@ test_le64dec(const uint8_t *p)
 	    ((uint64_t)p[6] << 48) | ((uint64_t)p[7] << 56));
 }
 
+static uint32_t
+test_le32dec(const uint8_t *p)
+{
+	return ((uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+	    ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24));
+}
+
 static void
 test_create_info_check_mb_suffix(void)
 {
@@ -98,7 +105,9 @@ test_large_sco_reserves_all_map_metadata(void)
 	char cmd[1024];
 	struct stat sb;
 	uint8_t data_area_offset_buf[8];
+	uint8_t cluster_size_buf[4];
 	uint64_t data_area_offset;
+	uint32_t cluster_size;
 	int fd;
 
 	fd = mkstemp(path);
@@ -115,16 +124,54 @@ test_large_sco_reserves_all_map_metadata(void)
 	assert(fd >= 0);
 	assert(pread(fd, data_area_offset_buf, sizeof(data_area_offset_buf),
 	    0x1000 + 0x0048) == (ssize_t)sizeof(data_area_offset_buf));
+	assert(pread(fd, cluster_size_buf, sizeof(cluster_size_buf),
+	    0x1000 + 0x0030) == (ssize_t)sizeof(cluster_size_buf));
 	assert(fstat(fd, &sb) == 0);
 	assert(close(fd) == 0);
 
 	data_area_offset = test_le64dec(data_area_offset_buf);
-	assert(data_area_offset >= 0x440000);
+	cluster_size = test_le32dec(cluster_size_buf);
+	assert(cluster_size == 0x40000);
+	assert(data_area_offset >= 0x840000);
 	assert(sb.st_size == (off_t)data_area_offset);
 	snprintf(cmd, sizeof(cmd), "%s check %s", cli_path(), path);
 	run_ok(cmd);
 	assert(unlink(path) == 0);
 }
+
+static void
+test_large_sco_increases_cluster_size_for_metadata_cap(void)
+{
+	char path[] = "/tmp/scorpi-image-cli-large-cluster-XXXXXX";
+	char cmd[1024];
+	char output_path[128];
+	FILE *fp;
+	char output[4096];
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(path) == 0);
+
+	snprintf(cmd, sizeof(cmd),
+	    "%s create --format sco --size 4096gb %s",
+	    cli_path(), path);
+	run_ok(cmd);
+	snprintf(cmd, sizeof(cmd), "%s info %s > %s.info", cli_path(), path,
+	    path);
+	run_ok(cmd);
+	snprintf(output_path, sizeof(output_path), "%s.info", path);
+	fp = fopen(output_path, "r");
+	assert(fp != NULL);
+	memset(output, 0, sizeof(output));
+	assert(fread(output, 1, sizeof(output) - 1, fp) > 0);
+	assert(fclose(fp) == 0);
+	assert(strstr(output, "cluster_size=2097152\n") != NULL);
+	assert(unlink(output_path) == 0);
+	assert(unlink(path) == 0);
+}
+
 
 static void
 test_create_info_check_raw_bytes(void)
@@ -408,6 +455,7 @@ main(void)
 {
 	test_create_info_check_mb_suffix();
 	test_large_sco_reserves_all_map_metadata();
+	test_large_sco_increases_cluster_size_for_metadata_cap();
 	test_create_info_check_raw();
 	test_create_with_positional_base();
 	test_create_with_base_rejects_mismatched_size();

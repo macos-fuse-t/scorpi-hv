@@ -20,6 +20,18 @@ Each task has:
 
 A task is not complete until its validation criteria pass.
 
+Current `.sco` note:
+
+- The original root/map V1 metadata design has been superseded.
+- The current `.sco` format uses a fixed flat allocation table with two
+  16-byte slots per virtual cluster.
+- The runtime keeps the resolved single-generation table fully resident in
+  memory.
+- `scorpi-image create` increases cluster size as needed so the
+  single-generation table is at most 32 MiB.
+- The old `scorpi_sco_fixture_test` target was removed with the V1 fixture
+  generator.
+
 ## Execution Rules
 
 - Keep runtime image support separate from parent snapshot management.
@@ -613,7 +625,7 @@ Validation criteria:
 
 Validation performed:
 
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 - `meson compile -C builddir`
 
 ### Task 15: Add `scorpi-image` CLI Tool
@@ -664,7 +676,7 @@ Validation criteria:
 
 Validation performed:
 
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 - `meson compile -C builddir`
 
 ### Task 16: Implement `.sco` Writable Top Support
@@ -699,7 +711,7 @@ Validation criteria:
 Validation performed:
 
 - `meson compile -C builddir`
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 
 ### Task 16A: Make Image I/O Thread-Safe
 
@@ -736,7 +748,7 @@ Validation criteria:
 Validation performed:
 
 - `meson test -C builddir scorpi_image_chain_test scorpi_image_sco_test`
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 - `meson compile -C builddir`
 
 ### Task 16B: Add Fine-Grained `.sco` Write Locking
@@ -783,7 +795,7 @@ Validation performed:
 
 - `meson compile -C builddir`
 - `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test`
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 
 ### Task 17: Implement Whole-Cluster Materialization
 
@@ -825,7 +837,7 @@ Validation criteria:
 Validation performed:
 
 - `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 - `meson compile -C builddir`
 
 ### Task 18: Implement `.sco` Discard And Zero State
@@ -859,7 +871,7 @@ Validation:
 
 - `meson compile -C builddir`
 - `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 
 ### Task 19: Implement Crash-Safe `.sco` Metadata Commit
 
@@ -892,8 +904,8 @@ Validation criteria:
 
 Validation performed:
 
-- `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test scorpi_sco_fixture_test scorpi_image_cli_test`
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test scorpi_image_cli_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 - `meson compile -C builddir`
 
 ### Task 20: Add `.sco` Flush Semantics
@@ -923,8 +935,8 @@ Validation criteria:
 
 Validation performed:
 
-- `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test scorpi_sco_fixture_test scorpi_image_cli_test`
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test scorpi_image_chain_resolver_test scorpi_image_cli_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 - `meson compile -C builddir`
 
 ### Task 20A: Add `scorpi-image` Seal And Unseal Commands
@@ -967,8 +979,8 @@ Validation criteria:
 Validation performed:
 
 - `meson compile -C builddir`
-- `meson test -C builddir scorpi_image_cli_test scorpi_image_sco_test scorpi_sco_fixture_test`
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_cli_test scorpi_image_sco_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 
 ### Task 20B: Add Host Sparse File Reclamation
 
@@ -1012,21 +1024,21 @@ Validation criteria:
 Validation performed:
 
 - `meson compile -C builddir`
-- `meson test -C builddir scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test`
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_sco_test scorpi_image_cli_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 
-### Task 20C: Add Bounded `.sco` Metadata Page Cache
+### Task 20C: Replace `.sco` Root/Map Metadata With Fixed Table
 
 Status: Done
 
 Scope:
 
-- keep frequently used `.sco` metadata pages in memory
-- cache root metadata pages and allocation-map pages behind one metadata-cache
-  layer
-- cap metadata cache memory at 32 MiB per opened `.sco` image
-- evict cached metadata pages with LRU when the cache reaches its size limit
-- keep the cache entirely internal to the `.sco` backend
+- remove runtime metadata page allocation
+- remove metadata page fragmentation and metadata exhaustion failure modes
+- store two fixed 16-byte table slots per virtual cluster
+- keep the resolved single-generation table fully resident in memory
+- cap the single-generation table at 32 MiB by increasing cluster size during
+  image creation
 
 Dependencies:
 
@@ -1036,44 +1048,68 @@ Dependencies:
 
 Implementation notes:
 
-- this is a performance cache only; the on-disk `.sco` superblock, root, and
-  map pages remain authoritative
-- cache entries should be keyed by metadata page offset and should include the
-  decoded/validated page contents needed by lookup and commit paths
-- the cache must preserve crash safety:
-  - write new map/root pages to disk first
-  - fsync as required by the existing commit protocol
-  - commit the new superblock
-  - update in-memory metadata cache state only after the new superblock commit
-    succeeds
-- if a metadata commit fails, cached state must continue to reflect the old
-  committed superblock generation
-- if the process exits uncleanly, the cache disappears and is rebuilt from the
-  active superblock on next open
-- LRU accounting should be protected by `.sco` backend synchronization and must
-  be safe with concurrent read/write threads
-- cache memory accounting should include page buffers and per-entry overhead;
-  the default maximum is 32 MiB
-- images whose full metadata fits under 32 MiB may effectively keep all active
-  metadata resident
-- very large images should continue to work correctly with cache churn
+- all-zero slots mean implicit `ABSENT`
+- writes that change metadata write data first, fsync, write the inactive slot,
+  fsync, then update the in-memory resolved table
+- on open, each cluster chooses the valid slot with the highest generation
+- corrupt or torn inactive slots fall back to the previous valid slot
+- older root/map `.sco` images are rejected
 
 Validation criteria:
 
-- repeated reads/writes to hot clusters hit cached root/map metadata pages
-- cache eviction does not change visible read/write/discard semantics
-- corrupt metadata is still rejected when first loaded into the cache
-- metadata updates invalidate or replace stale cached pages after successful
-  commit
-- crash-safety tests continue to pass
-- memory use remains bounded by the configured 32 MiB maximum
-- trace counters or tests demonstrate reduced metadata page reads on a Windows
-  install-style tiny-iovec workload
+- `scorpi-image create` emits fixed-table images and auto-increases cluster
+  size for large images
+- direct `.sco` read/write/discard/zero semantics pass
+- corrupt newest slot falls back to the previous valid slot
+- base-chain partial writes preserve parent bytes
+- metadata allocation cannot fail at runtime because no runtime metadata
+  allocator remains
 
 Validation performed:
 
 - `ninja -C builddir`
 - `meson test -C builddir scorpi_image_sco_test scorpi_image_chain_test scorpi_image_cli_test scorpi_image_chain_resolver_test`
+
+### Task 20D: Reuse Freed `.sco` Data Clusters
+
+Status: Done
+
+Scope:
+
+- build a disposable in-memory physical data-cluster allocation bitmap on open
+- derive used data clusters from active fixed-table `PRESENT` entries
+- reuse freed physical data clusters before appending new file space
+- release old `PRESENT` physical clusters only after the replacement metadata
+  slot is durably committed
+
+Dependencies:
+
+- Task 20B
+- Task 20C
+
+Implementation notes:
+
+- the fixed table remains authoritative; the free bitmap is never persisted
+- open rejects duplicate active `PRESENT` references to the same physical
+  cluster as corrupt metadata
+- failed writes may leak an allocation until reopen, but must not make a
+  cluster reusable before its table publication status is clear
+- host hole punching remains best-effort after the old physical cluster becomes
+  unreachable
+
+Validation criteria:
+
+- full-cluster zero or discard frees the old physical cluster after metadata
+  commit
+- a later write can reuse the freed cluster without growing the file
+- torn newest table slots still keep the older physical cluster marked used on
+  reopen
+- image contents remain correct after reuse
+
+Validation performed:
+
+- `meson test -C builddir scorpi_image_sco_test --print-errorlogs`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_qcow2_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test --print-errorlogs`
 
 ### Task 21: Add Resolved Chain Diagnostics
 
@@ -1113,7 +1149,7 @@ Validation performed:
 
 - `meson compile -C builddir`
 - `meson test -C builddir scorpi_image_chain_test scorpi_image_sco_test scorpi_image_chain_resolver_test`
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 
 ### Task 22: Add Readonly Qcow2 Backend
 
@@ -1219,7 +1255,7 @@ Validation performed:
 
 - `ninja -C builddir`
 - `meson test -C builddir scorpi_image_qcow2_test`
-- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_qcow2_test scorpi_image_sco_test scorpi_sco_fixture_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
+- `meson test -C builddir scorpi_image_uri_test scorpi_image_backend_test scorpi_image_open_test scorpi_image_raw_test scorpi_image_qcow2_test scorpi_image_sco_test scorpi_image_cli_test scorpi_image_chain_test scorpi_image_chain_resolver_test`
 - read sampled compressed offsets from
   `~/vms/noble-server-cloudimg-arm64.qcow2` through Scorpi's qcow2 backend
 - compared those samples against a raw image produced with `qemu-img convert`

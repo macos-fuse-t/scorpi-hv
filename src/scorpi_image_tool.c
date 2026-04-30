@@ -52,15 +52,56 @@ is_power_of_two_u64(uint64_t value)
 }
 
 static int
+sco_choose_cluster_size(struct sco_create_options *opts,
+    uint64_t *cluster_countp, uint32_t *table_lengthp)
+{
+	uint64_t cluster_count, table_length;
+
+	if (opts == NULL || cluster_countp == NULL || table_lengthp == NULL ||
+	    opts->virtual_size == 0 || opts->logical_sector_size == 0)
+		return (EINVAL);
+	opts->cluster_size = SCO_DEFAULT_CLUSTER_SIZE;
+	while (opts->cluster_size < opts->logical_sector_size)
+		opts->cluster_size <<= 1;
+	if (opts->cluster_size < SCO_MIN_CLUSTER_SIZE)
+		opts->cluster_size = SCO_MIN_CLUSTER_SIZE;
+	for (;;) {
+		if (opts->cluster_size > SCO_MAX_CLUSTER_SIZE)
+			return (EFBIG);
+		if ((opts->cluster_size % opts->logical_sector_size) != 0)
+			return (EINVAL);
+		cluster_count = (opts->virtual_size + opts->cluster_size - 1) /
+		    opts->cluster_size;
+		if (cluster_count > UINT64_MAX / SCO_TABLE_SLOT_SIZE)
+			return (EFBIG);
+		table_length = align_up_u64(cluster_count *
+		    SCO_TABLE_SLOT_SIZE, SCO_METADATA_PAGE_SIZE);
+		if (table_length <= SCO_MAX_SINGLE_TABLE_BYTES) {
+			*cluster_countp = cluster_count;
+			*table_lengthp = (uint32_t)table_length;
+			return (0);
+		}
+		opts->cluster_size <<= 1;
+	}
+}
+
+static int
 write_exact(int fd, uint64_t offset, const void *buf, size_t len)
 {
+	const uint8_t *p;
 	ssize_t n;
 
-	n = pwrite(fd, buf, len, (off_t)offset);
-	if (n < 0)
-		return (errno);
-	if ((size_t)n != len)
-		return (EIO);
+	p = buf;
+	while (len > 0) {
+		n = pwrite(fd, p, len, (off_t)offset);
+		if (n < 0)
+			return (errno);
+		if (n == 0)
+			return (EIO);
+		p += n;
+		offset += (uint64_t)n;
+		len -= (size_t)n;
+	}
 	return (0);
 }
 
@@ -97,27 +138,12 @@ build_file_id(uint8_t buf[SCO_FILE_ID_SIZE], const uint8_t uuid[16])
 
 	memset(buf, 0, SCO_FILE_ID_SIZE);
 	memcpy(buf, SCO_MAGIC, 8);
-	le16enc(buf + 0x0008, 1);
+	le16enc(buf + 0x0008, SCO_FORMAT_MAJOR);
 	le32enc(buf + 0x000c, SCO_FILE_ID_SIZE);
 	memcpy(buf + 0x0010, uuid, 16);
 	le32enc(buf + 0x0020, SCO_CHECKSUM_CRC32C);
 	crc = scorpi_crc32c(buf, SCO_FILE_ID_SIZE);
 	le32enc(buf + 0x0024, crc);
-}
-
-static void
-build_root_page(uint8_t buf[SCO_METADATA_PAGE_SIZE], uint32_t entry_count,
-    uint64_t first_root_index)
-{
-	uint32_t crc;
-
-	memset(buf, 0, SCO_METADATA_PAGE_SIZE);
-	le32enc(buf + 0x0000, SCO_METADATA_PAGE_SIZE);
-	le32enc(buf + 0x0004, SCO_CHECKSUM_CRC32C);
-	le32enc(buf + 0x000c, entry_count);
-	le64enc(buf + 0x0010, first_root_index);
-	crc = scorpi_crc32c(buf, SCO_METADATA_PAGE_SIZE);
-	le32enc(buf + 0x0008, crc);
 }
 
 static void
@@ -141,13 +167,13 @@ build_superblock(uint8_t buf[SCO_SUPERBLOCK_SIZE],
     const struct sco_create_options *opts, const uint8_t uuid[16],
     uint64_t cluster_count, uint64_t data_area_offset,
     uint64_t base_descriptor_offset, uint32_t base_descriptor_length,
-    uint64_t map_root_offset, uint32_t map_root_length)
+    uint64_t table_offset, uint32_t table_length)
 {
 	uint32_t crc;
 
 	memset(buf, 0, SCO_SUPERBLOCK_SIZE);
 	memcpy(buf, SCO_MAGIC, 8);
-	le16enc(buf + 0x0008, 1);
+	le16enc(buf + 0x0008, SCO_FORMAT_MAJOR);
 	le32enc(buf + 0x000c, SCO_SUPERBLOCK_SIZE);
 	le32enc(buf + 0x0010, SCO_CHECKSUM_CRC32C);
 	le64enc(buf + 0x0018, 1);
@@ -160,10 +186,10 @@ build_superblock(uint8_t buf[SCO_SUPERBLOCK_SIZE],
 	le64enc(buf + 0x0048, data_area_offset);
 	le64enc(buf + 0x0050, base_descriptor_offset);
 	le32enc(buf + 0x0058, base_descriptor_length);
-	le64enc(buf + 0x0060, map_root_offset);
-	le32enc(buf + 0x0068, map_root_length);
-	le32enc(buf + 0x006c, SCO_MAP_ENTRY_SIZE);
-	le32enc(buf + 0x0070, SCO_INCOMPAT_ALLOC_MAP_V1);
+	le64enc(buf + 0x0060, table_offset);
+	le32enc(buf + 0x0068, table_length);
+	le32enc(buf + 0x006c, SCO_TABLE_SLOT_SIZE);
+	le32enc(buf + 0x0070, SCO_INCOMPAT_FIXED_TABLE_V2);
 	memcpy(buf + 0x0080, uuid, 16);
 	crc = scorpi_crc32c(buf, SCO_SUPERBLOCK_SIZE);
 	le32enc(buf + 0x0014, crc);
@@ -174,57 +200,47 @@ create_sco(const struct sco_create_options *opts)
 {
 	uint8_t page[SCO_METADATA_PAGE_SIZE], uuid[16];
 	uint8_t *base_descriptor;
-	uint64_t cluster_count, map_page_count, root_page_count;
+	struct sco_create_options actual_opts;
+	uint64_t cluster_count;
 	uint64_t base_descriptor_offset, data_area_offset, metadata_end;
-	uint64_t metadata_dynamic_pages;
-	uint32_t base_descriptor_length, root_entries, map_root_length;
-	uint64_t i, remaining_root_entries;
+	uint64_t table_offset;
+	uint32_t base_descriptor_length, table_length;
 	int fd, error;
 
 	if (opts->path == NULL || opts->virtual_size == 0 ||
-	    opts->logical_sector_size == 0 || opts->cluster_size == 0)
+	    opts->logical_sector_size == 0)
 		return (EINVAL);
-	if (!is_power_of_two_u64(opts->logical_sector_size) ||
-	    !is_power_of_two_u64(opts->cluster_size) ||
-	    opts->cluster_size < SCO_MIN_CLUSTER_SIZE ||
-	    opts->cluster_size > SCO_MAX_CLUSTER_SIZE ||
-	    (opts->cluster_size % opts->logical_sector_size) != 0)
+	actual_opts = *opts;
+	if (!is_power_of_two_u64(actual_opts.logical_sector_size))
 		return (EINVAL);
-	if (opts->physical_sector_size != 0 &&
-	    (!is_power_of_two_u64(opts->physical_sector_size) ||
-	    opts->physical_sector_size < opts->logical_sector_size))
+	if (actual_opts.physical_sector_size != 0 &&
+	    (!is_power_of_two_u64(actual_opts.physical_sector_size) ||
+	    actual_opts.physical_sector_size < actual_opts.logical_sector_size))
 		return (EINVAL);
 
-	cluster_count = (opts->virtual_size + opts->cluster_size - 1) /
-	    opts->cluster_size;
-	map_page_count = (cluster_count + SCO_MAP_ENTRIES_PER_PAGE - 1) /
-	    SCO_MAP_ENTRIES_PER_PAGE;
-	root_page_count = (map_page_count + SCO_MAP_ENTRIES_PER_PAGE - 1) /
-	    SCO_MAP_ENTRIES_PER_PAGE;
-	if (root_page_count > UINT32_MAX / SCO_METADATA_PAGE_SIZE)
-		return (EFBIG);
-	map_root_length = (uint32_t)(root_page_count * SCO_METADATA_PAGE_SIZE);
-	metadata_end = SCO_METADATA_AREA_OFFSET + map_root_length;
+	error = sco_choose_cluster_size(&actual_opts, &cluster_count,
+	    &table_length);
+	if (error != 0)
+		return (error);
+	metadata_end = SCO_METADATA_AREA_OFFSET;
 	base_descriptor_offset = 0;
 	base_descriptor_length = 0;
-	if (opts->base_uri != NULL) {
+	if (actual_opts.base_uri != NULL) {
 		base_descriptor_offset = metadata_end;
 		base_descriptor_length = (uint32_t)align_up_u64(0x50 +
-		    strlen(opts->base_uri), SCO_METADATA_PAGE_SIZE);
+		    strlen(actual_opts.base_uri), SCO_METADATA_PAGE_SIZE);
 		if (base_descriptor_length > UINT64_MAX - metadata_end)
 			return (EFBIG);
 		metadata_end += base_descriptor_length;
 	}
-	if (map_page_count > UINT64_MAX - root_page_count - 1)
+	table_offset = metadata_end;
+	if (table_length > (UINT64_MAX - metadata_end) /
+	    SCO_TABLE_SLOTS_PER_ENTRY)
 		return (EFBIG);
-	metadata_dynamic_pages = map_page_count + root_page_count + 1;
-	if (metadata_dynamic_pages >
-	    (UINT64_MAX - metadata_end) / SCO_METADATA_PAGE_SIZE)
+	metadata_end += (uint64_t)table_length * SCO_TABLE_SLOTS_PER_ENTRY;
+	if (metadata_end > UINT64_MAX - actual_opts.cluster_size + 1)
 		return (EFBIG);
-	metadata_end += metadata_dynamic_pages * SCO_METADATA_PAGE_SIZE;
-	if (metadata_end > UINT64_MAX - opts->cluster_size + 1)
-		return (EFBIG);
-	data_area_offset = align_up_u64(metadata_end, opts->cluster_size);
+	data_area_offset = align_up_u64(metadata_end, actual_opts.cluster_size);
 
 	error = fill_uuid(uuid);
 	if (error != 0)
@@ -237,9 +253,9 @@ create_sco(const struct sco_create_options *opts)
 	error = write_exact(fd, 0, page, sizeof(page));
 	if (error != 0)
 		goto out;
-	build_superblock(page, opts, uuid, cluster_count, data_area_offset,
+	build_superblock(page, &actual_opts, uuid, cluster_count, data_area_offset,
 	    base_descriptor_offset, base_descriptor_length,
-	    SCO_METADATA_AREA_OFFSET, map_root_length);
+	    table_offset, table_length);
 	error = write_exact(fd, SCO_SUPERBLOCK_A_OFFSET, page, sizeof(page));
 	if (error != 0)
 		goto out;
@@ -248,26 +264,14 @@ create_sco(const struct sco_create_options *opts)
 	if (error != 0)
 		goto out;
 
-	remaining_root_entries = map_page_count;
-	for (i = 0; i < root_page_count; i++) {
-		root_entries = remaining_root_entries > SCO_MAP_ENTRIES_PER_PAGE ?
-		    SCO_MAP_ENTRIES_PER_PAGE : (uint32_t)remaining_root_entries;
-		build_root_page(page, root_entries,
-		    i * SCO_MAP_ENTRIES_PER_PAGE);
-		error = write_exact(fd, SCO_METADATA_AREA_OFFSET +
-		    i * SCO_METADATA_PAGE_SIZE, page, sizeof(page));
-		if (error != 0)
-			goto out;
-		remaining_root_entries -= root_entries;
-	}
-	if (opts->base_uri != NULL) {
+	if (actual_opts.base_uri != NULL) {
 		base_descriptor = calloc(1, base_descriptor_length);
 		if (base_descriptor == NULL) {
 			error = ENOMEM;
 			goto out;
 		}
 		build_base_descriptor(base_descriptor, base_descriptor_length,
-		    opts->base_uri);
+		    actual_opts.base_uri);
 		error = write_exact(fd, base_descriptor_offset,
 		    base_descriptor, base_descriptor_length);
 		free(base_descriptor);
@@ -275,6 +279,10 @@ create_sco(const struct sco_create_options *opts)
 			goto out;
 	}
 	if (ftruncate(fd, (off_t)data_area_offset) != 0) {
+		error = errno;
+		goto out;
+	}
+	if (fsync(fd) != 0) {
 		error = errno;
 		goto out;
 	}
@@ -297,6 +305,8 @@ create_raw(const char *path, uint64_t virtual_size)
 		return (errno);
 	error = 0;
 	if (ftruncate(fd, (off_t)virtual_size) != 0)
+		error = errno;
+	if (error == 0 && fsync(fd) != 0)
 		error = errno;
 	if (close(fd) != 0 && error == 0)
 		error = errno;
