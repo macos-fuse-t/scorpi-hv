@@ -51,12 +51,17 @@ struct vmnet_priv {
 	net_be_rxeof_t cb;
 	void *cb_param;
 
+	pthread_mutex_t rx_mtx;
+	int rx_available;
 	int rx_enabled;
 };
 
 void
 vmnet_cleanup(struct net_backend *be)
 {
+	struct vmnet_priv *priv = NET_BE_PRIV(be);
+
+	pthread_mutex_destroy(&priv->rx_mtx);
 }
 
 void
@@ -87,6 +92,10 @@ vmnet_drop_packets(struct vmnet_priv *priv)
 static void
 vmnet_recv_cb(struct vmnet_priv *priv)
 {
+	pthread_mutex_lock(&priv->rx_mtx);
+	priv->rx_available = 1;
+	pthread_mutex_unlock(&priv->rx_mtx);
+
 	if (priv->rx_enabled) {
 		priv->cb(0, EVF_WRITE, priv->cb_param);
 	} else {
@@ -109,6 +118,7 @@ vmnet_init(struct net_backend *be, const char *devname, nvlist_t *nvl __unused,
 	priv->cb_param = param;
 
 	priv->rx_enabled = 0;
+	pthread_mutex_init(&priv->rx_mtx, NULL);
 
 	ifq = dispatch_queue_create("scorpi.vmnet.com", DISPATCH_QUEUE_SERIAL);
 
@@ -223,6 +233,13 @@ vmnet_recv(struct net_backend *be, const struct iovec *iov, int iovcnt)
 	vmnet_return_t res;
 	struct vmpktdesc v;
 	int pktcnt;
+	int rx_available;
+
+	pthread_mutex_lock(&priv->rx_mtx);
+	rx_available = priv->rx_available;
+	pthread_mutex_unlock(&priv->rx_mtx);
+	if (!rx_available)
+		return (0);
 
 	v.vm_pkt_size = 0;
 
@@ -239,7 +256,10 @@ vmnet_recv(struct net_backend *be, const struct iovec *iov, int iovcnt)
 	assert(res == VMNET_SUCCESS);
 
 	if (pktcnt < 1) {
-		return (-1);
+		pthread_mutex_lock(&priv->rx_mtx);
+		priv->rx_available = 0;
+		pthread_mutex_unlock(&priv->rx_mtx);
+		return (0);
 	}
 
 	return ((ssize_t)v.vm_pkt_size);
