@@ -23,12 +23,14 @@
 
 #include "acpi_device.h"
 #include "bhyverun.h"
+#include "config.h"
 #ifdef __amd64__
 #include "amd64/inout.h"
 #include "amd64/pci_lpc.h"
 #endif
 #include "debug.h"
 #include "mem.h"
+#include "pci_emul.h"
 #include "qemu_fwcfg.h"
 
 #define QEMU_FWCFG_ACPI_DEVICE_NAME	"FWCF"
@@ -518,6 +520,84 @@ qemu_fwcfg_add_user_files(void)
 	return (0);
 }
 
+static int
+qemu_fwcfg_add_string_file(const char *name, const char *value)
+{
+	char *data;
+	int error;
+
+	if (value == NULL)
+		return (0);
+
+	data = strdup(value);
+	if (data == NULL)
+		return (ENOMEM);
+
+	error = qemu_fwcfg_add_file(name, (uint32_t)strlen(data) + 1, data);
+	if (error != 0)
+		free(data);
+
+	return (error);
+}
+
+static int
+qemu_fwcfg_add_scorpi_boot_param(const char *config_name,
+    const char *fwcfg_name)
+{
+	char key[64];
+	const char *value;
+
+	snprintf(key, sizeof(key), "scorpi.%s", config_name);
+	value = get_config_value(key);
+	if (value == NULL)
+		value = get_config_value(config_name);
+
+	return (qemu_fwcfg_add_string_file(fwcfg_name, value));
+}
+
+static int
+qemu_fwcfg_add_scorpi_boot_params(void)
+{
+	int error;
+
+	error = qemu_fwcfg_add_scorpi_boot_param("boot-order",
+	    "opt/scorpi/boot-order");
+	if (error != 0)
+		return (error);
+
+	error = qemu_fwcfg_add_scorpi_boot_param("boot-timeout",
+	    "opt/scorpi/boot-timeout");
+	if (error != 0)
+		return (error);
+
+	error = qemu_fwcfg_add_scorpi_boot_param("secure-boot",
+	    "opt/scorpi/secure-boot");
+	if (error != 0)
+		return (error);
+
+	return (qemu_fwcfg_add_scorpi_boot_param("boot-file",
+	    "opt/scorpi/boot-file"));
+}
+
+int
+qemu_fwcfg_add_scorpi_boot_map(void)
+{
+	char *bootmap;
+	int error;
+	size_t bootmap_len;
+
+	bootmap = pci_emul_get_boot_device_map(&bootmap_len);
+	if (bootmap == NULL)
+		return (0);
+
+	error = qemu_fwcfg_add_file_deferred("opt/scorpi/boot-map",
+	    (uint32_t)bootmap_len + 1, bootmap);
+	if (error != 0)
+		free(bootmap);
+
+	return (error);
+}
+
 static const struct acpi_device_emul qemu_fwcfg_acpi_device_emul = {
 	.name = QEMU_FWCFG_ACPI_DEVICE_NAME,
 	.hid = QEMU_FWCFG_ACPI_HARDWARE_ID,
@@ -630,6 +710,11 @@ qemu_fwcfg_init(struct vmctx *const ctx, uint64_t mmio_base, size_t mmio_size)
 	/* add user defined fwcfg files */
 	if ((error = qemu_fwcfg_add_user_files()) != 0) {
 		warnx("%s: Unable to add user files", __func__);
+		goto done;
+	}
+
+	if ((error = qemu_fwcfg_add_scorpi_boot_params()) != 0) {
+		warnx("%s: Unable to add Scorpi boot params", __func__);
 		goto done;
 	}
 

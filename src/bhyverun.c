@@ -595,7 +595,9 @@ bhyve_config_option_is_efi_key(const char *key, size_t key_len)
 	    (key_len == strlen("boot-timeout") &&
 	    strncmp(key, "boot-timeout", key_len) == 0) ||
 	    (key_len == strlen("secure-boot") &&
-	    strncmp(key, "secure-boot", key_len) == 0));
+	    strncmp(key, "secure-boot", key_len) == 0) ||
+	    (key_len == strlen("boot-file") &&
+	    strncmp(key, "boot-file", key_len) == 0));
 }
 
 static bool
@@ -622,6 +624,11 @@ bhyve_validate_efi_config_option(const char *key, size_t key_len,
 				return (false);
 		}
 		return (true);
+	}
+
+	if (key_len == strlen("boot-file") &&
+	    strncmp(key, "boot-file", key_len) == 0) {
+		return (value[0] == '\\' || value[0] == '/');
 	}
 
 	return (key_len == strlen("secure-boot") &&

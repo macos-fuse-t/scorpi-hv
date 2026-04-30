@@ -1568,7 +1568,8 @@ init_bootorder(void)
 	}
 	fclose(fp);
 
-	return (qemu_fwcfg_add_file("bootorder", bootorder_len, bootorder));
+	return (qemu_fwcfg_add_file_deferred("bootorder", bootorder_len,
+	    bootorder));
 }
 
 #define BUSIO_ROUNDUP	 32
@@ -1719,6 +1720,10 @@ init_pci(struct vmctx *ctx)
 
 	if ((error = init_bootorder()) != 0) {
 		warnx("%s: Unable to init bootorder", __func__);
+		return (error);
+	}
+	if ((error = qemu_fwcfg_add_scorpi_boot_map()) != 0) {
+		warnx("%s: Unable to add Scorpi boot map", __func__);
 		return (error);
 	}
 
