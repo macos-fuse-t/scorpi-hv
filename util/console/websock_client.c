@@ -104,7 +104,7 @@ thread_func(void *p)
 int
 vm_connect(const char *path)
 {
-	struct lws_context_creation_info info;
+	struct lws_context_creation_info info = { 0 };
 	struct lws_context *lws_context;
 	struct lws_client_connect_info connect_info = { 0 };
 	char address[255];
@@ -123,8 +123,6 @@ vm_connect(const char *path)
 		fprintf(stderr, "Failed to create LWS context\n");
 		return (-1);
 	}
-
-	memset(&info, 0, sizeof(info));
 
 	snprintf(address, sizeof(address), "+%s", path);
 	connect_info.context = lws_context;
