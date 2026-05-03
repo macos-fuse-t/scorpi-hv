@@ -27,8 +27,14 @@
  */
 
 #include <assert.h>
+#include <arpa/inet.h>
 #include <dispatch/dispatch.h>
+#include <errno.h>
+#include <netinet/in.h>
 #include <pthread.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
 #include "common.h"
 #include <support/ethernet.h>
 #include "debug.h"
@@ -40,6 +46,7 @@
 typedef struct ether_addr ether_addr_t;
 #endif
 #include <vmnet/vmnet.h>
+#include "config.h"
 
 struct vmnet_priv {
 	uint64_t mtu;
@@ -55,6 +62,140 @@ struct vmnet_priv {
 	int rx_available;
 	int rx_enabled;
 };
+
+struct vmnet_hostfwd_rule {
+	uint8_t protocol;
+	uint16_t external_port;
+	struct in_addr internal_addr;
+	uint16_t internal_port;
+};
+
+static int
+parse_vmnet_hostfwd_rule(const char *descr, struct vmnet_hostfwd_rule *rule)
+{
+	char *p, *host, *guest, *port;
+	int porti;
+
+	memset(rule, 0, sizeof(*rule));
+	p = strdup(descr);
+	if (p == NULL)
+		return (ENOMEM);
+
+	host = strchr(p, ':');
+	if (host == NULL) {
+		free(p);
+		return (EINVAL);
+	}
+	*host++ = '\0';
+
+	if (strcmp(p, "tcp") == 0)
+		rule->protocol = IPPROTO_TCP;
+	else if (strcmp(p, "udp") == 0)
+		rule->protocol = IPPROTO_UDP;
+	else {
+		free(p);
+		return (EINVAL);
+	}
+
+	guest = strchr(host, '-');
+	if (guest == NULL) {
+		free(p);
+		return (EINVAL);
+	}
+	*guest++ = '\0';
+
+	port = strrchr(host, ':');
+	if (port == NULL) {
+		free(p);
+		return (EINVAL);
+	}
+	*port++ = '\0';
+	porti = atoi(port);
+	if (porti <= 0 || porti > UINT16_MAX) {
+		free(p);
+		return (EINVAL);
+	}
+	rule->external_port = (uint16_t)porti;
+
+	port = strrchr(guest, ':');
+	if (port == NULL) {
+		free(p);
+		return (EINVAL);
+	}
+	*port++ = '\0';
+	if (strlen(guest) == 0) {
+		free(p);
+		return (EDESTADDRREQ);
+	}
+	if (inet_pton(AF_INET, guest, &rule->internal_addr) != 1) {
+		free(p);
+		return (EINVAL);
+	}
+	porti = atoi(port);
+	if (porti <= 0 || porti > UINT16_MAX) {
+		free(p);
+		return (EINVAL);
+	}
+	rule->internal_port = (uint16_t)porti;
+
+	free(p);
+	return (0);
+}
+
+static int
+vmnet_apply_hostfwd(struct vmnet_priv *priv, const char *rule_str, bool remove)
+{
+	struct vmnet_hostfwd_rule rule;
+	dispatch_semaphore_t ds;
+	__block vmnet_return_t status;
+	vmnet_return_t scheduled;
+	int error;
+
+	error = parse_vmnet_hostfwd_rule(rule_str, &rule);
+	if (error != 0)
+		return (error);
+
+	ds = dispatch_semaphore_create(0);
+	if (remove) {
+		scheduled = vmnet_interface_remove_ip_port_forwarding_rule(
+		    priv->iface, rule.protocol, rule.external_port, AF_INET,
+		    ^(vmnet_return_t callback_status) {
+			    status = callback_status;
+			    dispatch_semaphore_signal(ds);
+		    });
+	} else {
+		scheduled = vmnet_interface_add_ip_port_forwarding_rule(
+		    priv->iface, rule.protocol, rule.external_port, AF_INET,
+		    &rule.internal_addr, rule.internal_port,
+		    ^(vmnet_return_t callback_status) {
+			    status = callback_status;
+			    dispatch_semaphore_signal(ds);
+		    });
+	}
+	if (scheduled != VMNET_SUCCESS) {
+		dispatch_release(ds);
+		return (scheduled);
+	}
+	dispatch_semaphore_wait(ds, DISPATCH_TIME_FOREVER);
+	dispatch_release(ds);
+	return (status == VMNET_SUCCESS ? 0 : status);
+}
+
+static int
+vmnet_add_hostfwd(struct net_backend *be, const char *rule)
+{
+	struct vmnet_priv *priv = NET_BE_PRIV(be);
+
+	return (vmnet_apply_hostfwd(priv, rule, false));
+}
+
+static int
+vmnet_remove_hostfwd(struct net_backend *be, const char *rule)
+{
+	struct vmnet_priv *priv = NET_BE_PRIV(be);
+
+	return (vmnet_apply_hostfwd(priv, rule, true));
+}
 
 void
 vmnet_cleanup(struct net_backend *be)
@@ -103,8 +244,31 @@ vmnet_recv_cb(struct vmnet_priv *priv)
 	}
 }
 
+static void
+vmnet_configure_hostfwd(struct net_backend *be, nvlist_t *nvl)
+{
+	const char *hostfwd;
+	char *rules, *tofree;
+	const char *rule;
+
+	hostfwd = get_config_value_node(nvl, "hostfwd");
+	if (hostfwd == NULL)
+		return;
+
+	tofree = rules = strdup(hostfwd);
+	if (rules == NULL)
+		return;
+	while ((rule = strsep(&rules, ";")) != NULL) {
+		if (vmnet_add_hostfwd(be, rule) == EDESTADDRREQ) {
+			PRINTLN("vmnet hostfwd rule '%s' needs guest address; "
+				"will be applied by control channel", rule);
+		}
+	}
+	free(tofree);
+}
+
 static int
-vmnet_init(struct net_backend *be, const char *devname, nvlist_t *nvl __unused,
+vmnet_init(struct net_backend *be, const char *devname __unused, nvlist_t *nvl,
     net_be_rxeof_t cb, void *param)
 {
 	struct vmnet_priv *priv = NET_BE_PRIV(be);
@@ -166,6 +330,7 @@ vmnet_init(struct net_backend *be, const char *devname, nvlist_t *nvl __unused,
 	    ^(interface_event_t event_id, xpc_object_t event) {
 		vmnet_recv_cb(priv);
 	    });
+	vmnet_configure_hostfwd(be, nvl);
 
 	return (0);
 
@@ -304,6 +469,8 @@ static struct net_backend vmnet_backend = {
 	.recv_disable = vmnet_recv_disable,
 	.get_cap = vmnet_get_cap,
 	.set_cap = vmnet_set_cap,
+	.add_hostfwd = vmnet_add_hostfwd,
+	.remove_hostfwd = vmnet_remove_hostfwd,
 };
 
 DATA_SET(net_be_set, vmnet_backend);

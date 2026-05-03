@@ -432,7 +432,7 @@ out:
 }
 
 static int
-config_one_hostfwd(struct slirp_priv *priv, const char *rule)
+slirp_add_hostfwd_rule(struct slirp_priv *priv, const char *rule)
 {
 	struct sockaddr hostaddr, guestaddr;
 	int error, is_udp;
@@ -453,6 +453,54 @@ config_one_hostfwd(struct slirp_priv *priv, const char *rule)
 	}
 
 	return (0);
+}
+
+static int
+slirp_remove_hostfwd_rule(struct slirp_priv *priv, const char *rule)
+{
+	struct sockaddr hostaddr, guestaddr;
+	int error, is_udp;
+
+	error = parse_hostfwd_rule(rule, &is_udp, &hostaddr, &guestaddr);
+	if (error != 0) {
+		EPRINTLN("Unable to parse hostfwd rule '%s': %s", rule,
+		    strerror(error));
+		return (error);
+	}
+
+	error = slirp_remove_hostxfwd(priv->slirp, &hostaddr, hostaddr.sa_len,
+	    is_udp ? SLIRP_HOSTFWD_UDP : 0);
+	if (error != 0) {
+		EPRINTLN("Unable to remove hostfwd rule '%s': %s", rule,
+		    strerror(errno));
+		return (errno == 0 ? error : errno);
+	}
+
+	return (0);
+}
+
+static int
+slirp_net_add_hostfwd(struct net_backend *be, const char *rule)
+{
+	struct slirp_priv *priv = NET_BE_PRIV(be);
+	int error;
+
+	pthread_mutex_lock(&priv->mtx);
+	error = slirp_add_hostfwd_rule(priv, rule);
+	pthread_mutex_unlock(&priv->mtx);
+	return (error);
+}
+
+static int
+slirp_net_remove_hostfwd(struct net_backend *be, const char *rule)
+{
+	struct slirp_priv *priv = NET_BE_PRIV(be);
+	int error;
+
+	pthread_mutex_lock(&priv->mtx);
+	error = slirp_remove_hostfwd_rule(priv, rule);
+	pthread_mutex_unlock(&priv->mtx);
+	return (error);
 }
 
 static int
@@ -492,7 +540,7 @@ _slirp_init(struct net_backend *be, const char *devname __unused, nvlist_t *nvl,
 		if (rules == NULL)
 			goto err;
 		while ((rule = strsep(&rules, ";")) != NULL) {
-			error = config_one_hostfwd(priv, rule);
+			error = slirp_add_hostfwd_rule(priv, rule);
 			if (error != 0) {
 				free(tofree);
 				goto err;
@@ -698,6 +746,8 @@ static struct net_backend slirp_backend = {
 	.recv_disable = slirp_recv_disable,
 	.get_cap = slirp_get_cap,
 	.set_cap = slirp_set_cap,
+	.add_hostfwd = slirp_net_add_hostfwd,
+	.remove_hostfwd = slirp_net_remove_hostfwd,
 };
 
 DATA_SET(net_be_set, slirp_backend);

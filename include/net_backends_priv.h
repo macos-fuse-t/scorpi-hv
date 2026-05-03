@@ -97,6 +97,9 @@ struct net_backend {
 	int (*set_cap)(struct net_backend *be, uint64_t features,
 	    unsigned int vnet_hdr_len);
 
+	int (*add_hostfwd)(struct net_backend *be, const char *rule);
+	int (*remove_hostfwd)(struct net_backend *be, const char *rule);
+
 	struct pci_vtnet_softc *sc;
 	int fd;
 

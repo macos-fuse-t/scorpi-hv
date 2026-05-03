@@ -46,6 +46,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,6 +55,7 @@
 #include <unistd.h>
 
 #include "config.h"
+#include "cnc.h"
 #include "debug.h"
 #include "iov.h"
 #include "mevent.h"
@@ -64,6 +66,81 @@
 #define NET_BE_SIZE(be) (sizeof(*be) + (be)->priv_size)
 
 SET_DECLARE(net_be_set, struct net_backend);
+
+static pthread_mutex_t port_forward_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct net_backend *port_forward_backend;
+static bool port_forward_commands_registered;
+
+static void
+netbe_port_forward_reply(cnc_conn_t conn, int req_id, int error)
+{
+	char data[128];
+
+	if (error == 0)
+		snprintf(data, sizeof(data), "{\"ok\":true}");
+	else
+		snprintf(data, sizeof(data),
+		    "{\"ok\":false,\"error\":\"%s\"}", strerror(error));
+	cnc_send_response(conn, req_id, data);
+}
+
+static void
+netbe_port_forward_command(cnc_conn_t conn, int req_id, int argc,
+    char *argv[], bool remove)
+{
+	struct net_backend *be;
+	char rule[256];
+	int error;
+
+	if (argc != 5) {
+		netbe_port_forward_reply(conn, req_id, EINVAL);
+		return;
+	}
+	snprintf(rule, sizeof(rule), "%s:%s:%s-%s:%s", argv[0], argv[1],
+	    argv[2], argv[3], argv[4]);
+
+	pthread_mutex_lock(&port_forward_lock);
+	be = port_forward_backend;
+	pthread_mutex_unlock(&port_forward_lock);
+
+	if (be == NULL || (!remove && be->add_hostfwd == NULL) ||
+	    (remove && be->remove_hostfwd == NULL)) {
+		netbe_port_forward_reply(conn, req_id, ENOTSUP);
+		return;
+	}
+
+	error = remove ? be->remove_hostfwd(be, rule) :
+			 be->add_hostfwd(be, rule);
+	netbe_port_forward_reply(conn, req_id, error);
+}
+
+static void
+netbe_port_forward_add_command(cnc_conn_t conn, int req_id, int argc,
+    char *argv[], void *param __unused)
+{
+	netbe_port_forward_command(conn, req_id, argc, argv, false);
+}
+
+static void
+netbe_port_forward_remove_command(cnc_conn_t conn, int req_id, int argc,
+    char *argv[], void *param __unused)
+{
+	netbe_port_forward_command(conn, req_id, argc, argv, true);
+}
+
+static void
+netbe_register_port_forward_commands(void)
+{
+	pthread_mutex_lock(&port_forward_lock);
+	if (!port_forward_commands_registered) {
+		cnc_register_command("net_port_forward_add",
+		    netbe_port_forward_add_command, NULL);
+		cnc_register_command("net_port_forward_remove",
+		    netbe_port_forward_remove_command, NULL);
+		port_forward_commands_registered = true;
+	}
+	pthread_mutex_unlock(&port_forward_lock);
+}
 
 #if 0
 void
@@ -362,6 +439,12 @@ netbe_init(struct net_backend **ret, nvlist_t *nvl, net_be_rxeof_t cb,
 	}
 
 	*ret = nbe;
+	if (nbe->add_hostfwd != NULL || nbe->remove_hostfwd != NULL) {
+		netbe_register_port_forward_commands();
+		pthread_mutex_lock(&port_forward_lock);
+		port_forward_backend = nbe;
+		pthread_mutex_unlock(&port_forward_lock);
+	}
 	free(devname);
 
 	return (0);
@@ -371,6 +454,10 @@ void
 netbe_cleanup(struct net_backend *be)
 {
 	if (be != NULL) {
+		pthread_mutex_lock(&port_forward_lock);
+		if (port_forward_backend == be)
+			port_forward_backend = NULL;
+		pthread_mutex_unlock(&port_forward_lock);
 		be->cleanup(be);
 		free(be);
 	}
