@@ -80,10 +80,6 @@ SET_DECLARE(net_be_set, struct net_backend);
 #define DHCP_MESSAGE_ACK 5
 #define MAX_DHCP_INSPECT_BYTES 576
 
-static pthread_mutex_t port_forward_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct net_backend *port_forward_backend;
-static bool port_forward_commands_registered;
-
 static void
 netbe_port_forward_reply(cnc_conn_t conn, int req_id, int error)
 {
@@ -99,29 +95,48 @@ netbe_port_forward_reply(cnc_conn_t conn, int req_id, int error)
 
 static void
 netbe_port_forward_command(cnc_conn_t conn, int req_id, int argc,
-    char *argv[], bool remove)
+    char *argv[], bool remove, void *param)
 {
-	struct net_backend *be;
+	struct net_backend *be = param;
+	struct in_addr in;
+	struct in_addr requested_guest;
+	char guest_addr[INET_ADDRSTRLEN];
 	char rule[256];
 	int error;
+	bool have_requested_guest;
 
 	if (argc != 5) {
 		netbe_port_forward_reply(conn, req_id, EINVAL);
 		return;
 	}
-	snprintf(rule, sizeof(rule), "%s:%s:%s-%s:%s", argv[0], argv[1],
-	    argv[2], argv[3], argv[4]);
-
-	pthread_mutex_lock(&port_forward_lock);
-	be = port_forward_backend;
-	pthread_mutex_unlock(&port_forward_lock);
+	have_requested_guest = argv[3][0] != '\0';
+	if (have_requested_guest &&
+	    inet_pton(AF_INET, argv[3], &requested_guest) != 1) {
+		netbe_port_forward_reply(conn, req_id, EINVAL);
+		return;
+	}
+	error = 0;
 
 	if (be == NULL || (!remove && be->add_hostfwd == NULL) ||
 	    (remove && be->remove_hostfwd == NULL)) {
 		netbe_port_forward_reply(conn, req_id, ENOTSUP);
 		return;
 	}
+	if (be->guest_ipv4 == 0 ||
+	    (have_requested_guest && be->guest_ipv4 != requested_guest.s_addr)) {
+		if (error == 0)
+			error = EADDRNOTAVAIL;
+		netbe_port_forward_reply(conn, req_id, error);
+		return;
+	}
+	in.s_addr = be->guest_ipv4;
+	if (inet_ntop(AF_INET, &in, guest_addr, sizeof(guest_addr)) == NULL) {
+		netbe_port_forward_reply(conn, req_id, errno);
+		return;
+	}
 
+	snprintf(rule, sizeof(rule), "%s:%s:%s-%s:%s", argv[0], argv[1],
+	    argv[2], guest_addr, argv[4]);
 	error = remove ? be->remove_hostfwd(be, rule) :
 			 be->add_hostfwd(be, rule);
 	netbe_port_forward_reply(conn, req_id, error);
@@ -129,34 +144,30 @@ netbe_port_forward_command(cnc_conn_t conn, int req_id, int argc,
 
 static void
 netbe_port_forward_add_command(cnc_conn_t conn, int req_id, int argc,
-    char *argv[], void *param __unused)
+    char *argv[], void *param)
 {
-	netbe_port_forward_command(conn, req_id, argc, argv, false);
+	netbe_port_forward_command(conn, req_id, argc, argv, false, param);
 }
 
 static void
 netbe_port_forward_remove_command(cnc_conn_t conn, int req_id, int argc,
-    char *argv[], void *param __unused)
+    char *argv[], void *param)
 {
-	netbe_port_forward_command(conn, req_id, argc, argv, true);
+	netbe_port_forward_command(conn, req_id, argc, argv, true, param);
 }
 
 static void
 netbe_guest_ipv4_command(cnc_conn_t conn, int req_id, int argc __unused,
-    char *argv[] __unused, void *param __unused)
+    char *argv[] __unused, void *param)
 {
-	struct net_backend *be;
+	struct net_backend *be = param;
 	struct in_addr in;
 	char addr[INET_ADDRSTRLEN];
 	char data[128];
 
-	pthread_mutex_lock(&port_forward_lock);
-	be = port_forward_backend;
+	in.s_addr = 0;
 	if (be != NULL)
 		in.s_addr = be->guest_ipv4;
-	else
-		in.s_addr = 0;
-	pthread_mutex_unlock(&port_forward_lock);
 
 	if (in.s_addr == 0) {
 		cnc_send_response(conn, req_id, "{\"address\":\"\"}");
@@ -171,19 +182,23 @@ netbe_guest_ipv4_command(cnc_conn_t conn, int req_id, int argc __unused,
 }
 
 static void
-netbe_register_port_forward_commands(void)
+netbe_command_name(char *out, size_t out_len, const char *prefix,
+    const char *adapter)
 {
-	pthread_mutex_lock(&port_forward_lock);
-	if (!port_forward_commands_registered) {
-		cnc_register_command("net_port_forward_add",
-		    netbe_port_forward_add_command, NULL);
-		cnc_register_command("net_port_forward_remove",
-		    netbe_port_forward_remove_command, NULL);
-		cnc_register_command("net_guest_ipv4",
-		    netbe_guest_ipv4_command, NULL);
-		port_forward_commands_registered = true;
-	}
-	pthread_mutex_unlock(&port_forward_lock);
+	snprintf(out, out_len, "%s:%s", prefix, adapter);
+}
+
+static void
+netbe_register_port_forward_commands(struct net_backend *be)
+{
+	char cmd[128];
+
+	netbe_command_name(cmd, sizeof(cmd), "net_port_forward_add", be->id);
+	cnc_register_command(cmd, netbe_port_forward_add_command, be);
+	netbe_command_name(cmd, sizeof(cmd), "net_port_forward_remove", be->id);
+	cnc_register_command(cmd, netbe_port_forward_remove_command, be);
+	netbe_command_name(cmd, sizeof(cmd), "net_guest_ipv4", be->id);
+	cnc_register_command(cmd, netbe_guest_ipv4_command, be);
 }
 
 static size_t
@@ -555,7 +570,7 @@ netbe_init(struct net_backend **ret, nvlist_t *nvl, net_be_rxeof_t cb,
     void *param)
 {
 	struct net_backend **pbe, *nbe, *tbe = NULL;
-	const char *value, *type;
+	const char *value, *type, *id;
 	char *devname;
 	int err;
 
@@ -604,10 +619,20 @@ netbe_init(struct net_backend **ret, nvlist_t *nvl, net_be_rxeof_t cb,
 	nbe->sc = param;
 	nbe->be_vnet_hdr_len = 0;
 	nbe->fe_vnet_hdr_len = 0;
+	id = get_config_value_node(nvl, "id");
+	if (id == NULL || id[0] == '\0')
+		id = devname;
+	nbe->id = strdup(id);
+	if (nbe->id == NULL) {
+		free(devname);
+		free(nbe);
+		return (ENOMEM);
+	}
 
 	/* Initialize the backend. */
 	err = nbe->init(nbe, devname, nvl, cb, param);
 	if (err) {
+		free(nbe->id);
 		free(devname);
 		free(nbe);
 		return (err);
@@ -615,10 +640,7 @@ netbe_init(struct net_backend **ret, nvlist_t *nvl, net_be_rxeof_t cb,
 
 	*ret = nbe;
 	if (nbe->add_hostfwd != NULL || nbe->remove_hostfwd != NULL) {
-		netbe_register_port_forward_commands();
-		pthread_mutex_lock(&port_forward_lock);
-		port_forward_backend = nbe;
-		pthread_mutex_unlock(&port_forward_lock);
+		netbe_register_port_forward_commands(nbe);
 	}
 	free(devname);
 
@@ -629,11 +651,9 @@ void
 netbe_cleanup(struct net_backend *be)
 {
 	if (be != NULL) {
-		pthread_mutex_lock(&port_forward_lock);
-		if (port_forward_backend == be)
-			port_forward_backend = NULL;
-		pthread_mutex_unlock(&port_forward_lock);
+		cnc_unregister_commands_by_param(be);
 		be->cleanup(be);
+		free(be->id);
 		free(be);
 	}
 }

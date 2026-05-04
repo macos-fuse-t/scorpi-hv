@@ -65,6 +65,7 @@ struct per_session_data {
 static struct lws_context *global_context = NULL;
 static pthread_t server_thread;
 static pthread_mutex_t sessions_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t commands_lock = PTHREAD_MUTEX_INITIALIZER;
 
 LIST_HEAD(cmd_set, cnc_command) cmd_set = LIST_HEAD_INITIALIZER(cmd_set);
 LIST_HEAD(sessions, per_session_data) sessions = LIST_HEAD_INITIALIZER(
@@ -85,7 +86,25 @@ cnc_register_command(const char *cmd, CMD_HANDLER handler, void *param)
 	new_cmd->cmd_handler = handler;
 	new_cmd->param = param;
 
+	pthread_mutex_lock(&commands_lock);
 	LIST_INSERT_HEAD(&cmd_set, new_cmd, entries);
+	pthread_mutex_unlock(&commands_lock);
+}
+
+void
+cnc_unregister_commands_by_param(void *param)
+{
+	struct cnc_command *cmd, *tmp;
+
+	pthread_mutex_lock(&commands_lock);
+	LIST_FOREACH_SAFE(cmd, &cmd_set, entries, tmp) {
+		if (cmd->param != param)
+			continue;
+		LIST_REMOVE(cmd, entries);
+		free((void *)cmd->cmd);
+		free(cmd);
+	}
+	pthread_mutex_unlock(&commands_lock);
 }
 
 void *
@@ -247,13 +266,16 @@ cnc_execute_command(struct per_session_data *pss, const char *in, size_t len)
 		return;
 	}
 
+	pthread_mutex_lock(&commands_lock);
 	LIST_FOREACH(cmd, &cmd_set, entries) {
 		if (!strcmp(action, cmd->cmd)) {
 			cmd->cmd_handler((struct cnc_conn_t *)pss, req_id, argc,
 			    argv, (void *)cmd->param);
+			pthread_mutex_unlock(&commands_lock);
 			return;
 		}
 	}
+	pthread_mutex_unlock(&commands_lock);
 }
 
 static void

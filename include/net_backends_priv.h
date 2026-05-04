@@ -103,6 +103,7 @@ struct net_backend {
 
 	struct pci_vtnet_softc *sc;
 	int fd;
+	char *id;
 	uint32_t guest_ipv4;
 
 	/*
