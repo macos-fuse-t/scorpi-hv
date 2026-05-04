@@ -61,6 +61,9 @@ struct vmnet_priv {
 	pthread_mutex_t rx_mtx;
 	int rx_available;
 	int rx_enabled;
+
+	char *pending_hostfwd;
+	bool pending_hostfwd_applied;
 };
 
 struct vmnet_hostfwd_rule {
@@ -197,11 +200,81 @@ vmnet_remove_hostfwd(struct net_backend *be, const char *rule)
 	return (vmnet_apply_hostfwd(priv, rule, true));
 }
 
+static bool
+vmnet_hostfwd_needs_guest_address(const char *rule)
+{
+	const char *dash;
+
+	dash = strchr(rule, '-');
+	return (dash != NULL && dash[1] == ':');
+}
+
+static bool
+vmnet_fill_hostfwd_guest_address(const char *rule, const char *guest_addr,
+    char *out, size_t out_len)
+{
+	const char *dash;
+	int n;
+
+	dash = strchr(rule, '-');
+	if (dash == NULL || dash[1] != ':')
+		return (false);
+	n = snprintf(out, out_len, "%.*s-%s%s", (int)(dash - rule), rule,
+	    guest_addr, dash + 1);
+	return (n > 0 && (size_t)n < out_len);
+}
+
+static void
+vmnet_guest_ipv4_learned(struct net_backend *be, uint32_t guest_ipv4)
+{
+	struct vmnet_priv *priv = NET_BE_PRIV(be);
+	char guest_addr[INET_ADDRSTRLEN];
+	char filled[256];
+	struct in_addr in;
+	char *rules, *tofree;
+	const char *rule;
+	int error;
+
+	if (priv->pending_hostfwd == NULL || priv->pending_hostfwd_applied)
+		return;
+
+	in.s_addr = guest_ipv4;
+	if (inet_ntop(AF_INET, &in, guest_addr, sizeof(guest_addr)) == NULL)
+		return;
+
+	priv->pending_hostfwd_applied = true;
+	tofree = rules = strdup(priv->pending_hostfwd);
+	if (rules == NULL)
+		return;
+	while ((rule = strsep(&rules, ";")) != NULL) {
+		if (rule[0] == '\0' || !vmnet_hostfwd_needs_guest_address(rule))
+			continue;
+		if (!vmnet_fill_hostfwd_guest_address(rule, guest_addr, filled,
+			sizeof(filled))) {
+			EPRINTLN("Unable to fill vmnet hostfwd rule '%s' with "
+			    "guest address %s", rule, guest_addr);
+			continue;
+		}
+		error = vmnet_add_hostfwd(be, filled);
+		if (error != 0) {
+			EPRINTLN("Unable to add vmnet hostfwd rule '%s': %s",
+			    filled, strerror(error));
+			continue;
+		}
+		PRINTLN("applied vmnet hostfwd rule '%s' after learning guest "
+		    "address %s", rule, guest_addr);
+	}
+	free(tofree);
+	free(priv->pending_hostfwd);
+	priv->pending_hostfwd = NULL;
+}
+
 void
 vmnet_cleanup(struct net_backend *be)
 {
 	struct vmnet_priv *priv = NET_BE_PRIV(be);
 
+	free(priv->pending_hostfwd);
 	pthread_mutex_destroy(&priv->rx_mtx);
 }
 
@@ -247,6 +320,7 @@ vmnet_recv_cb(struct vmnet_priv *priv)
 static void
 vmnet_configure_hostfwd(struct net_backend *be, nvlist_t *nvl)
 {
+	struct vmnet_priv *priv = NET_BE_PRIV(be);
 	const char *hostfwd;
 	char *rules, *tofree;
 	const char *rule;
@@ -259,9 +333,13 @@ vmnet_configure_hostfwd(struct net_backend *be, nvlist_t *nvl)
 	if (rules == NULL)
 		return;
 	while ((rule = strsep(&rules, ";")) != NULL) {
+		if (rule[0] == '\0')
+			continue;
 		if (vmnet_add_hostfwd(be, rule) == EDESTADDRREQ) {
 			PRINTLN("vmnet hostfwd rule '%s' needs guest address; "
-				"will be applied by control channel", rule);
+				"will be applied after DHCP learns it", rule);
+			if (priv->pending_hostfwd == NULL)
+				priv->pending_hostfwd = strdup(hostfwd);
 		}
 	}
 	free(tofree);
@@ -471,6 +549,7 @@ static struct net_backend vmnet_backend = {
 	.set_cap = vmnet_set_cap,
 	.add_hostfwd = vmnet_add_hostfwd,
 	.remove_hostfwd = vmnet_remove_hostfwd,
+	.guest_ipv4_learned = vmnet_guest_ipv4_learned,
 };
 
 DATA_SET(net_be_set, vmnet_backend);

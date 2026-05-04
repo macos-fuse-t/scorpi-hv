@@ -99,9 +99,11 @@ struct net_backend {
 
 	int (*add_hostfwd)(struct net_backend *be, const char *rule);
 	int (*remove_hostfwd)(struct net_backend *be, const char *rule);
+	void (*guest_ipv4_learned)(struct net_backend *be, uint32_t guest_ipv4);
 
 	struct pci_vtnet_softc *sc;
 	int fd;
+	uint32_t guest_ipv4;
 
 	/*
 	 * Length of the virtio-net header used by the backend and the

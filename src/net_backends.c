@@ -37,6 +37,8 @@
 #include <sys/mman.h>
 #include <sys/uio.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <net/if.h>
 #include <support/if_tap.h>
 
@@ -62,10 +64,21 @@
 #include "net_backends.h"
 #include "net_backends_priv.h"
 #include "pci_emul.h"
+#include <support/ethernet.h>
 
 #define NET_BE_SIZE(be) (sizeof(*be) + (be)->priv_size)
 
 SET_DECLARE(net_be_set, struct net_backend);
+
+#define IPPROTO_UDP_VALUE 17
+#define DHCP_SERVER_PORT 67
+#define DHCP_CLIENT_PORT 68
+#define DHCP_BOOTREPLY 2
+#define DHCP_OPTIONS_OFFSET 236
+#define DHCP_MAGIC_COOKIE 0x63825363
+#define DHCP_OPTION_MESSAGE_TYPE 53
+#define DHCP_MESSAGE_ACK 5
+#define MAX_DHCP_INSPECT_BYTES 576
 
 static pthread_mutex_t port_forward_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct net_backend *port_forward_backend;
@@ -129,6 +142,35 @@ netbe_port_forward_remove_command(cnc_conn_t conn, int req_id, int argc,
 }
 
 static void
+netbe_guest_ipv4_command(cnc_conn_t conn, int req_id, int argc __unused,
+    char *argv[] __unused, void *param __unused)
+{
+	struct net_backend *be;
+	struct in_addr in;
+	char addr[INET_ADDRSTRLEN];
+	char data[128];
+
+	pthread_mutex_lock(&port_forward_lock);
+	be = port_forward_backend;
+	if (be != NULL)
+		in.s_addr = be->guest_ipv4;
+	else
+		in.s_addr = 0;
+	pthread_mutex_unlock(&port_forward_lock);
+
+	if (in.s_addr == 0) {
+		cnc_send_response(conn, req_id, "{\"address\":\"\"}");
+		return;
+	}
+	if (inet_ntop(AF_INET, &in, addr, sizeof(addr)) == NULL) {
+		netbe_port_forward_reply(conn, req_id, errno);
+		return;
+	}
+	snprintf(data, sizeof(data), "{\"address\":\"%s\"}", addr);
+	cnc_send_response(conn, req_id, data);
+}
+
+static void
 netbe_register_port_forward_commands(void)
 {
 	pthread_mutex_lock(&port_forward_lock);
@@ -137,9 +179,142 @@ netbe_register_port_forward_commands(void)
 		    netbe_port_forward_add_command, NULL);
 		cnc_register_command("net_port_forward_remove",
 		    netbe_port_forward_remove_command, NULL);
+		cnc_register_command("net_guest_ipv4",
+		    netbe_guest_ipv4_command, NULL);
 		port_forward_commands_registered = true;
 	}
 	pthread_mutex_unlock(&port_forward_lock);
+}
+
+static size_t
+copy_iov_prefix(const struct iovec *iov, int iovcnt, uint8_t *dst,
+    size_t maxlen)
+{
+	size_t copied, take;
+
+	copied = 0;
+	for (int i = 0; i < iovcnt && copied < maxlen; i++) {
+		take = iov[i].iov_len;
+		if (take > maxlen - copied)
+			take = maxlen - copied;
+		memcpy(dst + copied, iov[i].iov_base, take);
+		copied += take;
+	}
+	return (copied);
+}
+
+static int
+dhcp_message_type(const uint8_t *options, size_t options_len)
+{
+	size_t pos;
+	uint32_t cookie;
+
+	if (options_len < 4)
+		return (-1);
+	memcpy(&cookie, options, sizeof(cookie));
+	if (ntohl(cookie) != DHCP_MAGIC_COOKIE)
+		return (-1);
+
+	pos = 4;
+	while (pos < options_len) {
+		uint8_t code, len;
+
+		code = options[pos++];
+		if (code == 0)
+			continue;
+		if (code == 255)
+			break;
+		if (pos >= options_len)
+			break;
+		len = options[pos++];
+		if (pos + len > options_len)
+			break;
+		if (code == DHCP_OPTION_MESSAGE_TYPE && len == 1)
+			return (options[pos]);
+		pos += len;
+	}
+	return (-1);
+}
+
+static uint32_t
+dhcp_ack_yiaddr(const uint8_t *pkt, size_t len)
+{
+	const uint8_t *ip, *udp, *dhcp;
+	size_t ip_len, udp_len, dhcp_len;
+	uint16_t eth_type, frag, src_port, dst_port;
+	uint32_t yiaddr;
+
+	if (len < ETHER_HDR_LEN + 20)
+		return (0);
+
+	eth_type = ((uint16_t)pkt[12] << 8) | pkt[13];
+	if (eth_type != ETHERTYPE_IP)
+		return (0);
+
+	ip = pkt + ETHER_HDR_LEN;
+	if ((ip[0] >> 4) != 4)
+		return (0);
+	ip_len = (ip[0] & 0x0f) * 4;
+	if (ip_len < 20 || len < ETHER_HDR_LEN + ip_len + 8)
+		return (0);
+	if (ip[9] != IPPROTO_UDP_VALUE)
+		return (0);
+	frag = ((uint16_t)ip[6] << 8) | ip[7];
+	if ((frag & 0x3fff) != 0)
+		return (0);
+
+	udp = ip + ip_len;
+	src_port = ((uint16_t)udp[0] << 8) | udp[1];
+	dst_port = ((uint16_t)udp[2] << 8) | udp[3];
+	if (src_port != DHCP_SERVER_PORT || dst_port != DHCP_CLIENT_PORT)
+		return (0);
+	udp_len = ((uint16_t)udp[4] << 8) | udp[5];
+	if (udp_len < 8 || len < ETHER_HDR_LEN + ip_len + udp_len)
+		return (0);
+
+	dhcp = udp + 8;
+	dhcp_len = udp_len - 8;
+	if (dhcp_len < DHCP_OPTIONS_OFFSET + 4)
+		return (0);
+	if (dhcp[0] != DHCP_BOOTREPLY)
+		return (0);
+	if (dhcp_message_type(dhcp + DHCP_OPTIONS_OFFSET,
+		dhcp_len - DHCP_OPTIONS_OFFSET) != DHCP_MESSAGE_ACK)
+		return (0);
+
+	memcpy(&yiaddr, dhcp + 16, sizeof(yiaddr));
+	return (yiaddr);
+}
+
+static void
+netbe_maybe_learn_guest_ipv4(struct net_backend *be, const struct iovec *iov,
+    int iovcnt, ssize_t len)
+{
+	uint8_t pkt[MAX_DHCP_INSPECT_BYTES];
+	uint32_t guest_ipv4;
+	char addr[INET_ADDRSTRLEN];
+	char notification[128];
+	struct in_addr in;
+	size_t copied;
+
+	if (be == NULL || be->guest_ipv4 != 0 || len <= 0)
+		return;
+	copied = copy_iov_prefix(iov, iovcnt, pkt,
+	    (size_t)len < sizeof(pkt) ? (size_t)len : sizeof(pkt));
+	guest_ipv4 = dhcp_ack_yiaddr(pkt, copied);
+	if (guest_ipv4 == 0 || guest_ipv4 == be->guest_ipv4)
+		return;
+
+	be->guest_ipv4 = guest_ipv4;
+	if (be->guest_ipv4_learned != NULL)
+		be->guest_ipv4_learned(be, guest_ipv4);
+	in.s_addr = guest_ipv4;
+	if (inet_ntop(AF_INET, &in, addr, sizeof(addr)) == NULL)
+		return;
+	PRINTLN("learned guest IPv4 address %s from DHCP", addr);
+	snprintf(notification, sizeof(notification),
+	    "{\"event\":\"guest_ipv4\",\"address\":\"%s\"}", addr);
+	cnc_send_notification(notification);
 }
 
 #if 0
@@ -515,8 +690,13 @@ netbe_poll(struct net_backend *be, int timeout)
 ssize_t
 netbe_recv(struct net_backend *be, const struct iovec *iov, int iovcnt)
 {
-	if (be)
-		return (be->recv(be, iov, iovcnt));
+	ssize_t len;
+
+	if (be) {
+		len = be->recv(be, iov, iovcnt);
+		netbe_maybe_learn_guest_ipv4(be, iov, iovcnt, len);
+		return (len);
+	}
 	return (-1);
 }
 
