@@ -242,6 +242,8 @@ cnc_execute_command(struct per_session_data *pss, const char *in, size_t len)
 	char *argv[MAX_ARGS];
 	int argc, err, req_id;
 	struct cnc_command *cmd;
+	CMD_HANDLER handler = NULL;
+	void *param = NULL;
 	char buf[BUFFER_SIZE];
 
 	struct json_attr_t json_attrs_req[] = {
@@ -269,13 +271,14 @@ cnc_execute_command(struct per_session_data *pss, const char *in, size_t len)
 	pthread_mutex_lock(&commands_lock);
 	LIST_FOREACH(cmd, &cmd_set, entries) {
 		if (!strcmp(action, cmd->cmd)) {
-			cmd->cmd_handler((struct cnc_conn_t *)pss, req_id, argc,
-			    argv, (void *)cmd->param);
-			pthread_mutex_unlock(&commands_lock);
-			return;
+			handler = cmd->cmd_handler;
+			param = (void *)cmd->param;
+			break;
 		}
 	}
 	pthread_mutex_unlock(&commands_lock);
+	if (handler != NULL)
+		handler((struct cnc_conn_t *)pss, req_id, argc, argv, param);
 }
 
 static void

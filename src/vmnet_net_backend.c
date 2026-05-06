@@ -48,6 +48,8 @@ typedef struct ether_addr ether_addr_t;
 #include <vmnet/vmnet.h>
 #include "config.h"
 
+#define VMNET_HOSTFWD_TIMEOUT_SECONDS 5
+
 struct vmnet_priv {
 	uint64_t mtu;
 	uint64_t max_packet_size;
@@ -179,7 +181,12 @@ vmnet_apply_hostfwd(struct vmnet_priv *priv, const char *rule_str, bool remove)
 		dispatch_release(ds);
 		return (scheduled);
 	}
-	dispatch_semaphore_wait(ds, DISPATCH_TIME_FOREVER);
+	if (dispatch_semaphore_wait(ds,
+		dispatch_time(DISPATCH_TIME_NOW,
+		    VMNET_HOSTFWD_TIMEOUT_SECONDS * NSEC_PER_SEC)) != 0) {
+		dispatch_release(ds);
+		return (ETIMEDOUT);
+	}
 	dispatch_release(ds);
 	return (status == VMNET_SUCCESS ? 0 : status);
 }

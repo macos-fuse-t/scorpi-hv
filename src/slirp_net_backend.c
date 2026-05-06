@@ -434,18 +434,20 @@ out:
 static int
 slirp_add_hostfwd_rule(struct slirp_priv *priv, const char *rule)
 {
-	struct sockaddr hostaddr, guestaddr;
+	struct sockaddr_in hostaddr, guestaddr;
 	int error, is_udp;
 
-	error = parse_hostfwd_rule(rule, &is_udp, &hostaddr, &guestaddr);
+	error = parse_hostfwd_rule(rule, &is_udp, (struct sockaddr *)&hostaddr,
+	    (struct sockaddr *)&guestaddr);
 	if (error != 0) {
 		EPRINTLN("Unable to parse hostfwd rule '%s': %s", rule,
 		    strerror(error));
 		return (error);
 	}
 
-	error = slirp_add_hostxfwd(priv->slirp, &hostaddr, hostaddr.sa_len,
-	    &guestaddr, guestaddr.sa_len, is_udp ? SLIRP_HOSTFWD_UDP : 0);
+	error = slirp_add_hostxfwd(priv->slirp, (struct sockaddr *)&hostaddr,
+	    sizeof(hostaddr), (struct sockaddr *)&guestaddr, sizeof(guestaddr),
+	    is_udp ? SLIRP_HOSTFWD_UDP : 0);
 	if (error != 0) {
 		EPRINTLN("Unable to add hostfwd rule '%s': %s", rule,
 		    strerror(errno));
@@ -458,18 +460,19 @@ slirp_add_hostfwd_rule(struct slirp_priv *priv, const char *rule)
 static int
 slirp_remove_hostfwd_rule(struct slirp_priv *priv, const char *rule)
 {
-	struct sockaddr hostaddr, guestaddr;
+	struct sockaddr_in hostaddr, guestaddr;
 	int error, is_udp;
 
-	error = parse_hostfwd_rule(rule, &is_udp, &hostaddr, &guestaddr);
+	error = parse_hostfwd_rule(rule, &is_udp, (struct sockaddr *)&hostaddr,
+	    (struct sockaddr *)&guestaddr);
 	if (error != 0) {
 		EPRINTLN("Unable to parse hostfwd rule '%s': %s", rule,
 		    strerror(error));
 		return (error);
 	}
 
-	error = slirp_remove_hostxfwd(priv->slirp, &hostaddr, hostaddr.sa_len,
-	    is_udp ? SLIRP_HOSTFWD_UDP : 0);
+	error = slirp_remove_hostxfwd(priv->slirp, (struct sockaddr *)&hostaddr,
+	    sizeof(hostaddr), is_udp ? SLIRP_HOSTFWD_UDP : 0);
 	if (error != 0) {
 		EPRINTLN("Unable to remove hostfwd rule '%s': %s", rule,
 		    strerror(errno));
@@ -530,6 +533,7 @@ _slirp_init(struct net_backend *be, const char *devname __unused, nvlist_t *nvl,
 		EPRINTLN("Unable to create slirp instance");
 		goto err;
 	}
+	be->guest_ipv4 = config.vdhcp_start.s_addr;
 
 	hostfwd = get_config_value_node(nvl, "hostfwd");
 	if (hostfwd != NULL) {

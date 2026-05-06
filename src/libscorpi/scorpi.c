@@ -1720,7 +1720,7 @@ scorpi_device_props_to_config(const struct scorpi_normalized_device *device,
 
 	for (i = 0; i < device->prop_count; i++) {
 		prop = &device->props[i];
-		if (strcmp(prop->name, "id") == 0 || strcmp(prop->name, "parent") == 0)
+		if (strcmp(prop->name, "parent") == 0)
 			continue;
 		if (skip_identity_props && strcmp(prop->name, "bus") == 0)
 			continue;
