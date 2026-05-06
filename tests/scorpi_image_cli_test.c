@@ -292,11 +292,14 @@ test_create_with_positional_base(void)
 }
 
 static void
-test_create_with_base_rejects_mismatched_size(void)
+test_create_with_base_allows_larger_size(void)
 {
 	char path[] = "/tmp/scorpi-image-cli-base-size-XXXXXX";
 	char raw_path[128];
 	char cmd[1024];
+	char output_path[128];
+	FILE *fp;
+	char output[4096];
 	int fd;
 
 	fd = mkstemp(path);
@@ -311,6 +314,45 @@ test_create_with_base_rejects_mismatched_size(void)
 
 	snprintf(cmd, sizeof(cmd),
 	    "%s create --format sco --size 128mb %s %s",
+	    cli_path(), path, raw_path);
+	run_ok(cmd);
+	snprintf(cmd, sizeof(cmd), "%s info %s > %s.info", cli_path(), path,
+	    path);
+	run_ok(cmd);
+	snprintf(output_path, sizeof(output_path), "%s.info", path);
+	fp = fopen(output_path, "r");
+	assert(fp != NULL);
+	memset(output, 0, sizeof(output));
+	assert(fread(output, 1, sizeof(output) - 1, fp) > 0);
+	assert(fclose(fp) == 0);
+	assert(strstr(output, "virtual_size=134217728\n") != NULL);
+	assert(strstr(output, "layer.0.virtual_size=134217728\n") != NULL);
+	assert(strstr(output, "layer.1.virtual_size=67108864\n") != NULL);
+	assert(unlink(output_path) == 0);
+	assert(unlink(path) == 0);
+	assert(unlink(raw_path) == 0);
+}
+
+static void
+test_create_with_base_rejects_smaller_size(void)
+{
+	char path[] = "/tmp/scorpi-image-cli-base-small-XXXXXX";
+	char raw_path[128];
+	char cmd[1024];
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(path) == 0);
+	snprintf(raw_path, sizeof(raw_path), "%s.raw", path);
+	fd = open(raw_path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+	assert(fd >= 0);
+	assert(ftruncate(fd, 128 * 1024 * 1024) == 0);
+	assert(close(fd) == 0);
+
+	snprintf(cmd, sizeof(cmd),
+	    "%s create --format sco --size 64mb %s %s",
 	    cli_path(), path, raw_path);
 	run_fail(cmd);
 	assert(unlink(raw_path) == 0);
@@ -458,7 +500,8 @@ main(void)
 	test_large_sco_increases_cluster_size_for_metadata_cap();
 	test_create_info_check_raw();
 	test_create_with_positional_base();
-	test_create_with_base_rejects_mismatched_size();
+	test_create_with_base_allows_larger_size();
+	test_create_with_base_rejects_smaller_size();
 	test_create_info_check_raw_bytes();
 	test_check_rejects_corrupt_image_gb_suffix();
 	test_removed_create_options_rejected();

@@ -514,15 +514,15 @@ test_max_depth(const char *dir)
 }
 
 static void
-test_reject_size_mismatch(const char *dir)
+test_reject_base_larger_than_top(const char *dir)
 {
 	struct scorpi_image_chain_open_options options;
 	char child[MAXPATHLEN], base[MAXPATHLEN];
 
 	make_path(child, sizeof(child), dir, "size-child.ptst");
 	make_path(base, sizeof(base), dir, "size-base.ptst");
-	write_file(child, "PTST\nbase=file:size-base.ptst\nsize=134217728\n");
-	write_file(base, "PTST\nsize=67108864\n");
+	write_file(child, "PTST\nbase=file:size-base.ptst\nsize=67108864\n");
+	write_file(base, "PTST\nsize=134217728\n");
 
 	options = (struct scorpi_image_chain_open_options){
 		.raw_fallback = false,
@@ -681,6 +681,25 @@ test_read_absent_without_base_returns_zero(const char *dir)
 }
 
 static void
+test_read_past_smaller_base_returns_zero(const char *dir)
+{
+	struct scorpi_image_chain *chain;
+	char child[MAXPATHLEN], base[MAXPATHLEN];
+	uint8_t buf[4096];
+
+	make_path(child, sizeof(child), dir, "larger-child.ptst");
+	make_path(base, sizeof(base), dir, "smaller-base.ptst");
+	write_file(child, "PTST\nbase=file:smaller-base.ptst\n"
+	    "size=134217728\nmap=absent\n");
+	write_file(base, "PTST\nsize=67108864\ndata=17\n");
+
+	chain = open_chain(child, true);
+	assert(scorpi_image_chain_read(chain, buf, 67108864, sizeof(buf)) == 0);
+	assert_buffer_value(buf, sizeof(buf), 0);
+	assert(scorpi_image_chain_close(chain) == 0);
+}
+
+static void
 test_read_zero_and_discarded_stop_base_fallthrough(const char *dir)
 {
 	struct scorpi_image_chain *chain;
@@ -769,7 +788,7 @@ main(void)
 	test_missing_base(dir);
 	test_cycle(dir);
 	test_max_depth(dir);
-	test_reject_size_mismatch(dir);
+	test_reject_base_larger_than_top(dir);
 	test_reject_sector_mismatch(dir);
 	test_reject_writable_base(dir);
 	test_reject_readonly_top_for_writable_open(dir);
@@ -778,6 +797,7 @@ main(void)
 	test_read_from_top_layer(dir);
 	test_read_absent_falls_through_to_base(dir);
 	test_read_absent_without_base_returns_zero(dir);
+	test_read_past_smaller_base_returns_zero(dir);
 	test_read_zero_and_discarded_stop_base_fallthrough(dir);
 	test_read_cache_invalidated_by_write(dir);
 	test_read_cache_invalidated_by_discard(dir);

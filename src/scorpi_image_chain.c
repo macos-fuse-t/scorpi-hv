@@ -239,7 +239,10 @@ scorpi_image_chain_validate(const struct scorpi_image_chain *chain,
 	writable_count = 0;
 	for (i = 0; i < chain->image_count; i++) {
 		info = &chain->images[i]->info;
-		if (info->virtual_size != top_info->virtual_size)
+		if (info->virtual_size == 0)
+			return (EINVAL);
+		if (i > 0 &&
+		    info->virtual_size > chain->images[i - 1]->info.virtual_size)
 			return (EINVAL);
 		if (info->logical_sector_size != top_info->logical_sector_size)
 			return (EINVAL);
@@ -361,6 +364,8 @@ scorpi_image_chain_resolve_read(struct scorpi_image_chain *chain, void *buf,
 	limit = len;
 	for (i = 0; i < chain->image_count; i++) {
 		image = chain->images[i];
+		if (offset >= image->info.virtual_size)
+			continue;
 		memset(&extent, 0, sizeof(extent));
 		error = image->ops->map(image->state, offset, (size_t)limit,
 		    &extent);

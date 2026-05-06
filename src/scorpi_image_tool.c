@@ -668,12 +668,13 @@ cmd_create(int argc, char **argv)
 		if (error != 0)
 			goto out;
 		if (opts.has_explicit_size &&
-		    opts.virtual_size != base_info.virtual_size) {
+		    opts.virtual_size < base_info.virtual_size) {
 			free(base_info.base_uri);
 			error = EINVAL;
 			goto out;
 		}
-		opts.virtual_size = base_info.virtual_size;
+		if (!opts.has_explicit_size)
+			opts.virtual_size = base_info.virtual_size;
 		opts.logical_sector_size = base_info.logical_sector_size;
 		if (base_info.physical_sector_size != 0)
 			opts.physical_sector_size = base_info.physical_sector_size;
