@@ -46,6 +46,9 @@ struct termios orig_termios;
 int sockfd;
 int ctrl_a_pressed = 0;
 int virtio_console = 0;
+int detach_seq_match = 0;
+
+static const char detach_seq[] = "\033]scorpi-detach\007";
 
 struct resize_message {
 	int rows;
@@ -99,6 +102,54 @@ handle_signal(int sig)
 		close(sockfd);
 		exit(0);
 	}
+}
+
+static void
+detach_console()
+{
+	restore_terminal();
+	close(sockfd);
+	exit(0);
+}
+
+static int
+write_console_output(const char *buffer, int n)
+{
+	char out[1024];
+	int out_len = 0;
+	size_t detach_len = strlen(detach_seq);
+
+	for (int i = 0; i < n; i++) {
+		char c = buffer[i];
+
+		if (c == detach_seq[detach_seq_match]) {
+			detach_seq_match++;
+			if ((size_t)detach_seq_match == detach_len)
+				return (1);
+			continue;
+		}
+		if (detach_seq_match > 0) {
+			if (out_len + detach_seq_match > (int)sizeof(out)) {
+				write(STDOUT_FILENO, out, out_len);
+				out_len = 0;
+			}
+			memcpy(out + out_len, detach_seq, detach_seq_match);
+			out_len += detach_seq_match;
+			detach_seq_match = 0;
+			if (c == detach_seq[0]) {
+				detach_seq_match = 1;
+				continue;
+			}
+		}
+		if (out_len == (int)sizeof(out)) {
+			write(STDOUT_FILENO, out, out_len);
+			out_len = 0;
+		}
+		out[out_len++] = c;
+	}
+	if (out_len > 0)
+		write(STDOUT_FILENO, out, out_len);
+	return (0);
 }
 
 static void
@@ -248,7 +299,8 @@ main(int argc, char *argv[])
 						       // overlapping matches
 					}
 				}
-				write(STDOUT_FILENO, buffer, n);
+				if (write_console_output(buffer, n))
+					detach_console();
 			} else {
 				printf("Disconnected.\n");
 				break;
