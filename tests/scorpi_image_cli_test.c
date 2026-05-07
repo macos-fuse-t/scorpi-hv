@@ -492,6 +492,73 @@ test_seal_rejects_non_sco(void)
 	assert(unlink(path) == 0);
 }
 
+static void
+test_squash_creates_flat_sco(void)
+{
+	char path[] = "/tmp/scorpi-image-cli-squash-XXXXXX";
+	char output_path[128];
+	char cmd[1024];
+	char info[4096];
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(path) == 0);
+	snprintf(output_path, sizeof(output_path), "%s.out", path);
+
+	snprintf(cmd, sizeof(cmd), "%s create --format sco --size 64mb %s",
+	    cli_path(), path);
+	run_ok(cmd);
+	snprintf(cmd, sizeof(cmd), "%s squash %s %s", cli_path(), path,
+	    output_path);
+	run_ok(cmd);
+	read_info_output(output_path, info, sizeof(info));
+	assert(strstr(info, "format=sco\n") != NULL);
+	assert(strstr(info, "chain_layers=1\n") != NULL);
+	assert(strstr(info, "virtual_size=67108864\n") != NULL);
+
+	assert(unlink(path) == 0);
+	assert(unlink(output_path) == 0);
+}
+
+static void
+test_rebase_can_keep_base(void)
+{
+	char path[] = "/tmp/scorpi-image-cli-squash-base-XXXXXX";
+	char base_path[128];
+	char output_path[128];
+	char cmd[1024];
+	char info[4096];
+	int fd;
+
+	fd = mkstemp(path);
+	assert(fd >= 0);
+	assert(close(fd) == 0);
+	assert(unlink(path) == 0);
+	snprintf(base_path, sizeof(base_path), "%s.raw", path);
+	snprintf(output_path, sizeof(output_path), "%s.out", path);
+
+	fd = open(base_path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+	assert(fd >= 0);
+	assert(ftruncate(fd, 64 * 1024 * 1024) == 0);
+	assert(close(fd) == 0);
+	snprintf(cmd, sizeof(cmd), "%s create --format sco %s %s",
+	    cli_path(), path, base_path);
+	run_ok(cmd);
+	snprintf(cmd, sizeof(cmd), "%s rebase %s %s %s", cli_path(), path,
+	    output_path, base_path);
+	run_ok(cmd);
+	read_info_output(output_path, info, sizeof(info));
+	assert(strstr(info, "chain_layers=2\n") != NULL);
+	assert(strstr(info, "layer.0.format=sco\n") != NULL);
+	assert(strstr(info, "layer.1.format=raw\n") != NULL);
+
+	assert(unlink(path) == 0);
+	assert(unlink(base_path) == 0);
+	assert(unlink(output_path) == 0);
+}
+
 int
 main(void)
 {
@@ -507,5 +574,7 @@ main(void)
 	test_removed_create_options_rejected();
 	test_seal_and_unseal();
 	test_seal_rejects_non_sco();
+	test_squash_creates_flat_sco();
+	test_rebase_can_keep_base();
 	return (0);
 }

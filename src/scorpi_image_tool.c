@@ -572,6 +572,8 @@ usage(void)
 	    "  scorpi-image create --format raw --size bytes|Nmb|Ngb path\n"
 	    "  scorpi-image seal path.sco\n"
 	    "  scorpi-image unseal path.sco\n"
+	    "  scorpi-image squash source output [base]\n"
+	    "  scorpi-image rebase source output base\n"
 	    "  scorpi-image info path\n"
 	    "  scorpi-image check path\n");
 }
@@ -601,6 +603,170 @@ make_file_uri(const char *base, char **urip)
 	snprintf(uri, len, "%s%s", prefix, base);
 	*urip = uri;
 	return (0);
+}
+
+static int
+open_image_chain_path(const char *path, bool readonly,
+    struct scorpi_image_chain **chainp)
+{
+	struct scorpi_image_chain_open_options options;
+	int fd;
+
+	if (path == NULL || chainp == NULL)
+		return (EINVAL);
+	*chainp = NULL;
+	fd = open(path, readonly ? O_RDONLY : O_RDWR);
+	if (fd < 0)
+		return (errno);
+	options = (struct scorpi_image_chain_open_options){
+		.raw_fallback = true,
+	};
+	return (scorpi_image_chain_open_single(path, fd, readonly, &options,
+	    chainp));
+}
+
+static bool
+same_existing_file(const char *a, const char *b)
+{
+	struct stat sa, sb;
+
+	if (a == NULL || b == NULL)
+		return (false);
+	if (stat(a, &sa) != 0 || stat(b, &sb) != 0)
+		return (false);
+	return (sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino);
+}
+
+static int
+cmd_squash_copy(struct scorpi_image_chain *source,
+    struct scorpi_image_chain *target, uint64_t virtual_size,
+    uint32_t cluster_size)
+{
+	uint8_t *buf;
+	uint64_t offset, length;
+	int error;
+
+	if (source == NULL || target == NULL || virtual_size == 0 ||
+	    cluster_size == 0)
+		return (EINVAL);
+	buf = malloc(cluster_size);
+	if (buf == NULL)
+		return (ENOMEM);
+	error = 0;
+	for (offset = 0; offset < virtual_size; offset += length) {
+		length = virtual_size - offset;
+		if (length > cluster_size)
+			length = cluster_size;
+		if (length > SIZE_MAX) {
+			error = EINVAL;
+			break;
+		}
+		error = scorpi_image_chain_read(source, buf, offset,
+		    (size_t)length);
+		if (error != 0)
+			break;
+		error = scorpi_image_chain_write(target, buf, offset,
+		    (size_t)length);
+		if (error != 0)
+			break;
+	}
+	if (error == 0)
+		error = scorpi_image_chain_flush(target);
+	free(buf);
+	return (error);
+}
+
+static int
+cmd_squash(int argc, char **argv)
+{
+	struct sco_create_options opts;
+	struct scorpi_image_chain *source, *target;
+	const struct scorpi_image_info *source_info, *target_info;
+	struct scorpi_image_info base_info;
+	const char *source_path, *output_path;
+	char *base_uri;
+	int error, close_error;
+
+	if (argc != 4 && argc != 5)
+		return (EINVAL);
+	source_path = argv[2];
+	output_path = argv[3];
+	if (strcmp(source_path, output_path) == 0 ||
+	    same_existing_file(source_path, output_path))
+		return (EINVAL);
+
+	base_uri = NULL;
+	source = NULL;
+	target = NULL;
+	error = open_image_chain_path(source_path, true, &source);
+	if (error != 0)
+		goto out;
+	source_info = scorpi_image_chain_top_info(source);
+	if (source_info == NULL ||
+	    source_info->virtual_size == 0 ||
+	    source_info->logical_sector_size == 0) {
+		error = EINVAL;
+		goto out;
+	}
+
+	opts = (struct sco_create_options){
+		.path = output_path,
+		.virtual_size = source_info->virtual_size,
+		.has_explicit_size = true,
+		.logical_sector_size = source_info->logical_sector_size,
+		.physical_sector_size = source_info->physical_sector_size,
+	};
+	if (argc == 5) {
+		error = make_file_uri(argv[4], &base_uri);
+		if (error != 0)
+			goto out;
+		opts.base_uri = base_uri;
+		memset(&base_info, 0, sizeof(base_info));
+		error = read_base_create_info(output_path, base_uri,
+		    &base_info);
+		if (error != 0)
+			goto out;
+		if (base_info.virtual_size > source_info->virtual_size ||
+		    base_info.logical_sector_size !=
+		    source_info->logical_sector_size ||
+		    (base_info.physical_sector_size != 0 &&
+		    source_info->physical_sector_size != 0 &&
+		    base_info.physical_sector_size !=
+		    source_info->physical_sector_size)) {
+			free(base_info.base_uri);
+			error = EINVAL;
+			goto out;
+		}
+		free(base_info.base_uri);
+	}
+
+	error = create_sco(&opts);
+	if (error != 0)
+		goto out;
+	error = open_image_chain_path(output_path, false, &target);
+	if (error != 0)
+		goto out;
+	target_info = scorpi_image_chain_top_info(target);
+	if (target_info == NULL || target_info->cluster_size == 0) {
+		error = EINVAL;
+		goto out;
+	}
+	error = cmd_squash_copy(source, target, source_info->virtual_size,
+	    target_info->cluster_size);
+
+out:
+	if (target != NULL) {
+		close_error = scorpi_image_chain_close(target);
+		if (error == 0)
+			error = close_error;
+	}
+	if (source != NULL) {
+		close_error = scorpi_image_chain_close(source);
+		if (error == 0)
+			error = close_error;
+	}
+	free(base_uri);
+	return (error);
 }
 
 static int
@@ -701,6 +867,10 @@ main(int argc, char **argv)
 		error = cmd_set_sealed(argv[2], true);
 	} else if (strcmp(argv[1], "unseal") == 0 && argc == 3) {
 		error = cmd_set_sealed(argv[2], false);
+	} else if (strcmp(argv[1], "squash") == 0) {
+		error = cmd_squash(argc, argv);
+	} else if (strcmp(argv[1], "rebase") == 0 && argc == 5) {
+		error = cmd_squash(argc, argv);
 	} else if (strcmp(argv[1], "info") == 0 && argc == 3) {
 		error = cmd_info(argv[2]);
 	} else if (strcmp(argv[1], "check") == 0 && argc == 3) {
