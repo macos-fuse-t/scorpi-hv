@@ -1849,6 +1849,8 @@ scorpi_usb_device_to_config(const struct scorpi_normalized_device *device,
 	snprintf(base_path, sizeof(base_path), "usb.%llu.%llu",
 	    (unsigned long long)binding->bus, (unsigned long long)usb_slot);
 	snprintf(full_path, sizeof(full_path), "%s.device", base_path);
+	if (scorpi_config_get_value(config, full_path) != NULL)
+		return (SCORPI_ERR_VALIDATION);
 	error = scorpi_config_set_value(config, full_path, device->device);
 	if (error != SCORPI_OK)
 		return (error);
