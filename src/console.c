@@ -96,6 +96,7 @@ console_set_scanout(bool scanout_active, int w, int h, int stride,
 	console.stride = stride;
 	console.format = format;
 	console.shm_name = shm_name;
+	console.shm_size = shm_size;
 	console.redrawOnTimer = redrawOnTimer;
 
 	if (scanout_active)

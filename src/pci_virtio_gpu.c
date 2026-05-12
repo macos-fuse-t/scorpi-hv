@@ -292,6 +292,9 @@ pci_vgpu_create_scanout(struct pci_vgpu_softc *sc, uint32_t resource_id,
 	uuid_string_t uuid;
 
 	scanout = calloc(1, sizeof(struct vgpu_scanout));
+	if (scanout == NULL)
+		return (-1);
+
 	scanout->resource_id = resource_id;
 	scanout->width = width;
 	scanout->height = height;
@@ -300,20 +303,23 @@ pci_vgpu_create_scanout(struct pci_vgpu_softc *sc, uint32_t resource_id,
 
 	uuid_unparse(vm_uuid, uuid);
 	uuid[20] = 0;
-	snprintf(scanout->shm_name, sizeof(scanout->shm_name), "/%s/%d", uuid,
+	snprintf(scanout->shm_name, sizeof(scanout->shm_name), "/%s-%08x", uuid,
 	    scanout->resource_id);
 
 	scanout->shm_fd = shm_open(scanout->shm_name, O_CREAT | O_RDWR,
 	    S_IRUSR | S_IWUSR);
 	if (scanout->shm_fd == -1) {
 		EPRINTLN("shm_open %s", scanout->shm_name);
-		return (0);
+		free(scanout);
+		return (-1);
 	}
 
 	// Resize the shared memory
 	if (ftruncate(scanout->shm_fd, sc_size) == -1) {
 		EPRINTLN("ftruncate %s, size %u", scanout->shm_name, sc_size);
+		close(scanout->shm_fd);
 		shm_unlink(scanout->shm_name);
+		free(scanout);
 		return (-1);
 	}
 
@@ -321,7 +327,9 @@ pci_vgpu_create_scanout(struct pci_vgpu_softc *sc, uint32_t resource_id,
 	    MAP_SHARED, scanout->shm_fd, 0);
 	if (scanout->base_ptr == MAP_FAILED) {
 		EPRINTLN("mmap");
+		close(scanout->shm_fd);
 		shm_unlink(scanout->shm_name);
+		free(scanout);
 		return (-1);
 	}
 	scanout->size = sc_size;
