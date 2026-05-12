@@ -108,6 +108,7 @@ runtime_core_sources = files(
     'src/usb_emul.c',
     'src/usb_mouse.c',
     'src/usb_kbd.c',
+    'src/usb_serial.c',
     'src/smbiostbl.c',
     'src/slirp_net_backend.c',
     'src/sock_net_backend.c',
