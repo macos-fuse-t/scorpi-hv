@@ -646,8 +646,11 @@ blockif_open(nvlist_t *nvl, const char *ident)
 		.raw_fallback = true,
 	};
 	image_fd = fd;
-	if (scorpi_image_chain_open_single(path, fd, ro != 0, &image_options,
-	    &image_chain) != 0) {
+	int image_error = scorpi_image_chain_open_single(path, fd, ro != 0,
+	    &image_options, &image_chain);
+	if (image_error != 0) {
+		errno = image_error;
+		warn("Could not open image chain: %s", path);
 		fd = -1;
 		goto err;
 	}

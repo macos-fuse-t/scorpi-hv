@@ -1225,8 +1225,11 @@ pci_emul_init(struct vmctx *ctx, struct pci_devemu *pde, int bus, int slot,
 	err = (*pde->pe_init)(pdi, fi->fi_config);
 	if (err == 0)
 		fi->fi_devi = pdi;
-	else
+	else {
+		EPRINTLN("PCI device init failed: %s at pci.%d.%d.%d: %s",
+		    pde->pe_emu, bus, slot, func, strerror(errno));
 		free(pdi);
+	}
 
 	return (err);
 }
