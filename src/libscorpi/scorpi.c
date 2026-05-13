@@ -1179,7 +1179,7 @@ scorpi_import_generic_vm_scalars(const nvlist_t *config, scorpi_vm_t vm)
 static scorpi_error_t
 scorpi_import_vm_scalars(const nvlist_t *config, scorpi_vm_t vm)
 {
-	const nvlist_t *gic, *memory;
+	const nvlist_t *cpu, *gic, *memory;
 	const char *memory_size, *name, *uuid, *value;
 	uint64_t cpu_count, ram_bytes;
 	scorpi_error_t error;
@@ -1261,6 +1261,17 @@ scorpi_import_vm_scalars(const nvlist_t *config, scorpi_vm_t vm)
 		if (value != NULL) {
 			error = scorpi_vm_set_inferred_prop(vm,
 			    "memory.guest_in_core", value);
+			if (error != SCORPI_OK)
+				return (error);
+		}
+	}
+
+	cpu = scorpi_config_find_node(config, "cpu");
+	if (cpu != NULL) {
+		value = scorpi_config_get_value(cpu, "nested-virt");
+		if (value != NULL) {
+			error = scorpi_vm_set_inferred_prop(vm,
+			    "cpu.nested-virt", value);
 			if (error != SCORPI_OK)
 				return (error);
 		}
@@ -2651,6 +2662,13 @@ scorpi_yaml_load_root_mapping(scorpi_vm_t vm, yaml_document_t *document,
 				if (error != SCORPI_OK)
 					return (error);
 				error = scorpi_vm_set_cpu(vm, value_u64);
+				if (error != SCORPI_OK)
+					return (error);
+				size_node = scorpi_yaml_mapping_lookup(document,
+				    value_node, "nested-virt");
+				if (size_node != NULL)
+					error = scorpi_yaml_set_vm_scalar_prop(vm,
+					    "cpu.nested-virt", size_node);
 			} else {
 				return (SCORPI_ERR_VALIDATION);
 			}

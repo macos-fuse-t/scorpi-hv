@@ -19,6 +19,8 @@ build_vm_variant_a(scorpi_vm_t *out_vm)
 	assert(scorpi_create_vm(&vm) == SCORPI_OK);
 	assert(scorpi_vm_set_cpu(vm, 2) == SCORPI_OK);
 	assert(scorpi_vm_set_ram(vm, 4ULL * 1024 * 1024 * 1024) == SCORPI_OK);
+	assert(scorpi_vm_set_prop_bool(vm, "cpu.nested-virt", true) ==
+	    SCORPI_OK);
 	assert(scorpi_vm_set_prop_bool(vm, "memory.wired", true) == SCORPI_OK);
 
 	assert(scorpi_create_pci_device("xhci", 1, &xhci) == SCORPI_OK);
@@ -76,6 +78,8 @@ build_vm_variant_b(scorpi_vm_t *out_vm)
 
 	assert(scorpi_create_vm(&vm) == SCORPI_OK);
 	assert(scorpi_vm_set_prop_bool(vm, "memory.wired", true) == SCORPI_OK);
+	assert(scorpi_vm_set_prop_bool(vm, "cpu.nested-virt", true) ==
+	    SCORPI_OK);
 	assert(scorpi_vm_set_ram(vm, 4ULL * 1024 * 1024 * 1024) == SCORPI_OK);
 	assert(scorpi_vm_set_cpu(vm, 2) == SCORPI_OK);
 
@@ -144,6 +148,8 @@ main(void)
 	assert(strcmp(scorpi_config_get_value(config_a, "cores"), "2") == 0);
 	assert(strcmp(scorpi_config_get_value(config_a, "sockets"), "1") == 0);
 	assert(strcmp(scorpi_config_get_value(config_a, "threads"), "1") == 0);
+	assert(strcmp(scorpi_config_get_value(config_a, "cpu.nested-virt"),
+	    "true") == 0);
 	assert(strcmp(scorpi_config_get_value(config_a, "memory.size"),
 	    "4294967296") == 0);
 	assert(strcmp(scorpi_config_get_value(config_a, "memory.wired"),

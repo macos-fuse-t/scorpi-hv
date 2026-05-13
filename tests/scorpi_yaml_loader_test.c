@@ -11,7 +11,9 @@ int
 main(void)
 {
 	static const char valid_yaml[] =
-	    "cpu: 2\n"
+	    "cpu:\n"
+	    "  cores: 2\n"
+	    "  nested-virt: true\n"
 	    "memory: 4G\n"
 	    "graphics.fb: true\n"
 	    "devices:\n"
@@ -36,6 +38,11 @@ main(void)
 	assert(prop != NULL);
 	assert(prop->kind == SCORPI_PROP_U64);
 	assert(prop->value.u64 == 2);
+
+	prop = scorpi_normalized_vm_find_prop(normalized_vm, "cpu.nested-virt");
+	assert(prop != NULL);
+	assert(prop->kind == SCORPI_PROP_BOOL);
+	assert(prop->value.boolean == true);
 
 	prop = scorpi_normalized_vm_find_prop(normalized_vm, "memory.size");
 	assert(prop != NULL);
