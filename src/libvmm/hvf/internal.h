@@ -28,6 +28,8 @@
 
 #pragma once
 
+#include <stdbool.h>
+
 enum {
 	VM_MEMSEG_LOW,
 	VM_MEMSEG_HIGH,
@@ -55,6 +57,7 @@ struct vmctx {
 	struct mem_range  mem_ranges[VM_MAX_MEMORY_SEGMENTS];
 	char	*name;
 	enum vm_suspend_how suspend_reason;
+	bool el2_enabled;
 
     cpuset_t active_cpus;
     cpuset_t suspended_cpus;

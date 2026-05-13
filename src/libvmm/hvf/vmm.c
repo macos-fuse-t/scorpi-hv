@@ -28,8 +28,11 @@
 
 #include <sys/mman.h>
 #include <Hypervisor/Hypervisor.h>
+#include <os/object.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "config.h"
 #include "debug.h"
 #include "vmmapi.h"
 #include "internal.h"
@@ -106,13 +109,63 @@ vm_create_devmem(struct vmctx *ctx, int segid, const char *name, size_t len)
 struct vmctx *
 vm_openf(const char *name, int flags)
 {
-	hv_return_t res = hv_vm_create(NULL);
+	bool el2_enabled, nested_virt;
+	hv_return_t res;
+	struct vmctx *ctx;
+
+	nested_virt = get_config_bool_default("cpu.nested-virt", false);
+	el2_enabled = false;
+
+	if (nested_virt) {
+		bool supported;
+		hv_vm_config_t config;
+
+		if (__builtin_available(macOS 15.0, *)) {
+			res = hv_vm_config_get_el2_supported(&supported);
+			if (res != HV_SUCCESS) {
+				EPRINTLN("hv_vm_config_get_el2_supported() failed: %x",
+				    res);
+				exit(-1);
+			}
+			if (!supported) {
+				EPRINTLN(
+				    "cpu.nested-virt requested, but EL2 is not supported");
+				exit(-1);
+			}
+
+			config = hv_vm_config_create();
+			if (config == NULL) {
+				EPRINTLN("hv_vm_config_create() failed");
+				exit(-1);
+			}
+
+			res = hv_vm_config_set_el2_enabled(config, true);
+			if (res == HV_SUCCESS) {
+				uint32_t ipa_size;
+				res = hv_vm_config_get_default_ipa_size(&ipa_size);
+				if (res == HV_SUCCESS)
+					res = hv_vm_config_set_ipa_size(config, ipa_size);
+				if (res == HV_SUCCESS)
+					res = hv_vm_create(config);
+			}
+			os_release(config);
+			if (res == HV_SUCCESS)
+				el2_enabled = true;
+		} else {
+			EPRINTLN("cpu.nested-virt requires macOS 15.0 or newer");
+			exit(-1);
+		}
+	} else {
+		res = hv_vm_create(NULL);
+	}
+
 	if (res != HV_SUCCESS) {
-		EPRINTLN("failed to create a vm");
+		EPRINTLN("failed to create a vm: %x", res);
 		exit(-1);
 	}
-	struct vmctx *ctx = malloc(sizeof(struct vmctx));
+	ctx = malloc(sizeof(struct vmctx));
 	memset(ctx, 0, sizeof(*ctx));
+	ctx->el2_enabled = el2_enabled;
 
 	return ctx;
 }
