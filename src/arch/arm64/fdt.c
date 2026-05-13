@@ -57,6 +57,14 @@
 
 #define GIC_FIRST_PPI	    16
 #define GIC_FIRST_SPI	    32
+#define INTID_TO_PPI(intid) ((intid) - GIC_FIRST_PPI)
+
+#define GIC_MAINTENANCE_IRQ	    25
+#define TIMER_EL2_PHYS_IRQ	    26
+#define TIMER_EL1_VIRT_IRQ	    27
+#define TIMER_EL2_VIRT_IRQ	    28
+#define TIMER_EL1_SEC_PHYS_IRQ	    29
+#define TIMER_EL1_NS_PHYS_IRQ	    30
 
 static void *fdtroot;
 static uint32_t gic_phandle = 0;
@@ -160,7 +168,8 @@ fdt_init(struct vmctx *ctx, int ncpu, void *fdtaddr, vm_size_t fdtsize)
 
 	fdt_begin_node(fdt, "psci");
 	fdt_property_string(fdt, "compatible", "arm,psci-0.2");
-	fdt_property_string(fdt, "method", "hvc");
+	fdt_property_string(fdt, "method",
+	    get_config_bool_default("cpu.nested-virt", false) ? "smc" : "hvc");
 	fdt_end_node(fdt);
 
 	fdt_begin_node(fdt, "apb-pclk");
@@ -224,6 +233,14 @@ fdt_add_gic(uint64_t dist_base, uint64_t dist_size, uint64_t redist_base,
 		    2 * sizeof(uint32_t), &prop);
 		SET_PROP_U32(prop, 0, mmio_base >> 32);
 		SET_PROP_U32(prop, 1, mmio_base);
+	}
+
+	if (get_config_bool_default("cpu.nested-virt", false)) {
+		fdt_property_placeholder(fdt, "interrupts",
+		    3 * sizeof(uint32_t), &prop);
+		SET_PROP_U32(prop, 0, GIC_PPI);
+		SET_PROP_U32(prop, 1, INTID_TO_PPI(GIC_MAINTENANCE_IRQ));
+		SET_PROP_U32(prop, 2, IRQ_TYPE_LEVEL_HIGH);
 	}
 
 	fdt_end_node(fdt); // GIC
@@ -344,7 +361,15 @@ void
 fdt_add_timer(void)
 {
 	void *fdt, *interrupts;
-	uint32_t irqs[] = { 13, 14, 11, 12 };
+	uint32_t irqs[] = {
+	    INTID_TO_PPI(TIMER_EL1_SEC_PHYS_IRQ),
+	    INTID_TO_PPI(TIMER_EL1_NS_PHYS_IRQ),
+	    INTID_TO_PPI(TIMER_EL1_VIRT_IRQ),
+	    INTID_TO_PPI(TIMER_EL2_VIRT_IRQ),
+	};
+
+	if (get_config_bool_default("cpu.nested-virt", false))
+		irqs[3] = INTID_TO_PPI(TIMER_EL2_PHYS_IRQ);
 
 	assert(gic_phandle != 0);
 

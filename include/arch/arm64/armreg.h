@@ -696,6 +696,7 @@
 #define	 EXCP_SVC32		0x11	/* SVC trap for AArch32 */
 #define	 EXCP_SVC64		0x15	/* SVC trap for AArch64 */
 #define	 EXCP_HVC		0x16	/* HVC trap */
+#define	 EXCP_SMC		0x17	/* SMC trap for AArch64 */
 #define	 EXCP_MSR		0x18	/* MSR/MRS trap */
 #define	 EXCP_SVE		0x19	/* SVE trap */
 #define	 EXCP_FPAC		0x1c	/* Faulting PAC trap */
@@ -1880,6 +1881,51 @@
 #define	MAIR_EL12_CRn			10
 #define	MAIR_EL12_CRm			2
 #define	MAIR_EL12_op2			0
+
+/* LORSA_EL1 - Limited Ordering Region Start Address Register */
+#define	LORSA_EL1			MRS_REG(LORSA_EL1)
+#define	LORSA_EL1_REG			MRS_REG_ALT_NAME(LORSA_EL1)
+#define	LORSA_EL1_op0			3
+#define	LORSA_EL1_op1			0
+#define	LORSA_EL1_CRn			10
+#define	LORSA_EL1_CRm			4
+#define	LORSA_EL1_op2			0
+
+/* LOREA_EL1 - Limited Ordering Region End Address Register */
+#define	LOREA_EL1			MRS_REG(LOREA_EL1)
+#define	LOREA_EL1_REG			MRS_REG_ALT_NAME(LOREA_EL1)
+#define	LOREA_EL1_op0			3
+#define	LOREA_EL1_op1			0
+#define	LOREA_EL1_CRn			10
+#define	LOREA_EL1_CRm			4
+#define	LOREA_EL1_op2			1
+
+/* LORN_EL1 - Limited Ordering Region Number Register */
+#define	LORN_EL1			MRS_REG(LORN_EL1)
+#define	LORN_EL1_REG			MRS_REG_ALT_NAME(LORN_EL1)
+#define	LORN_EL1_op0			3
+#define	LORN_EL1_op1			0
+#define	LORN_EL1_CRn			10
+#define	LORN_EL1_CRm			4
+#define	LORN_EL1_op2			2
+
+/* LORC_EL1 - Limited Ordering Region Control Register */
+#define	LORC_EL1			MRS_REG(LORC_EL1)
+#define	LORC_EL1_REG			MRS_REG_ALT_NAME(LORC_EL1)
+#define	LORC_EL1_op0			3
+#define	LORC_EL1_op1			0
+#define	LORC_EL1_CRn			10
+#define	LORC_EL1_CRm			4
+#define	LORC_EL1_op2			3
+
+/* LORID_EL1 - Limited Ordering Region ID Register */
+#define	LORID_EL1			MRS_REG(LORID_EL1)
+#define	LORID_EL1_REG			MRS_REG_ALT_NAME(LORID_EL1)
+#define	LORID_EL1_op0			3
+#define	LORID_EL1_op1			0
+#define	LORID_EL1_CRn			10
+#define	LORID_EL1_CRm			4
+#define	LORID_EL1_op2			7
 
 /* MDCCINT_EL1 */
 #define	MDCCINT_EL1			MRS_REG(MDCCINT_EL1)

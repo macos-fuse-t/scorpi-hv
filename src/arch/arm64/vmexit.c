@@ -33,7 +33,7 @@
 // #include <dev/psci/psci.h>
 // #include <dev/psci/smccc.h>
 
-// #include <machine/armreg.h>
+#include <arch/arm64/armreg.h>
 // #include <machine/cpu.h>
 #include "vmm.h"
 #include "vmm_instruction_emul.h"
@@ -220,6 +220,18 @@ vmexit_smccc(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 	return (VMEXIT_CONTINUE);
 }
 
+static int
+vmexit_hyp(struct vmctx *ctx __unused, struct vcpu *vcpu, struct vm_run *vmrun)
+{
+	/* Raise an unknown reason exception */
+	if (vm_inject_exception(vcpu,
+	    (EXCP_UNKNOWN << ESR_ELx_EC_SHIFT) | ESR_ELx_IL,
+	    vmrun->vm_exit->u.hyp.far_el2) != 0)
+		return (VMEXIT_ABORT);
+
+	return (VMEXIT_CONTINUE);
+}
+
 #if 0
 static uint64_t
 smccc_affinity_info(uint64_t target_affinity, uint32_t lowest_affinity_level)
@@ -369,7 +381,7 @@ const vmexit_handler_t vmexit_handlers[VM_EXITCODE_MAX] = {
 	[VM_EXITCODE_SUSPENDED] = vmexit_suspend,
 	//[VM_EXITCODE_DEBUG] = vmexit_debug,
 	[VM_EXITCODE_SMCCC] = vmexit_smccc,
-	//[VM_EXITCODE_HYP] = vmexit_hyp,
+	[VM_EXITCODE_HYP] = vmexit_hyp,
 	//[VM_EXITCODE_BRK] = vmexit_brk,
 	//[VM_EXITCODE_SS] = vmexit_ss,
 };

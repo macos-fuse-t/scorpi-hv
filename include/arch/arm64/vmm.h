@@ -131,6 +131,7 @@ enum vm_reg_name {
 
 #define	VM_GP_M_MASK		0x1f
 #define	VM_GP_MMU_ENABLED	(1 << 5)
+#define	VM_GP_EL2		(1 << 6)
 
 struct vm_guest_paging {
 	uint64_t	ttbr0_addr;

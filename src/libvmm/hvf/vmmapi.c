@@ -70,6 +70,39 @@
 #define DPRINTLN(format, arg...)
 #endif
 
+#define ESR_EC(ec)	((uint64_t)(ec) << ESR_ELx_EC_SHIFT)
+#define VBAR_ELx_BASE_MASK	(~0x7ffULL)
+#define CNTHCTL_EL2_EL1PCTEN	(1ULL << 0)
+#define CNTHCTL_EL2_EL1PCEN	(1ULL << 1)
+#define HCR_EL2_RW		(1ULL << 31)
+#define	HVF_SYS_REG_ENC(op0, op1, crn, crm, op2) \
+	__MRS_REG((op0), (op1), (crn), (crm), (op2))
+#define	HVF_SYS_REG_CNTHCTL_EL2	HVF_SYS_REG_ENC(3, 4, 14, 1, 0)
+#define	HVF_SYS_REG_CNTHP_CTL_EL2	HVF_SYS_REG_ENC(3, 4, 14, 2, 1)
+#define	HVF_SYS_REG_CNTHP_CVAL_EL2	HVF_SYS_REG_ENC(3, 4, 14, 2, 2)
+#define	HVF_SYS_REG_CNTHP_TVAL_EL2	HVF_SYS_REG_ENC(3, 4, 14, 2, 0)
+#define	HVF_SYS_REG_CNTVOFF_EL2	HVF_SYS_REG_ENC(3, 4, 14, 0, 3)
+#define	HVF_SYS_REG_CPTR_EL2	HVF_SYS_REG_ENC(3, 4, 1, 1, 2)
+#define	HVF_SYS_REG_ELR_EL2	HVF_SYS_REG_ENC(3, 4, 4, 0, 1)
+#define	HVF_SYS_REG_ESR_EL2	HVF_SYS_REG_ENC(3, 4, 5, 2, 0)
+#define	HVF_SYS_REG_FAR_EL2	HVF_SYS_REG_ENC(3, 4, 6, 0, 0)
+#define	HVF_SYS_REG_HCR_EL2	HVF_SYS_REG_ENC(3, 4, 1, 1, 0)
+#define	HVF_SYS_REG_HPFAR_EL2	HVF_SYS_REG_ENC(3, 4, 6, 0, 4)
+#define	HVF_SYS_REG_MAIR_EL2	HVF_SYS_REG_ENC(3, 4, 10, 2, 0)
+#define	HVF_SYS_REG_MDCR_EL2	HVF_SYS_REG_ENC(3, 4, 1, 1, 1)
+#define	HVF_SYS_REG_SCTLR_EL2	HVF_SYS_REG_ENC(3, 4, 1, 0, 0)
+#define	HVF_SYS_REG_SPSR_EL2	HVF_SYS_REG_ENC(3, 4, 4, 0, 0)
+#define	HVF_SYS_REG_SP_EL2	HVF_SYS_REG_ENC(3, 6, 4, 1, 0)
+#define	HVF_SYS_REG_TCR_EL2	HVF_SYS_REG_ENC(3, 4, 2, 0, 2)
+#define	HVF_SYS_REG_TPIDR_EL2	HVF_SYS_REG_ENC(3, 4, 13, 0, 2)
+#define	HVF_SYS_REG_TTBR0_EL2	HVF_SYS_REG_ENC(3, 4, 2, 0, 0)
+#define	HVF_SYS_REG_TTBR1_EL2	HVF_SYS_REG_ENC(3, 4, 2, 0, 1)
+#define	HVF_SYS_REG_VBAR_EL2	HVF_SYS_REG_ENC(3, 4, 12, 0, 0)
+#define	HVF_SYS_REG_VMPIDR_EL2	HVF_SYS_REG_ENC(3, 4, 0, 0, 5)
+#define	HVF_SYS_REG_VPIDR_EL2	HVF_SYS_REG_ENC(3, 4, 0, 0, 0)
+#define	HVF_SYS_REG_VTCR_EL2	HVF_SYS_REG_ENC(3, 4, 2, 1, 2)
+#define	HVF_SYS_REG_VTTBR_EL2	HVF_SYS_REG_ENC(3, 4, 2, 1, 0)
+
 #define MB (1024 * 1024UL)
 #define GB (1024 * 1024 * 1024UL)
 
@@ -117,6 +150,150 @@ struct vcpu {
 static int guest_vaddr2paddr(struct vcpu *vcpu, uint64_t vaddr,
     uint64_t *paddr);
 
+static void
+vcpu_clear_pending_registers(struct vcpu *vcpu)
+{
+	memset(vcpu->regs, 0, sizeof(vcpu->regs));
+	BIT_ZERO(REGMASK_SIZE, &vcpu->regmask);
+}
+
+static void
+vcpu_reset_emulated_state(struct vcpu *vcpu)
+{
+	vcpu->pmcr_el0 = 0;
+	vcpu->pmcntenset_el0 = 0;
+	vcpu->pmintenset_el1 = 0;
+	vcpu->pmovsclr_el0 = 0;
+	vcpu->pmselr_el0 = 0;
+	vcpu->pmuserenr_el0 = 0;
+	vcpu->pmccfiltr_el0 = 0;
+	vcpu->pmxevtyper_el0 = 0;
+	vcpu->oslar_el1 = 0;
+	vcpu->osdlr_el1 = 0;
+}
+
+static void
+vcpu_reset_register_state(struct vcpu *vcpu)
+{
+	hv_simd_fp_uchar16_t q = { 0 };
+	int i;
+
+	for (i = HV_REG_X0; i <= HV_REG_X30; i++)
+		hv_vcpu_set_reg(vcpu->vcpu, i, 0);
+	hv_vcpu_set_reg(vcpu->vcpu, HV_REG_PC, 0);
+	hv_vcpu_set_reg(vcpu->vcpu, HV_REG_FPCR, 0);
+	hv_vcpu_set_reg(vcpu->vcpu, HV_REG_FPSR, 0);
+
+	for (i = HV_SIMD_FP_REG_Q0; i <= HV_SIMD_FP_REG_Q31; i++)
+		hv_vcpu_set_simd_fp_reg(vcpu->vcpu, i, q);
+
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_SP_EL0, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_SP_EL1, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_ELR_EL1, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_ESR_EL1, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_FAR_EL1, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_AFSR0_EL1, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_AFSR1_EL1, 0);
+}
+
+static int
+vcpu_reset_el2_state(struct vcpu *vcpu)
+{
+	uint64_t midr, mpidr;
+
+	if (!vcpu->ctx->el2_enabled)
+		return (0);
+
+	if (!__builtin_available(macOS 15.0, *)) {
+		EPRINTLN("EL2 requested on unsupported macOS");
+		return (-1);
+	}
+
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_HCR_EL2, HCR_EL2_RW);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_CPTR_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_MDCR_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_SPSR_EL2, 0x5C0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_ELR_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_ESR_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_FAR_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_HPFAR_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_SP_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_TPIDR_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_TTBR0_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_TTBR1_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_TCR_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_MAIR_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_VBAR_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_VTCR_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_VTTBR_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_CNTHCTL_EL2,
+	    CNTHCTL_EL2_EL1PCTEN | CNTHCTL_EL2_EL1PCEN);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_CNTHP_CTL_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_CNTHP_CVAL_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_CNTHP_TVAL_EL2, 0);
+	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_CNTVOFF_EL2, 0);
+
+	if (hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_MIDR_EL1, &midr) ==
+	    HV_SUCCESS)
+		hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_VPIDR_EL2, midr);
+	if (hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_MPIDR_EL1, &mpidr) ==
+	    HV_SUCCESS)
+		hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_VMPIDR_EL2, mpidr);
+
+	return (0);
+}
+
+static int
+vcpu_init_el2_features(struct vcpu *vcpu, uint64_t *pfr0)
+{
+	uint64_t mmfr1, pfr1;
+	hv_return_t hvret;
+
+	if (!vcpu->ctx->el2_enabled)
+		return (0);
+
+	/*
+	 * HVF exposes ID_AA64MMFR1_EL1.VH, but HCR_EL2.E2H is not writable.
+	 * Do not advertise VHE to guests until HVF can actually enable it.
+	 */
+	hvret = hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_ID_AA64MMFR1_EL1,
+	    &mmfr1);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("hv_vcpu_get_sys_reg(ID_AA64MMFR1_EL1) failed: %x",
+		    hvret);
+		return (-1);
+	}
+	mmfr1 &= ~ID_AA64MMFR1_VH_MASK;
+	hvret = hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_ID_AA64MMFR1_EL1,
+	    mmfr1);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("hv_vcpu_set_sys_reg(ID_AA64MMFR1_EL1=%#llx) "
+		    "failed: %x", mmfr1, hvret);
+		return (-1);
+	}
+
+	*pfr0 &= ~ID_AA64PFR0_EL2_MASK;
+	*pfr0 |= ID_AA64PFR0_EL2_64;
+
+	hvret = hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_ID_AA64PFR1_EL1,
+	    &pfr1);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("hv_vcpu_get_sys_reg(ID_AA64PFR1_EL1) failed: %x",
+		    hvret);
+		return (-1);
+	}
+	pfr1 &= ~ID_AA64PFR1_SME_MASK;
+	hvret = hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_ID_AA64PFR1_EL1,
+	    pfr1);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("hv_vcpu_set_sys_reg(ID_AA64PFR1_EL1=%#llx) "
+		    "failed: %x", pfr1, hvret);
+		return (-1);
+	}
+
+	return (0);
+}
+
 int
 vm_create(const char *name)
 {
@@ -151,7 +328,7 @@ vm_vcpu_open(struct vmctx *ctx, int vcpuid)
 		return (NULL);
 	vcpu->ctx = ctx;
 	vcpu->vcpuid = vcpuid;
-	BIT_ZERO(REGMASK_SIZE, &vcpu->regmask);
+	vcpu_clear_pending_registers(vcpu);
 
 	ctx->vcpus[vcpuid] = vcpu;
 
@@ -201,13 +378,16 @@ vm_create_watchdog(void)
 int
 vm_vcpu_init(struct vcpu *vcpu)
 {
-	uint64_t fr0, pfr0;
+	uint64_t cpsr, fr0, pfr0;
+
 	if (HV_SUCCESS != hv_vcpu_create(&vcpu->vcpu, &vcpu->vcpu_exit, NULL)) {
 		EPRINTLN("vm_vcpu_init() failed");
 		free(vcpu);
 		return (-1);
 	}
 	vcpu->tid = pthread_self();
+	vcpu_reset_emulated_state(vcpu);
+	vcpu_reset_register_state(vcpu);
 
 	hv_vcpu_set_trap_debug_exceptions(vcpu->vcpu, false);
 	hv_vcpu_set_trap_debug_reg_accesses(vcpu->vcpu, false);
@@ -216,11 +396,14 @@ vm_vcpu_init(struct vcpu *vcpu)
 	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_MPIDR_EL1, vcpu_id(vcpu));
 
 	// start in exception mode with interrupts disabled
-	hv_vcpu_set_reg(vcpu->vcpu, HV_REG_CPSR, 0x3c5);
+	cpsr = PSR_DAIF | (vcpu->ctx->el2_enabled ? PSR_M_EL2h : PSR_M_EL1h);
+	hv_vcpu_set_reg(vcpu->vcpu, HV_REG_CPSR, cpsr);
 
 	// If starting in AArch64 state, the SPSR_ELx.{D,A,I,F} bits must be set
 	// to {1, 1, 1, 1}.
 	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_SPSR_EL1, 0x5C0);
+	if (vcpu_reset_el2_state(vcpu) != 0)
+		return (-1);
 
 	//
 
@@ -243,6 +426,8 @@ vm_vcpu_init(struct vcpu *vcpu)
 	// set gicv3 feat
 	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_ID_AA64PFR0_EL1, &pfr0);
 	pfr0 |= (1 << 24);
+	if (vcpu_init_el2_features(vcpu, &pfr0) != 0)
+		return (-1);
 	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_ID_AA64PFR0_EL1, pfr0);
 
 #ifdef VCPU_WATCHDOG
@@ -693,21 +878,92 @@ vm_get_register_set(struct vcpu *vcpu, unsigned int count, const int *regnums,
 	return -1;
 }
 
-static void
+static int
+hvf_get_sys_reg(struct vcpu *vcpu, hv_sys_reg_t reg, uint64_t *val,
+    const char *name)
+{
+	hv_return_t hvret;
+
+	hvret = hv_vcpu_get_sys_reg(vcpu->vcpu, reg, val);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("hv_vcpu_get_sys_reg(%s) failed: %x", name, hvret);
+		return (-1);
+	}
+	return (0);
+}
+
+static bool
+psr_mode_is_el2(uint64_t mode)
+{
+	mode &= (PSR_M_MASK | PSR_M_32);
+
+	return ((mode & PSR_M_32) == PSR_M_64 &&
+	    ((mode & PSR_M_MASK) == PSR_M_EL2t ||
+	    (mode & PSR_M_MASK) == PSR_M_EL2h));
+}
+
+static int
+hvf_get_guest_paging(struct vcpu *vcpu, struct vm_guest_paging *paging)
+{
+	uint64_t cpsr, sctlr, tcr, ttbr0, ttbr1;
+	hv_return_t hvret;
+	bool use_el2;
+
+	memset(paging, 0, sizeof(*paging));
+
+	hvret = hv_vcpu_get_reg(vcpu->vcpu, HV_REG_CPSR, &cpsr);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("hv_vcpu_get_reg(CPSR) failed: %x", hvret);
+		return (-1);
+	}
+
+	paging->flags = cpsr & (PSR_M_MASK | PSR_M_32);
+	use_el2 = vcpu->ctx->el2_enabled && psr_mode_is_el2(cpsr);
+	if (use_el2) {
+		if (__builtin_available(macOS 15.0, *)) {
+			if (hvf_get_sys_reg(vcpu, HV_SYS_REG_TTBR0_EL2,
+			    &ttbr0, "TTBR0_EL2") != 0 ||
+			    hvf_get_sys_reg(vcpu, HV_SYS_REG_TTBR1_EL2,
+			    &ttbr1, "TTBR1_EL2") != 0 ||
+			    hvf_get_sys_reg(vcpu, HV_SYS_REG_TCR_EL2,
+			    &tcr, "TCR_EL2") != 0 ||
+			    hvf_get_sys_reg(vcpu, HV_SYS_REG_SCTLR_EL2,
+			    &sctlr, "SCTLR_EL2") != 0)
+				return (-1);
+			paging->flags |= VM_GP_EL2;
+		} else {
+			EPRINTLN("EL2 paging requested on unsupported macOS");
+			return (-1);
+		}
+	} else {
+		if (hvf_get_sys_reg(vcpu, HV_SYS_REG_TTBR0_EL1, &ttbr0,
+		    "TTBR0_EL1") != 0 ||
+		    hvf_get_sys_reg(vcpu, HV_SYS_REG_TTBR1_EL1, &ttbr1,
+		    "TTBR1_EL1") != 0 ||
+		    hvf_get_sys_reg(vcpu, HV_SYS_REG_TCR_EL1, &tcr,
+		    "TCR_EL1") != 0 ||
+		    hvf_get_sys_reg(vcpu, HV_SYS_REG_SCTLR_EL1, &sctlr,
+		    "SCTLR_EL1") != 0)
+			return (-1);
+	}
+
+	paging->ttbr0_addr = ttbr0 & ~(TTBR_ASID_MASK | TTBR_CnP);
+	paging->ttbr1_addr = ttbr1 & ~(TTBR_ASID_MASK | TTBR_CnP);
+	paging->tcr_el1 = tcr;
+	paging->tcr2_el1 = 0;
+	if ((sctlr & SCTLR_M) != 0)
+		paging->flags |= VM_GP_MMU_ENABLED;
+
+	return (0);
+}
+
+static int
 arm64_gen_inst_emul_data(struct vcpu *vcpu, uint32_t esr_iss,
     struct vm_exit *vme_ret)
 {
 	struct vm_guest_paging *paging;
 	struct vie *vie;
 	uint32_t esr_sas, reg_num;
-	uint64_t ttbr0_el1, ttbr1_el1, tcr_el1, tcr_el2, spsr_el1, sctlr_el1;
-
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_TTBR0_EL1, &ttbr0_el1);
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_TTBR1_EL1, &ttbr1_el1);
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_TCR_EL1, &tcr_el1);
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_TCR_EL2, &tcr_el2);
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_SPSR_EL1, &spsr_el1);
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_SCTLR_EL1, &sctlr_el1);
 
 	/*
 	 * Get the page address from HPFAR_EL2.
@@ -726,13 +982,9 @@ arm64_gen_inst_emul_data(struct vcpu *vcpu, uint32_t esr_iss,
 	assert(!(esr_iss & ISS_DATA_CM));
 
 	paging = &vme_ret->u.inst_emul.paging;
-	paging->ttbr0_addr = ttbr0_el1 & ~(TTBR_ASID_MASK | TTBR_CnP);
-	paging->ttbr1_addr = ttbr1_el1 & ~(TTBR_ASID_MASK | TTBR_CnP);
-	paging->tcr_el1 = tcr_el1;
-	paging->tcr2_el1 = 0;
-	paging->flags = spsr_el1 & (PSR_M_MASK | PSR_M_32);
-	if ((sctlr_el1 & SCTLR_M) != 0)
-		paging->flags |= VM_GP_MMU_ENABLED;
+	if (hvf_get_guest_paging(vcpu, paging) != 0)
+		return (-1);
+	return (0);
 }
 
 static int
@@ -855,6 +1107,67 @@ sysreg2hvf(int sysreg)
 	case VM_REG_GUEST_SP:
 		return HV_SYS_REG_SP_EL1;
 	}
+
+	if (__builtin_available(macOS 15.0, *)) {
+		switch (sysreg) {
+		case MRS_REG(CNTP_CTL_EL0):
+			return HV_SYS_REG_CNTP_CTL_EL0;
+		case MRS_REG(CNTP_CVAL_EL0):
+			return HV_SYS_REG_CNTP_CVAL_EL0;
+		case MRS_REG(CNTP_TVAL_EL0):
+			return HV_SYS_REG_CNTP_TVAL_EL0;
+		case HVF_SYS_REG_CNTHCTL_EL2:
+			return HV_SYS_REG_CNTHCTL_EL2;
+		case HVF_SYS_REG_CNTHP_CTL_EL2:
+			return HV_SYS_REG_CNTHP_CTL_EL2;
+		case HVF_SYS_REG_CNTHP_CVAL_EL2:
+			return HV_SYS_REG_CNTHP_CVAL_EL2;
+		case HVF_SYS_REG_CNTHP_TVAL_EL2:
+			return HV_SYS_REG_CNTHP_TVAL_EL2;
+		case HVF_SYS_REG_CNTVOFF_EL2:
+			return HV_SYS_REG_CNTVOFF_EL2;
+		case HVF_SYS_REG_CPTR_EL2:
+			return HV_SYS_REG_CPTR_EL2;
+		case HVF_SYS_REG_ELR_EL2:
+			return HV_SYS_REG_ELR_EL2;
+		case HVF_SYS_REG_ESR_EL2:
+			return HV_SYS_REG_ESR_EL2;
+		case HVF_SYS_REG_FAR_EL2:
+			return HV_SYS_REG_FAR_EL2;
+		case HVF_SYS_REG_HCR_EL2:
+			return HV_SYS_REG_HCR_EL2;
+		case HVF_SYS_REG_HPFAR_EL2:
+			return HV_SYS_REG_HPFAR_EL2;
+		case HVF_SYS_REG_MAIR_EL2:
+			return HV_SYS_REG_MAIR_EL2;
+		case HVF_SYS_REG_MDCR_EL2:
+			return HV_SYS_REG_MDCR_EL2;
+		case HVF_SYS_REG_SCTLR_EL2:
+			return HV_SYS_REG_SCTLR_EL2;
+		case HVF_SYS_REG_SPSR_EL2:
+			return HV_SYS_REG_SPSR_EL2;
+		case HVF_SYS_REG_SP_EL2:
+			return HV_SYS_REG_SP_EL2;
+		case HVF_SYS_REG_TCR_EL2:
+			return HV_SYS_REG_TCR_EL2;
+		case HVF_SYS_REG_TPIDR_EL2:
+			return HV_SYS_REG_TPIDR_EL2;
+		case HVF_SYS_REG_TTBR0_EL2:
+			return HV_SYS_REG_TTBR0_EL2;
+		case HVF_SYS_REG_TTBR1_EL2:
+			return HV_SYS_REG_TTBR1_EL2;
+		case HVF_SYS_REG_VBAR_EL2:
+			return HV_SYS_REG_VBAR_EL2;
+		case HVF_SYS_REG_VMPIDR_EL2:
+			return HV_SYS_REG_VMPIDR_EL2;
+		case HVF_SYS_REG_VPIDR_EL2:
+			return HV_SYS_REG_VPIDR_EL2;
+		case HVF_SYS_REG_VTCR_EL2:
+			return HV_SYS_REG_VTCR_EL2;
+		case HVF_SYS_REG_VTTBR_EL2:
+			return HV_SYS_REG_VTTBR_EL2;
+		}
+	}
 	return -1;
 }
 
@@ -873,6 +1186,37 @@ pmu_reg_index(int sysreg, int base_sysreg, int crm_base)
 
 	return ((crm - crm_base) << 3) |
 	    ((sysreg & MRS_Op2_MASK) >> MRS_Op2_SHIFT);
+}
+
+static bool
+lor_read(struct vcpu *vcpu __unused, int sysreg, uint64_t *val)
+{
+	switch (sysreg) {
+	case LORSA_EL1:
+	case LOREA_EL1:
+	case LORN_EL1:
+	case LORC_EL1:
+	case LORID_EL1:
+		*val = 0;
+		return (true);
+	default:
+		return (false);
+	}
+}
+
+static bool
+lor_write(struct vcpu *vcpu __unused, int sysreg, uint64_t val __unused)
+{
+	switch (sysreg) {
+	case LORSA_EL1:
+	case LOREA_EL1:
+	case LORN_EL1:
+	case LORC_EL1:
+	case LORID_EL1:
+		return (true);
+	default:
+		return (false);
+	}
 }
 
 static bool
@@ -1013,142 +1357,288 @@ pmu_write(struct vcpu *vcpu, int sysreg, uint64_t val)
 }
 
 static int
+log_unhandled_sysreg(struct vcpu *vcpu, uint32_t esr_iss, int sysreg,
+    int hvreg, uint32_t reg_num, bool is_write, uint64_t val)
+{
+	uint64_t cpsr, pc;
+
+	hv_vcpu_get_reg(vcpu->vcpu, HV_REG_PC, &pc);
+	hv_vcpu_get_reg(vcpu->vcpu, HV_REG_CPSR, &cpsr);
+	if (is_write) {
+		EPRINTLN("HVF_UNHANDLED_MSR pc %#llx cpsr %#llx sysreg %#x "
+		    "hvreg %#x value %#llx", pc, cpsr, sysreg, hvreg, val);
+		EPRINTLN("Unhandled MSR sysreg: op0 %u op1 %u CRn %u CRm %u "
+		    "op2 %u Rt %u syndrome %#x value %#llx",
+		    ISS_MSR_OP0(esr_iss), ISS_MSR_OP1(esr_iss),
+		    ISS_MSR_CRn(esr_iss), ISS_MSR_CRm(esr_iss),
+		    ISS_MSR_OP2(esr_iss), reg_num, esr_iss, val);
+	} else {
+		EPRINTLN("HVF_UNHANDLED_MRS pc %#llx cpsr %#llx sysreg %#x "
+		    "hvreg %#x", pc, cpsr, sysreg, hvreg);
+		EPRINTLN("Unhandled MRS sysreg: op0 %u op1 %u CRn %u CRm %u "
+		    "op2 %u Rt %u syndrome %#x",
+		    ISS_MSR_OP0(esr_iss), ISS_MSR_OP1(esr_iss),
+		    ISS_MSR_CRn(esr_iss), ISS_MSR_CRm(esr_iss),
+		    ISS_MSR_OP2(esr_iss), reg_num, esr_iss);
+	}
+
+	return (1);
+}
+
+static int
+read_trapped_sysreg(struct vcpu *vcpu, uint32_t esr_iss, int sysreg,
+    int hvreg, uint32_t reg_num, uint64_t *val)
+{
+	hv_return_t hvret;
+
+	if (hvreg >= 0) {
+		hvret = hv_vcpu_get_sys_reg(vcpu->vcpu, (hv_sys_reg_t)hvreg,
+		    val);
+		if (hvret != HV_SUCCESS) {
+			EPRINTLN("hv_vcpu_get_sys_reg(%#x) failed: %x", hvreg,
+			    hvret);
+			return (1);
+		}
+		return (0);
+	}
+
+	if (lor_read(vcpu, sysreg, val) || debug_read(vcpu, sysreg, val) ||
+	    pmu_read(vcpu, sysreg, val))
+		return (0);
+
+	return (log_unhandled_sysreg(vcpu, esr_iss, sysreg, hvreg, reg_num,
+	    false, 0));
+}
+
+static int
+write_trapped_sysreg(struct vcpu *vcpu, uint32_t esr_iss, int sysreg,
+    int hvreg, uint32_t reg_num, uint64_t val)
+{
+	hv_return_t hvret;
+
+	if (hvreg >= 0) {
+		hvret = hv_vcpu_set_sys_reg(vcpu->vcpu, (hv_sys_reg_t)hvreg,
+		    val);
+		if (hvret != HV_SUCCESS) {
+			EPRINTLN("hv_vcpu_set_sys_reg(%#x) failed: %x", hvreg,
+			    hvret);
+			return (1);
+		}
+		return (0);
+	}
+
+	if (lor_write(vcpu, sysreg, val) || debug_write(vcpu, sysreg, val) ||
+	    pmu_write(vcpu, sysreg, val))
+		return (0);
+
+	return (log_unhandled_sysreg(vcpu, esr_iss, sysreg, hvreg, reg_num,
+	    true, val));
+}
+
+static int
+write_mrs_result(struct vcpu *vcpu, uint32_t reg_num, uint64_t val)
+{
+	hv_return_t hvret;
+
+	if (reg_num == 31)
+		return (0);
+
+	hvret = hv_vcpu_set_reg(vcpu->vcpu, HV_REG_X0 + reg_num, val);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("hv_vcpu_set_reg(X%u) failed: %x", reg_num, hvret);
+		return (1);
+	}
+
+	return (0);
+}
+
+static int
+read_msr_source(struct vcpu *vcpu, uint32_t reg_num, uint64_t *val)
+{
+	hv_return_t hvret;
+
+	if (reg_num == 31) {
+		*val = 0;
+		return (0);
+	}
+
+	hvret = hv_vcpu_get_reg(vcpu->vcpu, HV_REG_X0 + reg_num, val);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("hv_vcpu_get_reg(X%u) failed: %x", reg_num, hvret);
+		return (1);
+	}
+
+	return (0);
+}
+
+static int
 arm64_gen_reg_emul_data(struct vcpu *vcpu, uint32_t esr_iss,
     struct vm_exit *vme_ret)
 {
-	uint32_t reg_num;
 	struct vre *vre;
+	uint32_t reg_num;
 	uint64_t val;
-	uint64_t sysreg;
-	int hvreg;
-	hv_return_t hvret;
+	int hvreg, sysreg;
 
 	vre = &vme_ret->u.reg_emul.vre;
 	vre->inst_syndrome = esr_iss;
-	/* ARMv8 Architecture Manual, p. D7-2273: 1 means read */
 	vre->dir = (esr_iss & ISS_MSR_DIR) ? VM_DIR_READ : VM_DIR_WRITE;
 	reg_num = ISS_MSR_Rt(esr_iss);
 	vre->reg = reg_num;
 
 	sysreg = ISS_MSR_SYSREG(esr_iss);
 	hvreg = sysreg2hvf(sysreg);
-	DPRINTLN("sysreg %#llx, hvreg %#x, reg %x, dir %s", sysreg, hvreg,
+	DPRINTLN("sysreg %#x, hvreg %#x, reg %x, dir %s", sysreg, hvreg,
 	    reg_num, vre->dir == VM_DIR_READ ? "read" : "write");
 
 	if (vre->dir == VM_DIR_READ) {
-		if (hvreg >= 0) {
-			hvret = hv_vcpu_get_sys_reg(vcpu->vcpu,
-			    (hv_sys_reg_t)hvreg, &val);
-			if (hvret != HV_SUCCESS) {
-				EPRINTLN("hv_vcpu_get_sys_reg(%#x) failed: %x",
-				    hvreg, hvret);
-				return (1);
-			}
-		} else if (!debug_read(vcpu, sysreg, &val) &&
-		    !pmu_read(vcpu, sysreg, &val)) {
-			EPRINTLN("Unhandled MRS sysreg: op0 %u op1 %u CRn %u "
-			    "CRm %u op2 %u Rt %u syndrome %#x",
-			    ISS_MSR_OP0(esr_iss), ISS_MSR_OP1(esr_iss),
-			    ISS_MSR_CRn(esr_iss), ISS_MSR_CRm(esr_iss),
-			    ISS_MSR_OP2(esr_iss), reg_num, esr_iss);
+		if (read_trapped_sysreg(vcpu, esr_iss, sysreg, hvreg,
+		    reg_num, &val) != 0)
 			return (1);
-		}
-		if (reg_num != 31) {
-			hvret = hv_vcpu_set_reg(vcpu->vcpu, HV_REG_X0 + reg_num,
-			    val);
-			if (hvret != HV_SUCCESS) {
-				EPRINTLN("hv_vcpu_set_reg(X%u) failed: %x",
-				    reg_num, hvret);
-				return (1);
-			}
+		return (write_mrs_result(vcpu, reg_num, val));
+	}
+
+	if (read_msr_source(vcpu, reg_num, &val) != 0)
+		return (1);
+	return (write_trapped_sysreg(vcpu, esr_iss, sysreg, hvreg, reg_num,
+	    val));
+}
+
+static uint64_t
+exception_vector_offset(uint64_t esr, uint64_t mode, int target_el)
+{
+	uint8_t ec;
+
+	ec = ESR_ELx_EXCEPTION(esr);
+	switch (ec) {
+	case EXCP_SVC32:
+	case EXCP_SVC64:
+	case EXCP_INSN_ABORT_L:
+	case EXCP_DATA_ABORT_L:
+	case EXCP_BRKPT_EL0:
+	case EXCP_SOFTSTP_EL0:
+	case EXCP_WATCHPT_EL0:
+		if ((mode & PSR_M_32) != 0)
+			return (0x600);
+		return (0x400);
+	}
+
+	if (target_el == 1) {
+		if (mode == PSR_M_EL1t)
+			return (0);
+		if (mode == PSR_M_EL1h)
+			return (0x200);
+	} else {
+		if (mode == PSR_M_EL2t)
+			return (0);
+		if (mode == PSR_M_EL2h)
+			return (0x200);
+	}
+
+	if ((mode & PSR_M_32) == PSR_M_64)
+		return (0x400);
+	return (0x600);
+}
+
+static int
+vm_inject_exception_to_el(struct vcpu *vcpu, uint64_t esr, uint64_t far,
+    int target_el)
+{
+	uint64_t pc;
+	uint64_t cpsr, mode, vbar, vector;
+	uint64_t elr_reg, esr_reg, far_reg, spsr_reg, vbar_reg;
+	uint64_t target_mode;
+	hv_return_t hvret;
+
+	if (target_el == 2) {
+		if (__builtin_available(macOS 15.0, *)) {
+			elr_reg = HV_SYS_REG_ELR_EL2;
+			esr_reg = HV_SYS_REG_ESR_EL2;
+			far_reg = HV_SYS_REG_FAR_EL2;
+			spsr_reg = HV_SYS_REG_SPSR_EL2;
+			vbar_reg = HV_SYS_REG_VBAR_EL2;
+			target_mode = PSR_M_EL2h;
+		} else {
+			return (-1);
 		}
 	} else {
-		if (reg_num == 31) {
-			val = 0;
-		} else {
-			hvret = hv_vcpu_get_reg(vcpu->vcpu, HV_REG_X0 + reg_num,
-			    &val);
-			if (hvret != HV_SUCCESS) {
-				EPRINTLN("hv_vcpu_get_reg(X%u) failed: %x",
-				    reg_num, hvret);
-				return (1);
-			}
-		}
-		if (hvreg >= 0) {
-			hvret = hv_vcpu_set_sys_reg(vcpu->vcpu,
-			    (hv_sys_reg_t)hvreg, val);
-			if (hvret != HV_SUCCESS) {
-				EPRINTLN("hv_vcpu_set_sys_reg(%#x) failed: %x",
-				    hvreg, hvret);
-				return (1);
-			}
-		} else if (!debug_write(vcpu, sysreg, val) &&
-		    !pmu_write(vcpu, sysreg, val)) {
-			EPRINTLN("Unhandled MSR sysreg: op0 %u op1 %u CRn %u "
-			    "CRm %u op2 %u Rt %u syndrome %#x value %#llx",
-			    ISS_MSR_OP0(esr_iss), ISS_MSR_OP1(esr_iss),
-			    ISS_MSR_CRn(esr_iss), ISS_MSR_CRm(esr_iss),
-			    ISS_MSR_OP2(esr_iss), reg_num, esr_iss, val);
-			return (1);
-		}
+		elr_reg = HV_SYS_REG_ELR_EL1;
+		esr_reg = HV_SYS_REG_ESR_EL1;
+		far_reg = HV_SYS_REG_FAR_EL1;
+		spsr_reg = HV_SYS_REG_SPSR_EL1;
+		vbar_reg = HV_SYS_REG_VBAR_EL1;
+		target_mode = PSR_M_EL1h;
 	}
+
+	hvret = hv_vcpu_get_reg(vcpu->vcpu, HV_REG_PC, &pc);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("vm_inject_exception: get PC failed: %x", hvret);
+		return (-1);
+	}
+	hvret = hv_vcpu_get_reg(vcpu->vcpu, HV_REG_CPSR, &cpsr);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("vm_inject_exception: get CPSR failed: %x", hvret);
+		return (-1);
+	}
+	hvret = hv_vcpu_set_sys_reg(vcpu->vcpu, (hv_sys_reg_t)elr_reg, pc);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("vm_inject_exception: set ELR failed: %x", hvret);
+		return (-1);
+	}
+	hvret = hv_vcpu_set_sys_reg(vcpu->vcpu, (hv_sys_reg_t)spsr_reg, cpsr);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("vm_inject_exception: set SPSR failed: %x", hvret);
+		return (-1);
+	}
+	hvret = hv_vcpu_set_sys_reg(vcpu->vcpu, (hv_sys_reg_t)esr_reg, esr);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("vm_inject_exception: set ESR failed: %x", hvret);
+		return (-1);
+	}
+	hvret = hv_vcpu_set_sys_reg(vcpu->vcpu, (hv_sys_reg_t)far_reg, far);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("vm_inject_exception: set FAR failed: %x", hvret);
+		return (-1);
+	}
+
+	mode = cpsr & (PSR_M_MASK | PSR_M_32);
+	hvret = hv_vcpu_get_sys_reg(vcpu->vcpu, (hv_sys_reg_t)vbar_reg, &vbar);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("vm_inject_exception: get VBAR failed: %x", hvret);
+		return (-1);
+	}
+	vbar &= VBAR_ELx_BASE_MASK;
+	vector = vbar + exception_vector_offset(esr, mode, target_el);
+	hvret = hv_vcpu_set_reg(vcpu->vcpu, HV_REG_PC, vector);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("vm_inject_exception: set PC failed: %x", hvret);
+		return (-1);
+	}
+
+	cpsr &= PSR_FLAGS;
+	cpsr |= PSR_DAIF | target_mode;
+	hvret = hv_vcpu_set_reg(vcpu->vcpu, HV_REG_CPSR, cpsr);
+	if (hvret != HV_SUCCESS) {
+		EPRINTLN("vm_inject_exception: set CPSR failed: %x", hvret);
+		return (-1);
+	}
+
 	return 0;
 }
 
 int
 vm_inject_exception(struct vcpu *vcpu, uint64_t esr, uint64_t far)
 {
-	uint64_t pc;
-	uint64_t spsr_el1;
+	uint64_t cpsr;
+	int target_el;
 
-	// hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_SPSR_EL1, &spsr_el1);
+	target_el = 1;
+	if (vcpu->ctx->el2_enabled &&
+	    hv_vcpu_get_reg(vcpu->vcpu, HV_REG_CPSR, &cpsr) == HV_SUCCESS &&
+	    psr_mode_is_el2(cpsr))
+		target_el = 2;
 
-	// save pc to ELR_EL1
-	hv_vcpu_get_reg(vcpu->vcpu, HV_REG_PC, &pc);
-	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_ELR_EL1, pc);
-
-	// save PSTATE into SPSR_EL1
-	hv_vcpu_get_reg(vcpu->vcpu, HV_REG_CPSR, &spsr_el1);
-
-	uint64_t mode = spsr_el1 & (PSR_M_MASK | PSR_M_32);
-	if (mode == PSR_M_EL1t) {
-		hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_VBAR_EL1, &pc);
-	} else if (mode == PSR_M_EL1h) {
-		hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_VBAR_EL1, &pc);
-		pc += 0x200;
-	} else if ((mode & PSR_M_32) == PSR_M_64) {
-		hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_VBAR_EL1, &pc);
-		/* 64-bit EL0 */
-		pc += 0x400;
-	} else {
-		hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_VBAR_EL1, &pc);
-		pc += 0x600;
-	}
-	hv_vcpu_set_reg(vcpu->vcpu, HV_REG_PC, pc);
-
-	/* Set the new cpsr */
-	spsr_el1 &= PSR_FLAGS;
-	spsr_el1 |= PSR_DAIF | PSR_M_EL1h;
-
-	/*
-	 * Update fields that may change on exeption entry
-	 * based on how sctlr_el1 is configured.
-	 */
-	uint64_t sctlr_el1;
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_SCTLR_EL1, &sctlr_el1);
-	if ((sctlr_el1 & SCTLR_SPAN) == 0)
-		spsr_el1 |= PSR_PAN;
-	if ((sctlr_el1 & SCTLR_DSSBS) == 0)
-		sctlr_el1 &= ~PSR_SSBS;
-	else
-		sctlr_el1 |= PSR_SSBS;
-	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_SPSR_EL1, spsr_el1);
-	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_SCTLR_EL1, sctlr_el1);
-
-	// syndrome
-	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_ESR_EL1, esr);
-	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_FAR_EL1, far);
-	return 0;
+	return (vm_inject_exception_to_el(vcpu, esr, far, target_el));
 }
 
 static int
@@ -1171,8 +1661,10 @@ vmexit_handle_exception(struct vcpu *vcpu, struct vm_exit *vme)
 	case EXCP_DATA_ABORT_L:
 		if (!vm_mem_allocated(vcpu->ctx,
 			vcpu->vcpu_exit->exception.physical_address)) {
-			arm64_gen_inst_emul_data(vcpu, esr_iss, vme);
-			vme->exitcode = VM_EXITCODE_INST_EMUL;
+			if (arm64_gen_inst_emul_data(vcpu, esr_iss, vme) != 0)
+				vme->exitcode = VM_EXITCODE_BOGUS;
+			else
+				vme->exitcode = VM_EXITCODE_INST_EMUL;
 			ret = 1;
 		} else {
 			EPRINTLN("Memory allocated %llx\n",
@@ -1180,23 +1672,31 @@ vmexit_handle_exception(struct vcpu *vcpu, struct vm_exit *vme)
 		}
 		forward_pc = true;
 		break;
+	case EXCP_INSN_ABORT_L:
+		if (!vm_mem_allocated(vcpu->ctx,
+		    vcpu->vcpu_exit->exception.physical_address)) {
+			esr = ESR_EC(EXCP_INSN_ABORT_L) |
+			    (syndrome & ESR_ELx_IL) | ISS_DATA_DFSC_EXT;
+		} else {
+			esr = syndrome;
+		}
+		abort();
+		ret = vm_inject_exception(vcpu, esr,
+		    vcpu->vcpu_exit->exception.virtual_address);
+		break;
 	case EXCP_MSR:
 		// vmm_stat_incr(vcpu, VMEXIT_MSR, 1);
 		ret = arm64_gen_reg_emul_data(vcpu, esr_iss, vme);
 		vme->exitcode = VM_EXITCODE_REG_EMUL;
-#if 0
-			uint64_t paddr;
-			if (guest_vaddr2paddr(vcpu, pc,  &paddr) ==1) {
-				uint8_t *ppc = vm_map_gpa(vcpu->ctx, paddr, 4);
-				printf("instr: %x, %x, %x, %x\n", ppc[0], ppc[1], ppc[2], ppc[3]);
-			}
-#endif
 		forward_pc = true;
 		break;
+	case EXCP_SMC:
+		forward_pc = true;
+		// fallthrough
 	case EXCP_HVC:
 		hv_vcpu_get_reg(vcpu->vcpu, HV_REG_X0, &x0);
-		DPRINTLN("%llx: VM made an HVC call! x0 register holds 0x%llx",
-		    pc, x0);
+		DPRINTLN("%llx: VM made an %s call! x0 register holds 0x%llx",
+		    pc, ec == EXCP_HVC ? "HVC" : "SMC", x0);
 		vme->exitcode = VM_EXITCODE_SMCCC;
 		vme->u.smccc_call.func_id = x0;
 		for (int i = 0; i < nitems(vme->u.smccc_call.args); i++)
@@ -1205,10 +1705,8 @@ vmexit_handle_exception(struct vcpu *vcpu, struct vm_exit *vme)
 		ret = 1;
 		break;
 	case EXCP_BRK:
-		EPRINTLN("brkp");
-		ret = 0;
 		esr = (EXCP_BRK << ESR_ELx_EC_SHIFT);
-		vm_inject_exception(vcpu, esr, 0);
+		ret = vm_inject_exception(vcpu, esr, 0);
 		break;
 	default:
 		EPRINTLN(
@@ -1370,7 +1868,6 @@ vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 			ret = 1;
 			break;
 		case HV_EXIT_REASON_VTIMER_ACTIVATED:
-			EPRINTLN("HV_EXIT_REASON_VTIMER_ACTIVATED");
 			break;
 		default:
 			EPRINTLN("exit reason %d", vcpu->vcpu_exit->reason);
@@ -1980,7 +2477,7 @@ vmmops_gla2gpa(struct vcpu *vcpu, struct vm_guest_paging *paging, uint64_t gla,
 {
 	uint64_t mask, *ptep, pte, pte_addr;
 	int address_bits, granule_shift, ia_bits, levels, pte_shift, tsz;
-	bool is_el0;
+	bool is_el0, is_el2;
 
 	/* Check if the MMU is off */
 	if ((paging->flags & VM_GP_MMU_ENABLED) == 0) {
@@ -1990,8 +2487,9 @@ vmmops_gla2gpa(struct vcpu *vcpu, struct vm_guest_paging *paging, uint64_t gla,
 	}
 
 	is_el0 = (paging->flags & PSR_M_MASK) == PSR_M_EL0t;
+	is_el2 = (paging->flags & VM_GP_EL2) != 0;
 
-	if (ADDR_IS_KERNEL(gla)) {
+	if (!is_el2 && ADDR_IS_KERNEL(gla)) {
 		/* If address translation is disabled raise an exception */
 		if ((paging->tcr_el1 & TCR_EPD1) != 0) {
 			*is_fault = 1;
@@ -2193,25 +2691,7 @@ fault:
 static int
 guest_paging_info(struct vcpu *vcpu, struct vm_guest_paging *paging)
 {
-	uint64_t ttbr0_el1, ttbr1_el1, tcr_el1, tcr_el2, spsr_el1, sctlr_el1;
-
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_TTBR0_EL1, &ttbr0_el1);
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_TTBR1_EL1, &ttbr1_el1);
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_TCR_EL1, &tcr_el1);
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_TCR_EL2, &tcr_el2);
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_SPSR_EL1, &spsr_el1);
-	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_SCTLR_EL1, &sctlr_el1);
-
-	memset(paging, 0, sizeof(*paging));
-	paging->ttbr0_addr = ttbr0_el1 & ~(TTBR_ASID_MASK | TTBR_CnP);
-	paging->ttbr1_addr = ttbr1_el1 & ~(TTBR_ASID_MASK | TTBR_CnP);
-	paging->tcr_el1 = tcr_el1;
-	paging->tcr2_el1 = 0;
-	paging->flags = spsr_el1 & (PSR_M_MASK | PSR_M_32);
-	if ((sctlr_el1 & SCTLR_M) != 0)
-		paging->flags |= VM_GP_MMU_ENABLED;
-
-	return (0);
+	return (hvf_get_guest_paging(vcpu, paging));
 }
 
 /*
