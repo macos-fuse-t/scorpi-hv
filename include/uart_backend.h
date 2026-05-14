@@ -32,6 +32,7 @@
 #define	_UART_BACKEND_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "mevent.h"
 

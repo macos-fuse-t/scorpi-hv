@@ -36,6 +36,14 @@
 #include <sys/types.h>
 #include <support/atomic.h>
 
+#ifndef NBBY
+#define	NBBY	8
+#endif
+
+#ifndef howmany
+#define	howmany(x, y)	(((x) + ((y) - 1)) / (y))
+#endif
+
 /*
  * Macros addressing word and bit within it, tuned to make compiler
  * optimize cases when SETSIZE fits into single machine word.

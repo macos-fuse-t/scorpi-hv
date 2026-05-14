@@ -164,9 +164,13 @@ slirp_cb_notify(void *param)
 static void
 slirp_cb_register_poll_sock(slirp_os_socket fd, void *param __unused)
 {
+#ifdef SO_NOSIGPIPE
 	const int one = 1;
 
 	(void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(int));
+#else
+	(void)fd;
+#endif
 }
 
 static ssize_t
@@ -360,7 +364,9 @@ parse_addr(char *addr, struct sockaddr_in *sinp)
 
 	memset(sinp, 0, sizeof(*sinp));
 	sinp->sin_family = AF_INET;
+#ifdef __APPLE__
 	sinp->sin_len = sizeof(struct sockaddr_in);
+#endif
 
 	port = strchr(addr, ':');
 	if (port == NULL)

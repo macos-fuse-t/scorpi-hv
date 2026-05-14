@@ -489,7 +489,7 @@ EVENTHANDLER_DECLARE(ether_ifattach_event, ether_ifattach_event_handler_t);
 
 #else /* _KERNEL */
 
-#include <sys/cdefs.h>
+#include <support/freebsd_compat.h>
 
 /*
  * Ethernet address conversion/parsing routines.

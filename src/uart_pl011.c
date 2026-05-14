@@ -30,8 +30,11 @@
 
 #include <sys/param.h>
 
+#include <support/freebsd_compat.h>
+
 #include <assert.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 

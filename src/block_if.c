@@ -40,7 +40,9 @@
 #include <err.h>
 #include <fcntl.h>
 #include <pthread.h>
+#ifndef __linux__
 #include <signal.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -117,6 +119,7 @@ struct blockif_ctxt {
 
 static pthread_once_t blockif_once = PTHREAD_ONCE_INIT;
 
+#ifndef __linux__
 struct blockif_sig_elem {
 	pthread_mutex_t bse_mtx;
 	pthread_cond_t bse_cond;
@@ -125,6 +128,7 @@ struct blockif_sig_elem {
 };
 
 static struct blockif_sig_elem *blockif_bse_head;
+#endif
 
 static uint64_t
 blockif_trace_add(uint64_t *counter, uint64_t value)
@@ -433,6 +437,7 @@ blockif_thr(void *arg)
 	return (NULL);
 }
 
+#ifndef __linux__
 static void
 blockif_sigcont_handler(int signal __unused, enum ev_type type __unused,
     void *arg __unused)
@@ -457,12 +462,15 @@ blockif_sigcont_handler(int signal __unused, enum ev_type type __unused,
 		pthread_mutex_unlock(&bse->bse_mtx);
 	}
 }
+#endif
 
 static void
 blockif_init(void)
 {
+#ifndef __linux__
 	mevent_add(SIGCONT, EVF_SIGNAL, blockif_sigcont_handler, NULL);
 	(void)signal(SIGCONT, SIG_IGN);
+#endif
 }
 
 int
@@ -883,6 +891,10 @@ blockif_cancel(struct blockif_ctxt *bc, struct blockif_req *breq)
 		return (EINVAL);
 	}
 
+#ifdef __linux__
+	pthread_mutex_unlock(&bc->bc_mtx);
+	return (EBUSY);
+#else
 	/*
 	 * Interrupt the processing thread to force it return
 	 * prematurely via it's normal callback path.
@@ -916,6 +928,7 @@ blockif_cancel(struct blockif_ctxt *bc, struct blockif_req *breq)
 	 * clear if the callback has been invoked yet, return EBUSY.
 	 */
 	return (EBUSY);
+#endif
 }
 
 int

@@ -5,7 +5,7 @@
  * All rights reserved.
  */
 
-#include <sys/cdefs.h>
+#include <support/freebsd_compat.h>
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/un.h>

@@ -25,7 +25,7 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
+#include <support/freebsd_compat.h>
 #include <assert.h>
 #include <err.h>
 #include <stdio.h>

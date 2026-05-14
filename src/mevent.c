@@ -32,7 +32,7 @@
  * using kqueue, and having events be persistent by default.
  */
 
-#include <sys/cdefs.h>
+#include <support/freebsd_compat.h>
 #include <assert.h>
 #include <err.h>
 #include <errno.h>

@@ -82,7 +82,7 @@ typedef struct MD5Context {
 
 #endif
 
-#include <sys/cdefs.h>
+#include <support/freebsd_compat.h>
 
 __BEGIN_DECLS
 void   MD5Init (MD5_CTX *);

@@ -26,6 +26,8 @@
 #ifndef _USB_USBDI_H_
 #define _USB_USBDI_H_
 
+#include <support/freebsd_compat.h>
+
 struct usb_fifo;
 struct usb_xfer;
 struct usb_device;

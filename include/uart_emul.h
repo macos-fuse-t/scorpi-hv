@@ -30,6 +30,8 @@
 #ifndef _UART_EMUL_H_
 #define	_UART_EMUL_H_
 
+#include <stdint.h>
+
 #define	UART_NS16550_IO_BAR_SIZE	8
 
 struct uart_ns16550_softc;

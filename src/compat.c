@@ -35,9 +35,20 @@
 #ifdef __linux__
 #include <sched.h>
 #include <string.h>
+extern char *program_invocation_short_name;
 #elif __APPLE__
 #include <sys/syslimits.h>
 #include <mach/mach.h>
+#endif
+
+#ifdef __linux__
+const char *
+getprogname(void)
+{
+	if (program_invocation_short_name != NULL)
+		return (program_invocation_short_name);
+	return ("scorpi-hv");
+}
 #endif
 
 // Cross-platform function to set the thread name
@@ -70,8 +81,15 @@ compat_set_thread_affinity(pthread_t thread, int core_id, cpuset_t *cpuset)
 {
 #ifdef __linux__
 	int res;
+	cpu_set_t linux_cpuset;
+
+	memset(&linux_cpuset, 0, sizeof(linux_cpuset));
+	for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+		if (CPU_ISSET(cpu, cpuset))
+			__CPU_SET_S(cpu, sizeof(linux_cpuset), &linux_cpuset);
+	}
 	if ((res = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t),
-		 cpuset)) != 0) {
+		 &linux_cpuset)) != 0) {
 		EPRINTLN("pthread_setaffinity_np failed");
 	}
 	return res;

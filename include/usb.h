@@ -41,6 +41,7 @@
 #ifndef _USB_STANDARD_H_
 #define	_USB_STANDARD_H_
 
+#include <support/freebsd_compat.h>
 #include "usb_endian.h"
 
 #define	USB_STACK_VERSION 2000		/* 2.0 */

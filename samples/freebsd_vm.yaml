@@ -1,5 +1,7 @@
 name: freebsd-yaml-sample
-cpu: 4
+cpu:
+    cores: 4
+    nested-virt: true
 memory: 2G
 console: stdio
 bootrom: ./firmware/u-boot.bin

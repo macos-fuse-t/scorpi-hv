@@ -46,6 +46,7 @@
 #include "bhyverun.h"
 #include "bootrom.h"
 #include "cnc.h"
+#include "compat.h"
 #include "config.h"
 #include "debug.h"
 #include "fdt.h"

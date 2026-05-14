@@ -30,6 +30,7 @@
 #include <sys/types.h>
 #include <sys/mman.h>
 
+#include <support/freebsd_compat.h>
 #include <vmm.h>
 // #include <machine/vmm_snapshot.h>
 #include <vmmapi.h>
@@ -39,7 +40,6 @@
 #include <string.h>
 #include <uuid/uuid.h>
 
-#include <sys/posix_shm.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>

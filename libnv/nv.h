@@ -34,7 +34,7 @@
 #ifndef	_NV_H_
 #define	_NV_H_
 
-#include <sys/cdefs.h>
+#include <support/freebsd_compat.h>
 
 #include <stdarg.h>
 #include <stdbool.h>

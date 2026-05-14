@@ -38,6 +38,18 @@ scorpi_header_compile_test_executable = executable(
 
 test('scorpi_header_compile_test', scorpi_header_compile_test_executable)
 
+if host_machine.system() == 'linux'
+  mevent_linux_test_executable = executable(
+    'mevent_linux_test',
+    files('mevent_linux_test.c', 'mevent_test_compat.c',
+      '../src/mevent_linux.c'),
+    dependencies: threads_dep,
+    include_directories: [inc, include_directories('../src')],
+  )
+
+  test('mevent_linux_test', mevent_linux_test_executable)
+endif
+
 scorpi_image_backend_test_executable = executable(
   'scorpi_image_backend_test',
   files(

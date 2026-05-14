@@ -28,6 +28,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 #ifdef __APPLE__
     #include <libkern/OSByteOrder.h>
     #define htole32(x) OSSwapHostToLittleInt32(x)

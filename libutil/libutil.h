@@ -40,8 +40,12 @@
 #ifndef _LIBUTIL_H_
 #define	_LIBUTIL_H_
 
-#include <sys/cdefs.h>
+#include <support/freebsd_compat.h>
+#ifdef __linux__
+#include <sys/types.h>
+#else
 #include <sys/_types.h>
+#endif
 #include <stdint.h>
 
 #define	PROPERTY_MAX_NAME	64

@@ -36,6 +36,8 @@
 #ifndef _USB_CDC_H_
 #define	_USB_CDC_H_
 
+#include <support/freebsd_compat.h>
+
 #define	UDESCSUB_CDC_HEADER	0
 #define	UDESCSUB_CDC_CM		1	/* Call Management */
 #define	UDESCSUB_CDC_ACM	2	/* Abstract Control Model */

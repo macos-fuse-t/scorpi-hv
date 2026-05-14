@@ -28,6 +28,8 @@
 #ifndef __PCI_IRQ_MD_H__
 #define	__PCI_IRQ_MD_H__
 
+#include <support/freebsd_compat.h>
+
 struct pci_irq {
 	int	gic_irq;
 };

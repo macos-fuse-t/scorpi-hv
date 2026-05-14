@@ -30,6 +30,7 @@
 #ifndef _SYS_ATA_H_
 #define _SYS_ATA_H_
 
+#include <support/freebsd_compat.h>
 #include <sys/types.h>
 #include <sys/ioccom.h>
 

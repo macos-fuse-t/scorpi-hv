@@ -29,7 +29,6 @@
 #include <sys/param.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/posix_shm.h>
 #include <sys/select.h>
 #include <sys/uio.h>
 #include <support/linker_set.h>

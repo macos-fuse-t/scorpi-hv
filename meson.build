@@ -3,10 +3,12 @@ project('scorpi', 'c',
   default_options: ['c_std=c11'])
 
 add_project_arguments('-Wno-pointer-sign', language: 'c')
+add_project_arguments('-D_GNU_SOURCE', language: 'c')
 
 cmake = import('cmake')
 
 zlib_dep = dependency('zlib', required: true)
+uuid_dep = dependency('uuid', required: true)
 threads_dep = dependency('threads')
 
 libslirp_proj = subproject(
@@ -16,6 +18,8 @@ slirp_dep = libslirp_proj.get_variable('libslirp_libdep')
 
 libwebsockets_opts = cmake.subproject_options()
 libwebsockets_opts.add_cmake_defines({
+    'CMAKE_POSITION_INDEPENDENT_CODE': true,
+    'CMAKE_C_FLAGS': '-D_GNU_SOURCE',
     'LWS_WITH_SHARED': false,
     'LWS_WITH_STATIC': true,
     'LWS_WITH_SSL': false,
@@ -29,7 +33,35 @@ libwebsockets_dep = libwebsockets_proj.dependency('websockets')
 
 codesign_identity = run_command('sh', '-c', 'echo $CODESIGN_IDENTITY').stdout().strip()
 
-if host_machine.system() == 'darwin'
+host_system = host_machine.system()
+arch = host_machine.cpu_family()
+hypervisor_backend = get_option('hypervisor')
+
+if hypervisor_backend == 'auto'
+    if host_system == 'darwin' and arch == 'aarch64'
+        hypervisor_backend = 'hvf'
+    elif host_system == 'linux' and arch == 'aarch64'
+        hypervisor_backend = 'kvm'
+    else
+        error('No default hypervisor backend for ' + host_system + '/' + arch)
+    endif
+endif
+
+if hypervisor_backend == 'hvf'
+    if host_system != 'darwin' or arch != 'aarch64'
+        error('HVF backend requires darwin/aarch64')
+    endif
+elif hypervisor_backend == 'kvm'
+    if host_system != 'linux' or arch != 'aarch64'
+        error('KVM backend currently requires linux/aarch64; linux/x86_64 is deferred')
+    endif
+else
+    error('Unsupported hypervisor backend: ' + hypervisor_backend)
+endif
+
+message('Hypervisor backend: ' + hypervisor_backend)
+
+if host_system == 'darwin'
     hv_framework = [
         '-framework', 'Hypervisor',
         '-framework', 'VMNet' ]
@@ -37,8 +69,6 @@ if host_machine.system() == 'darwin'
     add_project_link_arguments(hv_framework, language: 'c')
     #add_project_link_arguments(['-ld64'], language: 'c' )
 endif
-
-arch = host_machine.cpu_family()
 
 inc = include_directories(
     'include',
@@ -71,7 +101,7 @@ runtime_core_sources = files(
     'src/tpm_intf_crb.c',
     'src/tpm_intf_tis.c',
     'src/tpm_ppi_qemu.c',
-    'src/mevent.c',
+    'src/libvmm/common/vmm_instruction_emul.c',
     'src/qemu_fwcfg.c',
     'src/qemu_loader.c',
     'src/scorpi_runtime_bridge.c',
@@ -117,6 +147,19 @@ runtime_core_sources = files(
     'src/pci_virtio_console.c',
 )
 
+host_src = files()
+if host_system == 'darwin'
+    host_src += files(
+        'src/mevent.c',
+    )
+elif host_system == 'linux'
+    host_src += files(
+        'src/mevent_linux.c',
+    )
+else
+    error('Unsupported host system: ' + host_system)
+endif
+
 # Set architecture-specific source
 if arch == 'x86_64'
     arch_src = files(
@@ -133,17 +176,27 @@ else
     error('Unsupported architecture: ' + arch)
 endif
 
-if host_machine.system() == 'darwin'
-    arch_src += files(
+backend_src = files()
+if hypervisor_backend == 'hvf'
+    backend_src += files(
         'src/libvmm/hvf/vmmapi.c',
         'src/libvmm/hvf/vmm.c',
         'src/libvmm/hvf/vgic.c',
-        'src/libvmm/hvf/vmm_instruction_emul.c',
         'src/vmnet_net_backend.c',
     )
+elif hypervisor_backend == 'kvm'
+    backend_src += files(
+        'src/libvmm/kvm/vmmapi.c',
+    )
+
+    if arch == 'aarch64'
+        backend_src += files(
+            'src/libvmm/kvm/arm64/kvm_arch.c',
+        )
+    endif
 endif
 
-runtime_core_sources += arch_src
+runtime_core_sources += host_src + arch_src + backend_src
 
 scorpi_image_executable = executable(
   'scorpi-image',

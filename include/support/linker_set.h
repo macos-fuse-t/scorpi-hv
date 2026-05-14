@@ -26,14 +26,13 @@
  * SUCH DAMAGE.
  */
 
-/* mach_linker_set.h (example) */
-
 #pragma once
 
 #if !defined(__used)
 # define __used __attribute__((used))
 #endif
 
+#if defined(__APPLE__)
 /*
  * Put each set entry (pointer) in the "__DATA,__<set>" section.  Mark it as
  * used so LTO doesn't discard it.
@@ -53,10 +52,23 @@ __attribute__((no_sanitize("address"), used, section("__DATA,__" #set))) \
 #define SET_DECLARE(set, T) \
     extern T __weak *__start_##set __asm("section$start$__DATA$__" #set); \
     extern T __weak *__stop_##set  __asm("section$end$__DATA$__" #set)
+#else
+#define __MAKE_SET(set, sym) \
+__attribute__((used, section(#set))) \
+    static void const *__set_##set##_sym_##sym = &(sym)
+
+#define DATA_SET(set, sym)  __MAKE_SET(set, sym)
+
+#define SET_DECLARE(set, T) \
+    extern T *__start_##set[] __attribute__((weak)); \
+    extern T *__stop_##set[] __attribute__((weak))
+#endif
 
 /* Common iteration macros: */
-#define SET_BEGIN(set) (&__start_##set)
-#define SET_LIMIT(set) (&__stop_##set)
+#define SET_BEGIN(set) (__start_##set)
+#define SET_LIMIT(set) (__stop_##set)
 #define SET_COUNT(set) (SET_LIMIT(set) - SET_BEGIN(set))
 #define SET_FOREACH(pvar, set) \
-    for ((pvar) = SET_BEGIN(set); (pvar) < SET_LIMIT(set); (pvar)++)
+    for ((pvar) = (SET_BEGIN(set) == NULL || SET_LIMIT(set) == NULL) ? \
+	    NULL : SET_BEGIN(set); \
+	(pvar) != NULL && (pvar) < SET_LIMIT(set); (pvar)++)

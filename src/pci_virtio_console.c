@@ -348,12 +348,14 @@ pci_vtcon_sock_add(struct pci_vtcon_softc *sc, const char *port_name,
 	remove(pathcopy);
 
 	sun.sun_family = AF_UNIX;
+#ifdef __APPLE__
 	sun.sun_len = sizeof(struct sockaddr_un);
+#endif
 	strcpy(pathcopy, path);
 	strlcpy(sun.sun_path, pathcopy, sizeof(sun.sun_path));
 	free(pathcopy);
 
-	if (bind(s, (struct sockaddr *)&sun, sun.sun_len) < 0) {
+	if (bind(s, (struct sockaddr *)&sun, sizeof(sun)) < 0) {
 		error = -1;
 		goto out;
 	}

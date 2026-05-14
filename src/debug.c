@@ -26,7 +26,7 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
+#include <support/freebsd_compat.h>
 #include <sys/param.h>
 #include <sys/mman.h>
 #include <stdint.h>

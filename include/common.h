@@ -30,10 +30,16 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <support/freebsd_compat.h>
 
 #if defined(__GNUC__) || defined(__clang__)
+#ifndef __packed
 #define __packed __attribute__((packed))
+#endif
+#ifndef __aligned
 #define __aligned(x) __attribute__((aligned(x)))
+#endif
 #else
 #error "Compiler does not support __packed attribute"
 #endif
@@ -69,3 +75,30 @@ typedef uintptr_t    vm_size_t;
 #define nitems(x) (sizeof(x) / sizeof((x)[0]))
 
 #define roundup2(x, y)         (((x)+((y)-1))&(~((y)-1)))
+
+#ifndef SIZE_T_MAX
+#define	SIZE_T_MAX	SIZE_MAX
+#endif
+
+#if defined(__linux__) && !defined(HAVE_REALLOCF)
+static inline void *
+reallocf(void *ptr, size_t size)
+{
+	void *newptr;
+
+	newptr = realloc(ptr, size);
+	if (newptr == NULL)
+		free(ptr);
+	return (newptr);
+}
+#endif
+
+#if defined(__linux__) && !defined(HAVE_FLSL)
+static inline int
+flsl(long value)
+{
+	if (value == 0)
+		return (0);
+	return ((int)(sizeof(long) * 8) - __builtin_clzl(value));
+}
+#endif

@@ -1,0 +1,7 @@
+option(
+  'hypervisor',
+  type: 'combo',
+  choices: ['auto', 'hvf', 'kvm'],
+  value: 'auto',
+  description: 'Hypervisor backend to build',
+)

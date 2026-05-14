@@ -15,6 +15,7 @@ scorpi_kit_private_deps = [
   slirp_dep,
   libwebsockets_dep,
   threads_dep,
+  uuid_dep,
 ]
 
 scorpi_kit = shared_library(

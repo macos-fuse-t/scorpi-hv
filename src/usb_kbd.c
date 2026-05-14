@@ -26,7 +26,7 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
+#include <support/freebsd_compat.h>
 #include <sys/time.h>
 #include "common.h"
 

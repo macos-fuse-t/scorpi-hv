@@ -71,7 +71,7 @@ static inline int __bitcountl(long value) {
 #endif
 }
 
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(__linux__)
 static inline int ffsl(long value) {
 #if defined(__GNUC__) || defined(__clang__)
     return __builtin_ffsl(value);

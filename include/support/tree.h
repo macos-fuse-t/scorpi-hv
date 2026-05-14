@@ -32,7 +32,7 @@
 #ifndef	_SYS_TREE_H_
 #define	_SYS_TREE_H_
 
-#include <sys/cdefs.h>
+#include <support/freebsd_compat.h>
 
 #define __uintptr_t uintptr_t
 

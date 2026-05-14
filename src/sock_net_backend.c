@@ -27,7 +27,9 @@
  */
 
 #include <assert.h>
+#ifdef __APPLE__
 #include <dispatch/dispatch.h>
+#endif
 #include <pthread.h>
 #include "common.h"
 #include <support/ethernet.h>

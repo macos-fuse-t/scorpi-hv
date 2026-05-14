@@ -30,6 +30,8 @@
 #ifndef	_PCI_XHCI_H_
 #define	_PCI_XHCI_H_
 
+#include <support/freebsd_compat.h>
+
 #define	PCI_USBREV		0x60	/* USB protocol revision */
 
 #define USB_MAX_EP_STREAMS 8

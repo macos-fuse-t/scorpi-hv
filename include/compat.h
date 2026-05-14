@@ -28,7 +28,12 @@
 
 #pragma once
 
+#include <support/freebsd_compat.h>
 #include <support/cpuset.h>
 
 int compat_set_thread_name(pthread_t thread, const char *name);
 int compat_set_thread_affinity(pthread_t thread, int core_id, cpuset_t *cpuset);
+
+#ifdef __linux__
+const char *getprogname(void);
+#endif
