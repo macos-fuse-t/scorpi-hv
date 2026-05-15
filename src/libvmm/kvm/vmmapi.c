@@ -980,6 +980,14 @@ vm_resume_cpu(struct vcpu *vcpu)
 	return (vm_activate_cpu(vcpu));
 }
 
+#if defined(__aarch64__)
+bool
+vm_uses_in_kernel_psci(struct vmctx *ctx __unused)
+{
+	return (true);
+}
+#endif
+
 int
 vm_restart_instruction(struct vcpu *vcpu __unused)
 {

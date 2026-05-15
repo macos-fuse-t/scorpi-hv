@@ -13,10 +13,11 @@
 #define	TEST_GIC_DIST_BASE	0x2f000000ULL
 #define	TEST_GIC_DIST_SIZE	0x10000UL
 #define	TEST_GIC_REDIST_BASE	0x2f100000ULL
-#define	TEST_GIC_REDIST_SIZE	0x20000UL
+#define	TEST_GIC_REDIST_SIZE	0x40000UL
 #define	TEST_MEM_SIZE	0x10000UL
 #define	TEST_SKIP	77
 #define	TEST_VCPU_ID	0
+#define	TEST_SECONDARY_VCPU_ID	1
 
 int raw_stdio = 0;
 
@@ -46,6 +47,7 @@ fail_error(const char *op, int error)
 int
 main(void)
 {
+	struct vcpu *secondary_vcpu;
 	struct vcpu *vcpu;
 	struct vmctx *ctx;
 	uint64_t x0;
@@ -74,6 +76,11 @@ main(void)
 		ret = fail_errno("vm_vcpu_open");
 		goto out;
 	}
+	secondary_vcpu = vm_vcpu_open(ctx, TEST_SECONDARY_VCPU_ID);
+	if (secondary_vcpu == NULL) {
+		ret = fail_errno("vm_vcpu_open secondary");
+		goto out;
+	}
 
 	if (vm_attach_vgic(ctx, TEST_GIC_DIST_BASE, TEST_GIC_DIST_SIZE,
 	    TEST_GIC_REDIST_BASE, TEST_GIC_REDIST_SIZE, 0, 32, 224) != 0) {
@@ -95,6 +102,10 @@ main(void)
 
 	if (vm_vcpu_init(vcpu) != 0) {
 		ret = fail_errno("vm_vcpu_init");
+		goto out;
+	}
+	if (vm_vcpu_init(secondary_vcpu) != 0) {
+		ret = fail_errno("vm_vcpu_init secondary");
 		goto out;
 	}
 

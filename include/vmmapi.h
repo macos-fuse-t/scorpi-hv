@@ -273,6 +273,9 @@ int	vm_suspend_all_cpus(struct vmctx *ctx);
 int	vm_suspend_cpu(struct vcpu *vcpu);
 int	vm_resume_all_cpus(struct vmctx *ctx);
 int	vm_resume_cpu(struct vcpu *vcpu);
+#if defined(__aarch64__)
+bool	vm_uses_in_kernel_psci(struct vmctx *ctx);
+#endif
 int	vm_restart_instruction(struct vcpu *vcpu);
 
 /* CPU topology */

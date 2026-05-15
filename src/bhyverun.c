@@ -512,6 +512,16 @@ vm_loop(struct vmctx *ctx, struct vcpu *vcpu)
 	EPRINTLN("vm_run error %d, errno %d", error, errno);
 }
 
+static bool
+start_all_vcpus_at_boot(struct vmctx *ctx)
+{
+#if defined(__aarch64__)
+	return (vm_uses_in_kernel_psci(ctx));
+#else
+	return (false);
+#endif
+}
+
 void
 bhyve_set_yaml_config_file(const char *path)
 {
@@ -882,8 +892,12 @@ bhyve_run_configured_vm(void)
 	/*
 	 * Add all vCPUs.
 	 */
-	// for (int vcpuid = 0; vcpuid < guest_ncpus; vcpuid++)
-	bhyve_start_vcpu(vcpu_info[0].vcpu, true);
+	if (start_all_vcpus_at_boot(ctx)) {
+		for (int vcpuid = 0; vcpuid < guest_ncpus; vcpuid++)
+			bhyve_start_vcpu(vcpu_info[vcpuid].vcpu, vcpuid == BSP);
+	} else {
+		bhyve_start_vcpu(vcpu_info[0].vcpu, true);
+	}
 
 #ifdef BHYVE_SNAPSHOT
 	if (restore_file != NULL) {
@@ -944,7 +958,10 @@ bhyve_run_configured_vm(void)
 			vm_resume_cpu(vcpu_info[vcpuid].vcpu);
 	} else
 #endif
-		vm_resume_cpu(bsp);
+		if (start_all_vcpus_at_boot(ctx))
+			vm_resume_all_cpus(ctx);
+		else
+			vm_resume_cpu(bsp);
 
 	cnc_start_srv();
 

@@ -47,6 +47,11 @@ kvm_arch_vcpu_init(struct vcpu *vcpu)
 	memset(&init, 0, sizeof(init));
 	if (ioctl(vcpu->ctx->vm_fd, KVM_ARM_PREFERRED_TARGET, &init) < 0)
 		return (-1);
+
+	init.features[0] |= 1U << KVM_ARM_VCPU_PSCI_0_2;
+	if (vcpu->vcpuid != 0)
+		init.features[0] |= 1U << KVM_ARM_VCPU_POWER_OFF;
+
 	if (ioctl(vcpu->fd, KVM_ARM_VCPU_INIT, &init) < 0)
 		return (-1);
 	return (0);

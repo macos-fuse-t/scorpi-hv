@@ -2172,6 +2172,14 @@ vm_resume_all_cpus(struct vmctx *ctx)
 	return -1;
 }
 
+#if defined(__aarch64__)
+bool
+vm_uses_in_kernel_psci(struct vmctx *ctx __unused)
+{
+	return (false);
+}
+#endif
+
 #ifdef __amd64__
 int
 vm_get_intinfo(struct vcpu *vcpu, uint64_t *info1, uint64_t *info2)
