@@ -619,7 +619,7 @@ kvm_suspend_for_reset(struct vmctx *ctx, int current_vcpuid)
 	(void)current_vcpuid;
 
 	ctx->suspend_reason = VM_SUSPEND_RESET;
-	return (0);
+	return (vm_suspend_all_cpus(ctx));
 }
 
 static int
@@ -713,6 +713,7 @@ vm_suspend(struct vmctx *ctx, enum vm_suspend_how how)
 	if (how == VM_SUSPEND_RESET)
 		return (kvm_suspend_for_reset(ctx, -1));
 #endif
+	vm_suspend_all_cpus(ctx);
 	return (0);
 }
 

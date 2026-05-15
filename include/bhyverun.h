@@ -59,6 +59,7 @@ void fbsdrun_addcpu(int vcpuid);
 void fbsdrun_deletecpu(int vcpuid);
 int fbsdrun_suspendcpu(int vcpuid);
 
+int  bhyve_reset_devices(struct vmctx *ctx);
 int  msix_supported(void);
 int  msi_supported(void);
 

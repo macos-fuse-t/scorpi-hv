@@ -465,6 +465,15 @@ fbsdrun_suspendcpu(int vcpuid)
 	return (vm_suspend_cpu(vcpu_info[vcpuid].vcpu));
 }
 
+int
+bhyve_reset_devices(struct vmctx *ctx)
+{
+	(void)ctx;
+
+	pci_reset_devices();
+	return (0);
+}
+
 static void
 vm_wait_for_vcpu_active(struct vmctx *ctx, struct vcpu *vcpu)
 {

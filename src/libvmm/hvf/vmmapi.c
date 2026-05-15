@@ -382,7 +382,6 @@ vm_vcpu_init(struct vcpu *vcpu)
 
 	if (HV_SUCCESS != hv_vcpu_create(&vcpu->vcpu, &vcpu->vcpu_exit, NULL)) {
 		EPRINTLN("vm_vcpu_init() failed");
-		free(vcpu);
 		return (-1);
 	}
 	vcpu->tid = pthread_self();
@@ -2133,7 +2132,7 @@ vm_activate_cpu(struct vcpu *vcpu)
 	if (SCORPI_CPU_ISSET(((unsigned)vcpu->vcpuid), &vcpu->ctx->active_cpus))
 		return (EBUSY);
 
-	SCORPI_CPU_CLR_ATOMIC((unsigned)vcpu->vcpuid, &vcpu->ctx->active_cpus);
+	SCORPI_CPU_CLR_ATOMIC((unsigned)vcpu->vcpuid, &vcpu->ctx->suspended_cpus);
 	SCORPI_CPU_SET_ATOMIC((unsigned)vcpu->vcpuid, &vcpu->ctx->active_cpus);
 
 	return (0);
