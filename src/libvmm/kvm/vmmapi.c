@@ -19,6 +19,7 @@
 
 #include "debug.h"
 #include "libutil.h"
+#include "mem.h"
 #include "vmmapi.h"
 #include "internal.h"
 
@@ -541,10 +542,131 @@ vm_get_register_set(struct vcpu *vcpu, unsigned int count, const int *regnums,
 	return (0);
 }
 
-int
-vm_run(struct vcpu *vcpu __unused, struct vm_run *vmrun __unused)
+static int
+kvm_mmio_exit(struct vcpu *vcpu, struct kvm_run *run)
 {
-	return (scorpi_kvm_unimplemented(__func__));
+	uint64_t val;
+	int error;
+
+	if (run->mmio.len == 0 || run->mmio.len > sizeof(run->mmio.data)) {
+		errno = EINVAL;
+		return (-1);
+	}
+
+	if (run->mmio.is_write) {
+		val = 0;
+		memcpy(&val, run->mmio.data, run->mmio.len);
+		error = write_mem(vcpu, run->mmio.phys_addr, val,
+		    (int)run->mmio.len);
+	} else {
+		val = 0;
+		error = read_mem(vcpu, run->mmio.phys_addr, &val,
+		    (int)run->mmio.len);
+		if (error == 0) {
+			memset(run->mmio.data, 0, sizeof(run->mmio.data));
+			memcpy(run->mmio.data, &val, run->mmio.len);
+		}
+	}
+
+	if (error != 0) {
+		errno = error;
+		return (-1);
+	}
+	return (0);
+}
+
+static void
+kvm_set_suspended_exit(struct vcpu *vcpu, struct vm_exit *vme,
+    enum vm_suspend_how how)
+{
+	uint64_t pc;
+
+	memset(vme, 0, sizeof(*vme));
+	vme->exitcode = VM_EXITCODE_SUSPENDED;
+	vme->u.suspended.how = how;
+	if (vm_get_register(vcpu, VM_REG_GUEST_PC, &pc) == 0)
+		vme->pc = pc;
+}
+
+static int
+kvm_system_event_exit(struct vcpu *vcpu, struct kvm_run *run,
+    struct vm_exit *vme)
+{
+	switch (run->system_event.type) {
+	case KVM_SYSTEM_EVENT_SHUTDOWN:
+		kvm_set_suspended_exit(vcpu, vme, VM_SUSPEND_POWEROFF);
+		return (0);
+	case KVM_SYSTEM_EVENT_RESET:
+		kvm_set_suspended_exit(vcpu, vme, VM_SUSPEND_RESET);
+		return (0);
+	case KVM_SYSTEM_EVENT_CRASH:
+		kvm_set_suspended_exit(vcpu, vme, VM_SUSPEND_HALT);
+		return (0);
+	default:
+		EPRINTLN("KVM system event %u is not handled",
+		    run->system_event.type);
+		errno = ENOTSUP;
+		return (-1);
+	}
+}
+
+int
+vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
+{
+	struct kvm_run *run;
+	struct vm_exit *vme;
+
+	if (vcpu == NULL || vmrun == NULL || vmrun->vm_exit == NULL ||
+	    vcpu->fd < 0 || vcpu->run == NULL) {
+		errno = EINVAL;
+		return (-1);
+	}
+
+	run = vcpu->run;
+	vme = vmrun->vm_exit;
+
+	for (;;) {
+		if (ioctl(vcpu->fd, KVM_RUN, 0) < 0) {
+			if (errno == EINTR || errno == EAGAIN)
+				continue;
+			return (-1);
+		}
+
+		switch (run->exit_reason) {
+		case KVM_EXIT_MMIO:
+			if (kvm_mmio_exit(vcpu, run) != 0)
+				return (-1);
+			break;
+		case KVM_EXIT_INTR:
+			break;
+		case KVM_EXIT_HLT:
+			kvm_set_suspended_exit(vcpu, vme, VM_SUSPEND_HALT);
+			return (0);
+		case KVM_EXIT_SYSTEM_EVENT:
+			return (kvm_system_event_exit(vcpu, run, vme));
+		case KVM_EXIT_FAIL_ENTRY:
+			EPRINTLN("KVM fail entry: reason %#llx cpu %u",
+			    run->fail_entry.hardware_entry_failure_reason,
+			    run->fail_entry.cpu);
+			errno = EIO;
+			return (-1);
+		case KVM_EXIT_INTERNAL_ERROR:
+			EPRINTLN("KVM internal error: suberror %u ndata %u",
+			    run->internal.suberror, run->internal.ndata);
+			errno = EIO;
+			return (-1);
+		case KVM_EXIT_ARM_NISV:
+			EPRINTLN("KVM ARM NISV exit: esr_iss %#llx ipa %#llx",
+			    run->arm_nisv.esr_iss, run->arm_nisv.fault_ipa);
+			errno = ENOTSUP;
+			return (-1);
+		default:
+			EPRINTLN("Unhandled KVM exit reason %u",
+			    run->exit_reason);
+			errno = ENOTSUP;
+			return (-1);
+		}
+	}
 }
 
 int

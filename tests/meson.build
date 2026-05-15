@@ -54,6 +54,8 @@ if host_machine.system() == 'linux'
       'kvm_smoke_test',
       files(
         'kvm_smoke_test.c',
+        '../src/mem.c',
+        '../src/libvmm/common/vmm_instruction_emul.c',
         '../src/libvmm/kvm/vmmapi.c',
         '../src/libvmm/kvm/arm64/kvm_arch.c',
       ),
