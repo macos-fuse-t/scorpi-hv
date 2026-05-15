@@ -28,8 +28,13 @@
 
 #pragma once
 
+#include <pthread.h>
 #include <support/freebsd_compat.h>
-#include <support/cpuset.h>
+
+#ifndef SCORPI_CPUSET_T_DEFINED
+#define SCORPI_CPUSET_T_DEFINED
+typedef struct _cpuset cpuset_t;
+#endif
 
 int compat_set_thread_name(pthread_t thread, const char *name);
 int compat_set_thread_affinity(pthread_t thread, int core_id, cpuset_t *cpuset);

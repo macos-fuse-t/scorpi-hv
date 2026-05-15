@@ -2130,11 +2130,11 @@ vm_debug_cpus(struct vmctx *ctx, cpuset_t *cpus)
 int
 vm_activate_cpu(struct vcpu *vcpu)
 {
-	if (CPU_ISSET(((unsigned)vcpu->vcpuid), &vcpu->ctx->active_cpus))
+	if (SCORPI_CPU_ISSET(((unsigned)vcpu->vcpuid), &vcpu->ctx->active_cpus))
 		return (EBUSY);
 
-	CPU_CLR_ATOMIC((unsigned)vcpu->vcpuid, &vcpu->ctx->active_cpus);
-	CPU_SET_ATOMIC((unsigned)vcpu->vcpuid, &vcpu->ctx->active_cpus);
+	SCORPI_CPU_CLR_ATOMIC((unsigned)vcpu->vcpuid, &vcpu->ctx->active_cpus);
+	SCORPI_CPU_SET_ATOMIC((unsigned)vcpu->vcpuid, &vcpu->ctx->active_cpus);
 
 	return (0);
 }
@@ -2154,8 +2154,8 @@ vm_suspend_all_cpus(struct vmctx *ctx)
 int
 vm_suspend_cpu(struct vcpu *vcpu)
 {
-	CPU_CLR_ATOMIC((unsigned)vcpu->vcpuid, &vcpu->ctx->active_cpus);
-	CPU_SET_ATOMIC((unsigned)vcpu->vcpuid, &vcpu->ctx->suspended_cpus);
+	SCORPI_CPU_CLR_ATOMIC((unsigned)vcpu->vcpuid, &vcpu->ctx->active_cpus);
+	SCORPI_CPU_SET_ATOMIC((unsigned)vcpu->vcpuid, &vcpu->ctx->suspended_cpus);
 	return (0);
 }
 

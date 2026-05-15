@@ -50,8 +50,8 @@ __attribute__((no_sanitize("address"), used, section("__DATA,__" #set))) \
  *   section$end$__DATA$__<set>
  */
 #define SET_DECLARE(set, T) \
-    extern T __weak *__start_##set __asm("section$start$__DATA$__" #set); \
-    extern T __weak *__stop_##set  __asm("section$end$__DATA$__" #set)
+    extern T *__start_##set[] __asm("section$start$__DATA$__" #set); \
+    extern T *__stop_##set[]  __asm("section$end$__DATA$__" #set)
 #else
 #define __MAKE_SET(set, sym) \
 __attribute__((used, section(#set))) \

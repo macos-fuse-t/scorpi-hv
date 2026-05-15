@@ -88,7 +88,9 @@ SYSRES_MEM(PCI_EMUL_ECFG_BASE, PCI_EMUL_ECFG_SIZE);
 #define	PCIE_INTC	37
 #define	PCIE_INTD	38
 
-static int pcie_intrs[] = {PCIE_INTA, PCIE_INTB, PCIE_INTC, PCIE_INTD};
+static int pcie_intrs[] __attribute__((unused)) = {
+	PCIE_INTA, PCIE_INTB, PCIE_INTC, PCIE_INTD
+};
 
 struct vmctx;
 struct pci_devinst;

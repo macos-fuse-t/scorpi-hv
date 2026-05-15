@@ -33,6 +33,8 @@
 #include <support/linker_set.h>
 
 struct vcpu;
+struct vie;
+struct vm_guest_paging;
 
 typedef int (*mem_func_t)(struct vcpu *vcpu, int dir, uint64_t addr,
 			  int size, uint64_t *val, void *arg1, long arg2);

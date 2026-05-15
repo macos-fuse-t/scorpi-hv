@@ -29,6 +29,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <support/cpuset.h>
 #include "compat.h"
 #include "debug.h"
 
@@ -84,8 +85,8 @@ compat_set_thread_affinity(pthread_t thread, int core_id, cpuset_t *cpuset)
 	cpu_set_t linux_cpuset;
 
 	memset(&linux_cpuset, 0, sizeof(linux_cpuset));
-	for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
-		if (CPU_ISSET(cpu, cpuset))
+	for (int cpu = 0; cpu < SCORPI_CPU_SETSIZE; cpu++) {
+		if (SCORPI_CPU_ISSET(cpu, cpuset))
 			__CPU_SET_S(cpu, sizeof(linux_cpuset), &linux_cpuset);
 	}
 	if ((res = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t),

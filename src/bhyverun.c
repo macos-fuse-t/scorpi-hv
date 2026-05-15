@@ -255,11 +255,11 @@ bhyve_pincpu_parse(const char *opt)
 		return (-1);
 	}
 
-	if (pcpu < 0 || pcpu >= CPU_SETSIZE) {
+	if (pcpu < 0 || pcpu >= SCORPI_CPU_SETSIZE) {
 		fprintf(stderr,
 		    "hostcpu '%d' outside valid range from "
 		    "0 to %d\n",
-		    pcpu, CPU_SETSIZE - 1);
+		    pcpu, SCORPI_CPU_SETSIZE - 1);
 		return (-1);
 	}
 
@@ -283,16 +283,16 @@ parse_cpuset(int vcpu, const char *list, cpuset_t *set)
 	char *cp, *token;
 	int pcpu, start;
 
-	CPU_ZERO(set);
+	SCORPI_CPU_ZERO(set);
 	start = -1;
 	token = __DECONST(char *, list);
 	for (;;) {
 		pcpu = strtoul(token, &cp, 0);
 		if (cp == token)
 			errx(4, "invalid cpuset for vcpu %d: '%s'", vcpu, list);
-		if (pcpu < 0 || pcpu >= CPU_SETSIZE)
+		if (pcpu < 0 || pcpu >= SCORPI_CPU_SETSIZE)
 			errx(4, "hostcpu '%d' outside valid range from 0 to %d",
-			    pcpu, CPU_SETSIZE - 1);
+			    pcpu, SCORPI_CPU_SETSIZE - 1);
 		switch (*cp) {
 		case ',':
 		case '\0':
@@ -301,12 +301,12 @@ parse_cpuset(int vcpu, const char *list, cpuset_t *set)
 					errx(4, "Invalid hostcpu range %d-%d",
 					    start, pcpu);
 				while (start < pcpu) {
-					CPU_SET(start, set);
+					SCORPI_CPU_SET(start, set);
 					start++;
 				}
 				start = -1;
 			}
-			CPU_SET(pcpu, set);
+			SCORPI_CPU_SET(pcpu, set);
 			break;
 		case '-':
 			if (start >= 0)
@@ -422,7 +422,7 @@ fbsdrun_addcpu(int vcpuid)
 	if (error != 0)
 		err(EX_OSERR, "could not activate CPU %d", vi->vcpuid);
 
-	CPU_SET_ATOMIC(vcpuid, &cpumask);
+	SCORPI_CPU_SET_ATOMIC(vcpuid, &cpumask);
 
 	error = vm_suspend_cpu(vi->vcpu);
 	assert(error == 0);
@@ -439,12 +439,12 @@ fbsdrun_deletecpu(int vcpu)
 	static pthread_cond_t resetcpu_cond = PTHREAD_COND_INITIALIZER;
 
 	pthread_mutex_lock(&resetcpu_mtx);
-	if (!CPU_ISSET(vcpu, &cpumask)) {
+	if (!SCORPI_CPU_ISSET(vcpu, &cpumask)) {
 		EPRINTLN("Attempting to delete unknown cpu %d", vcpu);
 		exit(4);
 	}
 
-	CPU_CLR(vcpu, &cpumask);
+	SCORPI_CPU_CLR(vcpu, &cpumask);
 
 	if (vcpu != BSP) {
 		pthread_cond_signal(&resetcpu_cond);
@@ -453,7 +453,7 @@ fbsdrun_deletecpu(int vcpu)
 		/* NOTREACHED */
 	}
 
-	while (!CPU_EMPTY(&cpumask)) {
+	while (!SCORPI_CPU_EMPTY(&cpumask)) {
 		pthread_cond_wait(&resetcpu_cond, &resetcpu_mtx);
 	}
 	pthread_mutex_unlock(&resetcpu_mtx);
@@ -475,7 +475,7 @@ vm_loop(struct vmctx *ctx, struct vcpu *vcpu)
 	cpuset_t active_cpus, dmask;
 
 	vm_active_cpus(ctx, &active_cpus);
-	while (!CPU_ISSET(vcpu_id(vcpu), &active_cpus)) {
+	while (!SCORPI_CPU_ISSET(vcpu_id(vcpu), &active_cpus)) {
 		usleep(100);
 		vm_active_cpus(ctx, &active_cpus);
 	}

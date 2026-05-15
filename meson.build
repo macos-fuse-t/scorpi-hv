@@ -2,7 +2,12 @@ project('scorpi', 'c',
   version: '0.1.0',
   default_options: ['c_std=c11'])
 
+cc = meson.get_compiler('c')
+
 add_project_arguments('-Wno-pointer-sign', language: 'c')
+if cc.has_argument('-Wno-format')
+  add_project_arguments('-Wno-format', language: 'c')
+endif
 add_project_arguments('-D_GNU_SOURCE', language: 'c')
 
 cmake = import('cmake')
