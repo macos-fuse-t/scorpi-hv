@@ -62,7 +62,6 @@
 #include "usb_emul.h"
 
 /* Start of mem + 1M */
-#define FDT_BASE 0xFFFF0000
 #define FDT_SIZE (64 * 1024)
 
 /* Start of lowmem + 64K */
@@ -489,7 +488,7 @@ init_acpi_ged(struct vmctx *ctx)
 static vm_paddr_t
 fdt_gpa(struct vmctx *ctx)
 {
-	return (FDT_BASE);
+	return (VM_FDT_BASE);
 }
 
 int

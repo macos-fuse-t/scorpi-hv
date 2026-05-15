@@ -2814,7 +2814,6 @@ pci_emul_dior(struct pci_devinst *pi, int baridx, uint64_t offset, int size)
 	return (value);
 }
 
-#ifdef BHYVE_SNAPSHOT
 struct pci_devinst *
 pci_next(const struct pci_devinst *cursor)
 {
@@ -2851,6 +2850,52 @@ pci_next(const struct pci_devinst *cursor)
 	return (NULL);
 }
 
+static void
+pci_reset_msi(struct pci_devinst *pi)
+{
+	uint8_t capoff, capid;
+
+	pi->pi_msi.enabled = 0;
+	pi->pi_msi.addr = 0;
+	pi->pi_msi.msg_data = 0;
+	pi->pi_msi.maxmsgnum = 0;
+
+	pi->pi_msix.enabled = 0;
+	pi->pi_msix.function_mask = 0;
+	for (int i = 0; i < pi->pi_msix.table_count; i++) {
+		pi->pi_msix.table[i].addr = 0;
+		pi->pi_msix.table[i].msg_data = 0;
+		pi->pi_msix.table[i].vector_control = PCIM_MSIX_VCTRL_MASK;
+	}
+
+	if ((pci_get_cfgdata16(pi, PCIR_STATUS) & PCIM_STATUS_CAPPRESENT) == 0)
+		return;
+
+	capoff = CAP_START_OFFSET;
+	while (capoff != 0) {
+		capid = pci_get_cfgdata8(pi, capoff);
+		if (capid == PCIY_MSI || capid == PCIY_MSIX)
+			pci_emul_capwrite(pi, capoff + 2, 2, 0, capoff, capid);
+		capoff = pci_get_cfgdata8(pi, capoff + 1);
+	}
+}
+
+void
+pci_reset_devices(void)
+{
+	struct pci_devinst *pi;
+
+	pi = NULL;
+	while ((pi = pci_next(pi)) != NULL) {
+		if (pi->pi_d->pe_reset != NULL)
+			(*pi->pi_d->pe_reset)(pi);
+		pci_reset_msi(pi);
+		if (pi->pi_lintr.pin > 0)
+			pci_lintr_deassert(pi);
+	}
+}
+
+#ifdef BHYVE_SNAPSHOT
 static int
 pci_emul_snapshot(struct vm_snapshot_meta *meta __unused)
 {

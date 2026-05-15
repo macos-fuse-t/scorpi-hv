@@ -42,6 +42,8 @@ scorpi_kvm_unimplemented(const char *func)
 	return (-1);
 }
 
+static int kvm_set_mp_state(struct vcpu *vcpu, uint32_t state);
+
 int
 vm_create(const char *name)
 {
@@ -250,9 +252,17 @@ vm_vcpu_deinit(struct vcpu *vcpu __unused)
 }
 
 int
-vcpu_reset(struct vcpu *vcpu __unused)
+vcpu_reset(struct vcpu *vcpu)
 {
+#if defined(__aarch64__)
+	if (kvm_arch_vcpu_init(vcpu) != 0)
+		return (-1);
+	return (kvm_set_mp_state(vcpu,
+	    vcpu->vcpuid == 0 ? KVM_MP_STATE_RUNNABLE : KVM_MP_STATE_STOPPED));
+#else
+	(void)vcpu;
 	return (scorpi_kvm_unimplemented(__func__));
+#endif
 }
 
 int
@@ -589,6 +599,30 @@ kvm_set_suspended_exit(struct vcpu *vcpu, struct vm_exit *vme,
 }
 
 static int
+kvm_set_mp_state(struct vcpu *vcpu, uint32_t state)
+{
+	struct kvm_mp_state mp_state;
+
+	if (vcpu == NULL || vcpu->fd < 0) {
+		errno = EINVAL;
+		return (-1);
+	}
+
+	memset(&mp_state, 0, sizeof(mp_state));
+	mp_state.mp_state = state;
+	return (ioctl(vcpu->fd, KVM_SET_MP_STATE, &mp_state));
+}
+
+static int
+kvm_suspend_for_reset(struct vmctx *ctx, int current_vcpuid)
+{
+	(void)current_vcpuid;
+
+	ctx->suspend_reason = VM_SUSPEND_RESET;
+	return (0);
+}
+
+static int
 kvm_system_event_exit(struct vcpu *vcpu, struct kvm_run *run,
     struct vm_exit *vme)
 {
@@ -597,6 +631,8 @@ kvm_system_event_exit(struct vcpu *vcpu, struct kvm_run *run,
 		kvm_set_suspended_exit(vcpu, vme, VM_SUSPEND_POWEROFF);
 		return (0);
 	case KVM_SYSTEM_EVENT_RESET:
+		if (kvm_suspend_for_reset(vcpu->ctx, vcpu->vcpuid) != 0)
+			return (-1);
 		kvm_set_suspended_exit(vcpu, vme, VM_SUSPEND_RESET);
 		return (0);
 	case KVM_SYSTEM_EVENT_CRASH:
@@ -673,6 +709,10 @@ int
 vm_suspend(struct vmctx *ctx, enum vm_suspend_how how)
 {
 	ctx->suspend_reason = how;
+#if defined(__aarch64__)
+	if (how == VM_SUSPEND_RESET)
+		return (kvm_suspend_for_reset(ctx, -1));
+#endif
 	return (0);
 }
 

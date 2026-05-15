@@ -466,25 +466,33 @@ fbsdrun_suspendcpu(int vcpuid)
 }
 
 static void
-vm_loop(struct vmctx *ctx, struct vcpu *vcpu)
+vm_wait_for_vcpu_active(struct vmctx *ctx, struct vcpu *vcpu)
 {
-	struct vm_exit vme;
-	struct vm_run vmrun;
-	int error, rc;
-	enum vm_exitcode exitcode;
-	cpuset_t active_cpus, dmask;
+	cpuset_t active_cpus;
 
 	vm_active_cpus(ctx, &active_cpus);
 	while (!SCORPI_CPU_ISSET(vcpu_id(vcpu), &active_cpus)) {
 		usleep(100);
 		vm_active_cpus(ctx, &active_cpus);
 	}
+}
+
+static void
+vm_loop(struct vmctx *ctx, struct vcpu *vcpu)
+{
+	struct vm_exit vme;
+	struct vm_run vmrun;
+	int error, rc;
+	enum vm_exitcode exitcode;
+	cpuset_t dmask;
 
 	vmrun.vm_exit = &vme;
 	vmrun.cpuset = &dmask;
 	vmrun.cpusetsize = sizeof(dmask);
 
 	while (1) {
+		vm_wait_for_vcpu_active(ctx, vcpu);
+
 		error = vm_run(vcpu, &vmrun);
 		if (error != 0)
 			break;
@@ -513,7 +521,17 @@ vm_loop(struct vmctx *ctx, struct vcpu *vcpu)
 }
 
 static bool
-start_all_vcpus_at_boot(struct vmctx *ctx)
+create_all_vcpu_threads_at_boot(void)
+{
+#if defined(__aarch64__)
+	return (true);
+#else
+	return (false);
+#endif
+}
+
+static bool
+resume_all_vcpus_at_boot(struct vmctx *ctx)
 {
 #if defined(__aarch64__)
 	return (vm_uses_in_kernel_psci(ctx));
@@ -892,7 +910,7 @@ bhyve_run_configured_vm(void)
 	/*
 	 * Add all vCPUs.
 	 */
-	if (start_all_vcpus_at_boot(ctx)) {
+	if (create_all_vcpu_threads_at_boot()) {
 		for (int vcpuid = 0; vcpuid < guest_ncpus; vcpuid++)
 			bhyve_start_vcpu(vcpu_info[vcpuid].vcpu, vcpuid == BSP);
 	} else {
@@ -958,7 +976,7 @@ bhyve_run_configured_vm(void)
 			vm_resume_cpu(vcpu_info[vcpuid].vcpu);
 	} else
 #endif
-		if (start_all_vcpus_at_boot(ctx))
+		if (resume_all_vcpus_at_boot(ctx))
 			vm_resume_all_cpus(ctx);
 		else
 			vm_resume_cpu(bsp);

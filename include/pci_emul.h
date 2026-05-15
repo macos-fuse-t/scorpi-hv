@@ -123,6 +123,8 @@ struct pci_devemu {
 	void	(*pe_baraddr)(struct pci_devinst *pi,
 			      int baridx, int enabled, uint64_t address);
 
+	void	(*pe_reset)(struct pci_devinst *pi);
+
 	/* Save/restore device state */
 	int	(*pe_snapshot)(struct vm_snapshot_meta *meta);
 	int	(*pe_pause)(struct pci_devinst *pi);
@@ -301,6 +303,7 @@ int	pci_msix_enabled(struct pci_devinst *pi);
 int	pci_msix_table_bar(struct pci_devinst *pi);
 int	pci_msix_pba_bar(struct pci_devinst *pi);
 int	pci_msi_maxmsgnum(struct pci_devinst *pi);
+void	pci_reset_devices(void);
 int	pci_parse_legacy_config(nvlist_t *nvl, const char *opt);
 int	pci_parse_slot(char *opt);
 void    pci_print_supported_devices(void);

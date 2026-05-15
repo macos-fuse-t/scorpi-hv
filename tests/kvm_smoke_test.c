@@ -108,6 +108,14 @@ main(void)
 		ret = fail_errno("vm_vcpu_init secondary");
 		goto out;
 	}
+	if (vm_suspend(ctx, VM_SUSPEND_RESET) != 0) {
+		ret = fail_errno("vm_suspend reset");
+		goto out;
+	}
+	if (vcpu_reset(vcpu) != 0) {
+		ret = fail_errno("vcpu_reset");
+		goto out;
+	}
 
 	if (vm_set_register(vcpu, VM_REG_GUEST_PC, TEST_GPA) != 0) {
 		ret = fail_errno("vm_set_register pc");

@@ -833,6 +833,25 @@ done:
 		pthread_mutex_unlock(vs->vs_mtx);
 }
 
+void
+vi_pci_reset(struct pci_devinst *pi)
+{
+	struct virtio_softc *vs;
+	struct virtio_consts *vc;
+
+	vs = pi->pi_arg;
+	vc = vs->vs_vc;
+
+	if (vs->vs_mtx)
+		pthread_mutex_lock(vs->vs_mtx);
+
+	vs->vs_status = 0;
+	(*vc->vc_reset)(DEV_SOFTC(vs));
+
+	if (vs->vs_mtx)
+		pthread_mutex_unlock(vs->vs_mtx);
+}
+
 /*
  * Initialize the currently-selected virtio queue (vs->vs_curq).
  */

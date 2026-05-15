@@ -439,6 +439,7 @@ uint64_t vi_pci_read(struct pci_devinst *pi, int baridx, uint64_t offset,
 	    int size);
 void	vi_pci_write(struct pci_devinst *pi, int baridx, uint64_t offset,
 	    int size, uint64_t value);
+void	vi_pci_reset(struct pci_devinst *pi);
 int add_virtio10_pci_caps(struct virtio_softc *vs, int barnum);
 void vi_pci_write_modern(struct pci_devinst *pi, int baridx, uint64_t offset, 
 	int size, uint64_t value);

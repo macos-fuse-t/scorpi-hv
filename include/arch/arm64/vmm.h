@@ -105,6 +105,7 @@ enum vm_reg_name {
 #define	VM_INTINFO_SWINTR	(4 << 8)
 
 #define VM_GUEST_BASE_IPA	0x80000000UL	/* Guest kernel start ipa */
+#define	VM_FDT_BASE		0xFFFF0000UL
 
 /*
  * The VM name has to fit into the pathname length constraints of devfs,

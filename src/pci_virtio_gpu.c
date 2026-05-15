@@ -1220,6 +1220,7 @@ static const struct pci_devemu pci_de_vgpu = {
 	.pe_barwrite = pci_vgpu_barwrite,
 	.pe_barread = pci_vgpu_barread,
 	.pe_baraddr = pci_vgpu_baraddr,
+	.pe_reset = vi_pci_reset,
 #ifdef BHYVE_SNAPSHOT
 	.pe_snapshot = vi_pci_snapshot,
 	.pe_pause = vi_pci_pause,

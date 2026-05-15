@@ -786,5 +786,6 @@ static const struct pci_devemu pci_de_vcon = {
 	.pe_barwrite = vi_pci_write,
 	.pe_barread = vi_pci_read,
 	.pe_legacy_config = pci_vtcon_legacy_config,
+	.pe_reset = vi_pci_reset,
 };
 PCI_EMUL_SET(pci_de_vcon);

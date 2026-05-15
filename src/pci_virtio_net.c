@@ -785,6 +785,7 @@ static const struct pci_devemu pci_de_vnet = {
 	.pe_legacy_config = netbe_legacy_config,
 	.pe_barwrite = vi_pci_write,
 	.pe_barread = vi_pci_read,
+	.pe_reset = vi_pci_reset,
 #ifdef BHYVE_SNAPSHOT
 	.pe_snapshot = vi_pci_snapshot,
 	.pe_pause = vi_pci_pause,

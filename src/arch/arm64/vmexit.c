@@ -51,6 +51,7 @@
 #include "config.h"
 #include "debug.h"
 // #include "gdb.h"
+#include "pci_emul.h"
 #include <support/psci.h>
 #include "bootrom.h"
 #include "mem.h"
@@ -104,23 +105,31 @@ vmexit_reg_emul(struct vmctx *ctx __unused, struct vcpu *vcpu __unused,
 static int
 vmexit_suspend(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 {
+	struct vcpu *reset_vcpu;
 	struct vm_exit *vme;
 	enum vm_suspend_how how;
-	//int vcpuid = vcpu_id(vcpu);
 
 	vme = vmrun->vm_exit;
 	how = vme->u.suspended.how;
 
 	switch (how) {
 	case VM_SUSPEND_RESET:
-		if (vcpu_id(vcpu) == 0) {
-			vm_activate_cpu(vcpu);
-			vcpu_reset(vcpu);
-			vm_set_register(vcpu, VM_REG_GUEST_PC,
-			    bootrom_rombase());
-			break;
-		}
-		return VMEXIT_QUIT;
+		if (vcpu_id(vcpu) == 0)
+			reset_vcpu = vcpu;
+		else if (vm_uses_in_kernel_psci(ctx))
+			reset_vcpu = fbsdrun_vcpu(0);
+		else
+			return (VMEXIT_CONTINUE);
+
+		SCORPI_CPU_ZERO(&running_cpumask);
+		SCORPI_CPU_SET_ATOMIC(0, &running_cpumask);
+		pci_reset_devices();
+		vm_activate_cpu(reset_vcpu);
+		vcpu_reset(reset_vcpu);
+		vm_set_register(reset_vcpu, VM_REG_GUEST_X0, VM_FDT_BASE);
+		vm_set_register(reset_vcpu, VM_REG_GUEST_PC,
+		    bootrom_rombase());
+		break;
 	case VM_SUSPEND_POWEROFF:
 		vm_destroy(ctx);
 		exit(0);
@@ -163,19 +172,18 @@ vmexit_smccc(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 		break;
 	case PSCI_FNID_CPU_ON:
 		newcpu = vme->u.smccc_call.args[0];
-		if (newcpu > (uint64_t)guest_ncpus) {
+		if (newcpu >= (uint64_t)guest_ncpus) {
 			smccc_rv = PSCI_RETVAL_INVALID_PARAMS;
 			break;
 		}
 
-		/*if (SCORPI_CPU_ISSET(newcpu, &running_cpumask)) {
+		if (SCORPI_CPU_ISSET(newcpu, &running_cpumask)) {
 			smccc_rv = PSCI_RETVAL_ALREADY_ON;
 			break;
-		}*/
+		}
 
 		newvcpu = fbsdrun_vcpu(newcpu);
 		assert(newvcpu != NULL);
-		bhyve_start_vcpu(newvcpu, false);
 
 		/* Set the context ID */
 		error = vm_set_register(newvcpu, VM_REG_GUEST_X0,
