@@ -50,6 +50,12 @@ struct vmctx {
 	int kvm_fd;
 	int vm_fd;
 	int vgic_fd;
+#if defined(__aarch64__)
+	uint64_t vgic_dist_base;
+	uint64_t vgic_msi_base;
+	uint32_t vgic_msi_spi_base;
+	uint32_t vgic_msi_spi_count;
+#endif
 
 	cpuset_t active_cpus;
 	cpuset_t suspended_cpus;
@@ -75,3 +81,5 @@ int kvm_arch_attach_vgic(struct vmctx *ctx, uint64_t dist_start,
     size_t dist_size, uint64_t redist_start, size_t redist_size,
     uint64_t mmio_base, uint32_t spi_intid_base, uint32_t spi_intid_count);
 int kvm_arch_set_irq(struct vmctx *ctx, uint32_t irq, bool level);
+int kvm_arch_raise_msi(struct vmctx *ctx, uint64_t addr, uint64_t msg,
+    int bus, int slot, int func);

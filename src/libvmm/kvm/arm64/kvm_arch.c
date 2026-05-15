@@ -24,6 +24,8 @@
 #define	GIC_MAX_IRQS		1024
 #define	GIC_IRQ_GRANULE		32
 #define	GIC_REDIST_STRIDE	(2 * 64 * 1024)
+#define	GICD_SETSPI_NSR		0x40
+#define	GICM_SET_SPI_NSR	0x40
 
 const char *
 kvm_arch_backend_name(void)
@@ -222,6 +224,10 @@ kvm_arch_attach_vgic(struct vmctx *ctx, uint64_t dist_start,
 		goto fail;
 
 	ctx->vgic_fd = dev.fd;
+	ctx->vgic_dist_base = dist_start;
+	ctx->vgic_msi_base = mmio_base;
+	ctx->vgic_msi_spi_base = spi_intid_base;
+	ctx->vgic_msi_spi_count = spi_intid_count;
 	return (0);
 
 fail:
@@ -253,4 +259,44 @@ kvm_arch_set_irq(struct vmctx *ctx, uint32_t irq, bool level)
 	if (ioctl(ctx->vm_fd, KVM_IRQ_LINE, &irq_level) < 0)
 		return (-1);
 	return (0);
+}
+
+int
+kvm_arch_raise_msi(struct vmctx *ctx, uint64_t addr, uint64_t msg,
+    int bus __unused, int slot __unused, int func __unused)
+{
+	uint32_t irq;
+
+	/*
+	 * The guest is given a GICv3 MBI doorbell, not an emulated ITS.  For
+	 * MBI, the MSI payload is the SPI INTID to make pending.
+	 */
+	if (ctx == NULL || ctx->vm_fd < 0 || ctx->vgic_fd < 0) {
+		errno = ENODEV;
+		return (-1);
+	}
+	if (ctx->vgic_msi_spi_count == 0) {
+		errno = ENODEV;
+		return (-1);
+	}
+	if (addr != ctx->vgic_dist_base + GICD_SETSPI_NSR &&
+	    addr != ctx->vgic_msi_base + GICM_SET_SPI_NSR) {
+		errno = EINVAL;
+		return (-1);
+	}
+	if (msg > UINT32_MAX) {
+		errno = EINVAL;
+		return (-1);
+	}
+
+	irq = msg;
+	if (irq < ctx->vgic_msi_spi_base ||
+	    irq >= ctx->vgic_msi_spi_base + ctx->vgic_msi_spi_count) {
+		errno = EINVAL;
+		return (-1);
+	}
+
+	if (kvm_arch_set_irq(ctx, irq, true) != 0)
+		return (-1);
+	return (kvm_arch_set_irq(ctx, irq, false));
 }

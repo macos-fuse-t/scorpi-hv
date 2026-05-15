@@ -682,15 +682,14 @@ vm_reinit(struct vmctx *ctx __unused)
 	return (scorpi_kvm_unimplemented(__func__));
 }
 
+#if defined(__aarch64__)
 int
-vm_raise_msi(struct vmctx *ctx __unused, uint64_t addr __unused,
-    uint64_t msg __unused, int bus __unused, int slot __unused,
-    int func __unused)
+vm_raise_msi(struct vmctx *ctx, uint64_t addr, uint64_t msg, int bus, int slot,
+    int func)
 {
-	return (scorpi_kvm_unimplemented(__func__));
+	return (kvm_arch_raise_msi(ctx, addr, msg, bus, slot, func));
 }
 
-#if defined(__aarch64__)
 int
 vm_attach_vgic(struct vmctx *ctx __unused, uint64_t dist_start __unused,
     size_t dist_size __unused, uint64_t redist_start __unused,
@@ -728,6 +727,14 @@ int
 vm_deassert_irq(struct vmctx *ctx, uint32_t irq)
 {
 	return (kvm_arch_set_irq(ctx, irq, false));
+}
+#else
+int
+vm_raise_msi(struct vmctx *ctx __unused, uint64_t addr __unused,
+    uint64_t msg __unused, int bus __unused, int slot __unused,
+    int func __unused)
+{
+	return (scorpi_kvm_unimplemented(__func__));
 }
 #endif
 

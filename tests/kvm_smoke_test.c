@@ -88,6 +88,10 @@ main(void)
 		ret = fail_errno("vm_deassert_irq");
 		goto out;
 	}
+	if (vm_raise_msi(ctx, TEST_GIC_DIST_BASE + 0x40, 64, 0, 0, 0) != 0) {
+		ret = fail_errno("vm_raise_msi");
+		goto out;
+	}
 
 	if (vm_vcpu_init(vcpu) != 0) {
 		ret = fail_errno("vm_vcpu_init");
