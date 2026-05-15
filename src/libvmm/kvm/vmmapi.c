@@ -138,8 +138,9 @@ struct vcpu *
 vm_vcpu_open(struct vmctx *ctx, int vcpuid)
 {
 	struct vcpu *vcpu;
+	int saved_errno;
 
-	if (vcpuid < 0 || vcpuid >= MAX_VCPUS) {
+	if (ctx == NULL || vcpuid < 0 || vcpuid >= MAX_VCPUS) {
 		errno = EINVAL;
 		return (NULL);
 	}
@@ -150,6 +151,17 @@ vm_vcpu_open(struct vmctx *ctx, int vcpuid)
 	vcpu->ctx = ctx;
 	vcpu->vcpuid = vcpuid;
 	vcpu->fd = -1;
+
+	if (ctx->vm_fd >= 0) {
+		vcpu->fd = ioctl(ctx->vm_fd, KVM_CREATE_VCPU, vcpuid);
+		if (vcpu->fd < 0) {
+			saved_errno = errno;
+			free(vcpu);
+			errno = saved_errno;
+			return (NULL);
+		}
+	}
+
 	ctx->vcpus[vcpuid] = vcpu;
 	return (vcpu);
 }
@@ -186,18 +198,14 @@ vm_vcpu_init(struct vcpu *vcpu)
 		errno = EINVAL;
 		return (-1);
 	}
-	if (vcpu->fd >= 0)
+	if (vcpu->initialized)
 		return (0);
 
 	ctx = vcpu->ctx;
-	if (ctx->vm_fd < 0 || ctx->kvm_fd < 0) {
+	if (ctx->vm_fd < 0 || ctx->kvm_fd < 0 || vcpu->fd < 0) {
 		errno = ENODEV;
 		return (-1);
 	}
-
-	vcpu->fd = ioctl(ctx->vm_fd, KVM_CREATE_VCPU, vcpu->vcpuid);
-	if (vcpu->fd < 0)
-		return (-1);
 
 	mmap_size = ioctl(ctx->kvm_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
 	if (mmap_size <= 0)
@@ -212,6 +220,14 @@ vm_vcpu_init(struct vcpu *vcpu)
 	vcpu->run_size = (size_t)mmap_size;
 	if (kvm_arch_vcpu_init(vcpu) != 0)
 		goto fail;
+	vcpu->initialized = true;
+
+	for (int reg = 0; reg < VM_REG_LAST; reg++) {
+		if (!vcpu->reg_set[reg])
+			continue;
+		if (kvm_arch_set_register(vcpu, reg, vcpu->regs[reg]) != 0)
+			goto fail;
+	}
 
 	return (0);
 
@@ -222,10 +238,7 @@ fail:
 		vcpu->run = NULL;
 		vcpu->run_size = 0;
 	}
-	if (vcpu->fd >= 0) {
-		close(vcpu->fd);
-		vcpu->fd = -1;
-	}
+	vcpu->initialized = false;
 	errno = saved_errno;
 	return (-1);
 }
@@ -487,7 +500,8 @@ vm_set_register(struct vcpu *vcpu, int reg, uint64_t val)
 	if (reg < 0 || reg >= VM_REG_LAST)
 		return (EINVAL);
 	vcpu->regs[reg] = val;
-	if (vcpu->fd >= 0)
+	vcpu->reg_set[reg] = true;
+	if (vcpu->initialized)
 		return (kvm_arch_set_register(vcpu, reg, val));
 	return (0);
 }
@@ -497,7 +511,7 @@ vm_get_register(struct vcpu *vcpu, int reg, uint64_t *retval)
 {
 	if (reg < 0 || reg >= VM_REG_LAST)
 		return (EINVAL);
-	if (vcpu->fd >= 0)
+	if (vcpu->initialized)
 		return (kvm_arch_get_register(vcpu, reg, retval));
 	*retval = vcpu->regs[reg];
 	return (0);
@@ -561,7 +575,8 @@ vm_attach_vgic(struct vmctx *ctx __unused, uint64_t dist_start __unused,
     size_t redist_size __unused, uint64_t mmio_base __unused,
     uint32_t spi_intid_base __unused, uint32_t spi_intid_count __unused)
 {
-	return (scorpi_kvm_unimplemented(__func__));
+	return (kvm_arch_attach_vgic(ctx, dist_start, dist_size, redist_start,
+	    redist_size, mmio_base, spi_intid_base, spi_intid_count));
 }
 
 int
@@ -577,7 +592,7 @@ vm_get_spi_interrupt_range(uint32_t *spi_intid_base, uint32_t *spi_intid_count)
 	if (spi_intid_base != NULL)
 		*spi_intid_base = 32;
 	if (spi_intid_count != NULL)
-		*spi_intid_count = 0;
+		*spi_intid_count = 224;
 	return (0);
 }
 

@@ -10,6 +10,10 @@
 #include <vmmapi.h>
 
 #define	TEST_GPA	0x40000000ULL
+#define	TEST_GIC_DIST_BASE	0x2f000000ULL
+#define	TEST_GIC_DIST_SIZE	0x10000UL
+#define	TEST_GIC_REDIST_BASE	0x2f100000ULL
+#define	TEST_GIC_REDIST_SIZE	0x20000UL
 #define	TEST_MEM_SIZE	0x10000UL
 #define	TEST_SKIP	77
 #define	TEST_VCPU_ID	0
@@ -68,6 +72,12 @@ main(void)
 	vcpu = vm_vcpu_open(ctx, TEST_VCPU_ID);
 	if (vcpu == NULL) {
 		ret = fail_errno("vm_vcpu_open");
+		goto out;
+	}
+
+	if (vm_attach_vgic(ctx, TEST_GIC_DIST_BASE, TEST_GIC_DIST_SIZE,
+	    TEST_GIC_REDIST_BASE, TEST_GIC_REDIST_SIZE, 0, 32, 224) != 0) {
+		ret = fail_errno("vm_attach_vgic");
 		goto out;
 	}
 

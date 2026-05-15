@@ -62,10 +62,15 @@ struct vcpu {
 	int fd;
 	void *run;
 	size_t run_size;
+	bool initialized;
 	uint64_t regs[VM_REG_LAST];
+	bool reg_set[VM_REG_LAST];
 };
 
 const char *kvm_arch_backend_name(void);
 int kvm_arch_vcpu_init(struct vcpu *vcpu);
 int kvm_arch_set_register(struct vcpu *vcpu, int reg, uint64_t val);
 int kvm_arch_get_register(struct vcpu *vcpu, int reg, uint64_t *retval);
+int kvm_arch_attach_vgic(struct vmctx *ctx, uint64_t dist_start,
+    size_t dist_size, uint64_t redist_start, size_t redist_size,
+    uint64_t mmio_base, uint32_t spi_intid_base, uint32_t spi_intid_count);
