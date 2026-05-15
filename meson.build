@@ -3,12 +3,23 @@ project('scorpi', 'c',
   default_options: ['c_std=c11'])
 
 cc = meson.get_compiler('c')
+host_system = host_machine.system()
+arch = host_machine.cpu_family()
 
 add_project_arguments('-Wno-pointer-sign', language: 'c')
 if cc.has_argument('-Wno-format')
   add_project_arguments('-Wno-format', language: 'c')
 endif
 add_project_arguments('-D_GNU_SOURCE', language: 'c')
+
+macos_min_version = '15.0'
+if host_system == 'darwin'
+  macos_min_flag = '-mmacosx-version-min=' + macos_min_version
+  if cc.has_argument(macos_min_flag)
+    add_global_arguments(macos_min_flag, language: 'c')
+    add_global_link_arguments(macos_min_flag, language: 'c')
+  endif
+endif
 
 cmake = import('cmake')
 
@@ -22,14 +33,26 @@ libslirp_proj = subproject(
 slirp_dep = libslirp_proj.get_variable('libslirp_libdep')
 
 libwebsockets_opts = cmake.subproject_options()
-libwebsockets_opts.add_cmake_defines({
-    'CMAKE_POSITION_INDEPENDENT_CODE': true,
-    'CMAKE_C_FLAGS': '-D_GNU_SOURCE',
-    'LWS_WITH_SHARED': false,
-    'LWS_WITH_STATIC': true,
-    'LWS_WITH_SSL': false,
-    'LWS_WITHOUT_TESTAPPS': true,
-})
+if host_system == 'darwin'
+    libwebsockets_opts.add_cmake_defines({
+        'CMAKE_POSITION_INDEPENDENT_CODE': true,
+        'CMAKE_OSX_DEPLOYMENT_TARGET': macos_min_version,
+        'CMAKE_C_FLAGS': '-D_GNU_SOURCE ' + macos_min_flag,
+        'LWS_WITH_SHARED': false,
+        'LWS_WITH_STATIC': true,
+        'LWS_WITH_SSL': false,
+        'LWS_WITHOUT_TESTAPPS': true,
+    })
+else
+    libwebsockets_opts.add_cmake_defines({
+        'CMAKE_POSITION_INDEPENDENT_CODE': true,
+        'CMAKE_C_FLAGS': '-D_GNU_SOURCE',
+        'LWS_WITH_SHARED': false,
+        'LWS_WITH_STATIC': true,
+        'LWS_WITH_SSL': false,
+        'LWS_WITHOUT_TESTAPPS': true,
+    })
+endif
 libwebsockets_opts.set_install(false)
 libwebsockets_proj = cmake.subproject(
     'libwebsockets',
@@ -38,8 +61,6 @@ libwebsockets_dep = libwebsockets_proj.dependency('websockets')
 
 codesign_identity = run_command('sh', '-c', 'echo $CODESIGN_IDENTITY').stdout().strip()
 
-host_system = host_machine.system()
-arch = host_machine.cpu_family()
 hypervisor_backend = get_option('hypervisor')
 
 if hypervisor_backend == 'auto'
