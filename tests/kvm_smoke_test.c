@@ -80,6 +80,14 @@ main(void)
 		ret = fail_errno("vm_attach_vgic");
 		goto out;
 	}
+	if (vm_assert_irq(ctx, 32) != 0) {
+		ret = fail_errno("vm_assert_irq");
+		goto out;
+	}
+	if (vm_deassert_irq(ctx, 32) != 0) {
+		ret = fail_errno("vm_deassert_irq");
+		goto out;
+	}
 
 	if (vm_vcpu_init(vcpu) != 0) {
 		ret = fail_errno("vm_vcpu_init");

@@ -597,15 +597,15 @@ vm_get_spi_interrupt_range(uint32_t *spi_intid_base, uint32_t *spi_intid_count)
 }
 
 int
-vm_assert_irq(struct vmctx *ctx __unused, uint32_t irq __unused)
+vm_assert_irq(struct vmctx *ctx, uint32_t irq)
 {
-	return (scorpi_kvm_unimplemented(__func__));
+	return (kvm_arch_set_irq(ctx, irq, true));
 }
 
 int
-vm_deassert_irq(struct vmctx *ctx __unused, uint32_t irq __unused)
+vm_deassert_irq(struct vmctx *ctx, uint32_t irq)
 {
-	return (scorpi_kvm_unimplemented(__func__));
+	return (kvm_arch_set_irq(ctx, irq, false));
 }
 #endif
 

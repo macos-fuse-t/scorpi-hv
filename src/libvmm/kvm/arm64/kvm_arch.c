@@ -20,6 +20,7 @@
 
 #define	GIC_SPI_BASE		32
 #define	GIC_MIN_IRQS		64
+#define	GIC_MAX_SPI		1019
 #define	GIC_MAX_IRQS		1024
 #define	GIC_IRQ_GRANULE		32
 #define	GIC_REDIST_STRIDE	(2 * 64 * 1024)
@@ -228,4 +229,28 @@ fail:
 	close(dev.fd);
 	errno = saved_errno;
 	return (-1);
+}
+
+int
+kvm_arch_set_irq(struct vmctx *ctx, uint32_t irq, bool level)
+{
+	struct kvm_irq_level irq_level;
+
+	if (ctx == NULL || ctx->vm_fd < 0 || ctx->vgic_fd < 0) {
+		errno = ENODEV;
+		return (-1);
+	}
+	if (irq < GIC_SPI_BASE || irq > GIC_MAX_SPI) {
+		errno = EINVAL;
+		return (-1);
+	}
+
+	memset(&irq_level, 0, sizeof(irq_level));
+	irq_level.irq = (KVM_ARM_IRQ_TYPE_SPI << KVM_ARM_IRQ_TYPE_SHIFT) |
+	    (irq << KVM_ARM_IRQ_NUM_SHIFT);
+	irq_level.level = level ? 1 : 0;
+
+	if (ioctl(ctx->vm_fd, KVM_IRQ_LINE, &irq_level) < 0)
+		return (-1);
+	return (0);
 }

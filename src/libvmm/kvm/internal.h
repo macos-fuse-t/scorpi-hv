@@ -74,3 +74,4 @@ int kvm_arch_get_register(struct vcpu *vcpu, int reg, uint64_t *retval);
 int kvm_arch_attach_vgic(struct vmctx *ctx, uint64_t dist_start,
     size_t dist_size, uint64_t redist_start, size_t redist_size,
     uint64_t mmio_base, uint32_t spi_intid_base, uint32_t spi_intid_count);
+int kvm_arch_set_irq(struct vmctx *ctx, uint32_t irq, bool level);
