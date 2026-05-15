@@ -27,6 +27,7 @@ struct kvm_mem_range {
 	size_t len;
 	void *object;
 	int slot;
+	bool owned;
 };
 
 struct vmctx {
@@ -65,3 +66,6 @@ struct vcpu {
 };
 
 const char *kvm_arch_backend_name(void);
+int kvm_arch_vcpu_init(struct vcpu *vcpu);
+int kvm_arch_set_register(struct vcpu *vcpu, int reg, uint64_t val);
+int kvm_arch_get_register(struct vcpu *vcpu, int reg, uint64_t *retval);

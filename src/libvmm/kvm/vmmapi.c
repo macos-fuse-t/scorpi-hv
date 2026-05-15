@@ -5,6 +5,7 @@
  */
 
 #include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <sys/time.h>
 
 #include <assert.h>
@@ -23,6 +24,7 @@
 
 #define	MB	(1024 * 1024UL)
 #define	GB	(1024 * 1024 * 1024UL)
+#define	KVM_API_VERSION_EXPECTED	12
 
 #ifdef __amd64__
 #define	VM_LOWMEM_LIMIT	(3 * GB)
@@ -40,21 +42,29 @@ scorpi_kvm_unimplemented(const char *func)
 }
 
 int
-vm_create(const char *name __unused)
+vm_create(const char *name)
 {
-	return (scorpi_kvm_unimplemented(__func__));
+	struct vmctx *ctx;
+
+	ctx = vm_openf(name, VMMAPI_OPEN_CREATE);
+	if (ctx == NULL)
+		return (-1);
+	vm_close(ctx);
+	return (0);
 }
 
 struct vmctx *
-vm_open(const char *name __unused)
+vm_open(const char *name)
 {
-	return (NULL);
+	return (vm_openf(name, 0));
 }
 
 struct vmctx *
 vm_openf(const char *name, int flags __unused)
 {
 	struct vmctx *ctx;
+	int api_version;
+	int saved_errno;
 
 	ctx = calloc(1, sizeof(*ctx));
 	if (ctx == NULL)
@@ -69,7 +79,27 @@ vm_openf(const char *name, int flags __unused)
 	ctx->threads = 1;
 	ctx->maxcpus = MAX_VCPUS;
 
+	ctx->kvm_fd = open("/dev/kvm", O_RDWR | O_CLOEXEC);
+	if (ctx->kvm_fd < 0)
+		goto fail;
+
+	api_version = ioctl(ctx->kvm_fd, KVM_GET_API_VERSION, 0);
+	if (api_version != KVM_API_VERSION_EXPECTED) {
+		errno = EPROTONOSUPPORT;
+		goto fail;
+	}
+
+	ctx->vm_fd = ioctl(ctx->kvm_fd, KVM_CREATE_VM, 0);
+	if (ctx->vm_fd < 0)
+		goto fail;
+
 	return (ctx);
+
+fail:
+	saved_errno = errno;
+	vm_close(ctx);
+	errno = saved_errno;
+	return (NULL);
 }
 
 void
@@ -78,8 +108,10 @@ vm_close(struct vmctx *ctx)
 	if (ctx == NULL)
 		return;
 
-	for (int i = 0; i < ctx->num_mem_ranges; i++)
-		free(ctx->mem_ranges[i].object);
+	for (int i = 0; i < ctx->num_mem_ranges; i++) {
+		if (ctx->mem_ranges[i].owned)
+			free(ctx->mem_ranges[i].object);
+	}
 	if (ctx->vgic_fd >= 0)
 		close(ctx->vgic_fd);
 	if (ctx->vm_fd >= 0)
@@ -143,9 +175,59 @@ vcpu_id(struct vcpu *vcpu)
 }
 
 int
-vm_vcpu_init(struct vcpu *vcpu __unused)
+vm_vcpu_init(struct vcpu *vcpu)
 {
-	return (scorpi_kvm_unimplemented(__func__));
+	struct vmctx *ctx;
+	void *run;
+	int mmap_size;
+	int saved_errno;
+
+	if (vcpu == NULL || vcpu->ctx == NULL) {
+		errno = EINVAL;
+		return (-1);
+	}
+	if (vcpu->fd >= 0)
+		return (0);
+
+	ctx = vcpu->ctx;
+	if (ctx->vm_fd < 0 || ctx->kvm_fd < 0) {
+		errno = ENODEV;
+		return (-1);
+	}
+
+	vcpu->fd = ioctl(ctx->vm_fd, KVM_CREATE_VCPU, vcpu->vcpuid);
+	if (vcpu->fd < 0)
+		return (-1);
+
+	mmap_size = ioctl(ctx->kvm_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
+	if (mmap_size <= 0)
+		goto fail;
+
+	run = mmap(NULL, (size_t)mmap_size, PROT_READ | PROT_WRITE,
+	    MAP_SHARED, vcpu->fd, 0);
+	if (run == MAP_FAILED)
+		goto fail;
+
+	vcpu->run = run;
+	vcpu->run_size = (size_t)mmap_size;
+	if (kvm_arch_vcpu_init(vcpu) != 0)
+		goto fail;
+
+	return (0);
+
+fail:
+	saved_errno = errno;
+	if (vcpu->run != NULL && vcpu->run_size != 0) {
+		munmap(vcpu->run, vcpu->run_size);
+		vcpu->run = NULL;
+		vcpu->run_size = 0;
+	}
+	if (vcpu->fd >= 0) {
+		close(vcpu->fd);
+		vcpu->fd = -1;
+	}
+	errno = saved_errno;
+	return (-1);
 }
 
 void
@@ -213,8 +295,10 @@ static int
 vm_setup_memory_segment_internal(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
     uint64_t prot, uintptr_t *addr)
 {
+	struct kvm_userspace_memory_region region;
 	struct kvm_mem_range *seg;
 	void *object;
+	bool owned;
 
 	if ((gpa & PAGE_MASK) || (len & PAGE_MASK) || len == 0)
 		return (EINVAL);
@@ -226,19 +310,46 @@ vm_setup_memory_segment_internal(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 		return (E2BIG);
 
 	if ((prot & PROT_DONT_ALLOCATE) != 0) {
+		if (addr == NULL || *addr == 0)
+			return (EINVAL);
 		object = (void *)*addr;
+		owned = false;
 	} else {
 		if (posix_memalign(&object, PAGE_SIZE, len) != 0)
 			return (ENOMEM);
+		memset(object, 0, len);
 		if (addr != NULL)
 			*addr = (uintptr_t)object;
+		owned = true;
 	}
 
-	seg = &ctx->mem_ranges[ctx->num_mem_ranges++];
+	seg = &ctx->mem_ranges[ctx->num_mem_ranges];
 	seg->gpa = gpa;
 	seg->len = len;
 	seg->object = object;
-	seg->slot = ctx->num_mem_ranges - 1;
+	seg->slot = ctx->num_mem_ranges;
+	seg->owned = owned;
+
+	if (ctx->vm_fd >= 0) {
+		memset(&region, 0, sizeof(region));
+		region.slot = (uint32_t)seg->slot;
+		region.guest_phys_addr = gpa;
+		region.memory_size = len;
+		region.userspace_addr = (uintptr_t)object;
+#ifdef KVM_MEM_READONLY
+		if ((prot & PROT_WRITE) == 0)
+			region.flags |= KVM_MEM_READONLY;
+#endif
+		if (ioctl(ctx->vm_fd, KVM_SET_USER_MEMORY_REGION,
+		    &region) < 0) {
+			int error = errno;
+			if (owned)
+				free(object);
+			return (error);
+		}
+	}
+
+	ctx->num_mem_ranges++;
 	return (0);
 }
 
@@ -376,6 +487,8 @@ vm_set_register(struct vcpu *vcpu, int reg, uint64_t val)
 	if (reg < 0 || reg >= VM_REG_LAST)
 		return (EINVAL);
 	vcpu->regs[reg] = val;
+	if (vcpu->fd >= 0)
+		return (kvm_arch_set_register(vcpu, reg, val));
 	return (0);
 }
 
@@ -384,6 +497,8 @@ vm_get_register(struct vcpu *vcpu, int reg, uint64_t *retval)
 {
 	if (reg < 0 || reg >= VM_REG_LAST)
 		return (EINVAL);
+	if (vcpu->fd >= 0)
+		return (kvm_arch_get_register(vcpu, reg, retval));
 	*retval = vcpu->regs[reg];
 	return (0);
 }

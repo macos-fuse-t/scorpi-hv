@@ -52,7 +52,12 @@ if host_machine.system() == 'linux'
   if host_machine.cpu_family() == 'aarch64'
     kvm_smoke_test_executable = executable(
       'kvm_smoke_test',
-      files('kvm_smoke_test.c'),
+      files(
+        'kvm_smoke_test.c',
+        '../src/libvmm/kvm/vmmapi.c',
+        '../src/libvmm/kvm/arm64/kvm_arch.c',
+      ),
+      dependencies: libutil_dep,
       include_directories: inc,
     )
 
