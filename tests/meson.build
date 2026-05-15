@@ -48,6 +48,16 @@ if host_machine.system() == 'linux'
   )
 
   test('mevent_linux_test', mevent_linux_test_executable)
+
+  if host_machine.cpu_family() == 'aarch64'
+    kvm_smoke_test_executable = executable(
+      'kvm_smoke_test',
+      files('kvm_smoke_test.c'),
+      include_directories: inc,
+    )
+
+    test('kvm_smoke_test', kvm_smoke_test_executable)
+  endif
 endif
 
 scorpi_image_backend_test_executable = executable(
