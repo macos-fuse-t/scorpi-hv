@@ -31,7 +31,9 @@
 #include <sys/types.h>
 #include <dev/ic/ns16550.h>
 
+#ifdef BHYVE_SNAPSHOT
 #include <machine/vmm_snapshot.h>
+#endif
 
 #include <assert.h>
 #include <errno.h>
