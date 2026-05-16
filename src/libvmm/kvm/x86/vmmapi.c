@@ -530,7 +530,8 @@ vm_get_memflags(struct vmctx *ctx)
 }
 
 static int
-vm_add_memslot(struct vmctx *ctx, vm_paddr_t gpa, size_t len, void *host)
+vm_add_memslot(struct vmctx *ctx, vm_paddr_t gpa, size_t len, void *host,
+    uint64_t prot)
 {
 	struct kvm_userspace_memory_region region;
 	struct kvm_memslot *slot;
@@ -549,6 +550,10 @@ vm_add_memslot(struct vmctx *ctx, vm_paddr_t gpa, size_t len, void *host)
 	region.guest_phys_addr = gpa;
 	region.memory_size = len;
 	region.userspace_addr = (uintptr_t)host;
+#ifdef KVM_MEM_READONLY
+	if ((prot & PROT_WRITE) == 0)
+		region.flags |= KVM_MEM_READONLY;
+#endif
 
 	if (kvm_ioctl(ctx->vm_fd, KVM_SET_USER_MEMORY_REGION, &region) < 0)
 		return (errno);
@@ -559,21 +564,31 @@ vm_add_memslot(struct vmctx *ctx, vm_paddr_t gpa, size_t len, void *host)
 
 int
 vm_setup_memory_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
-    uint64_t prot __unused, uintptr_t *addr)
+    uint64_t prot, uintptr_t *addr)
 {
 	void *host;
+	bool owned;
 	int error;
 
 	if ((gpa & PAGE_MASK) != 0 || (len & PAGE_MASK) != 0 || len == 0)
 		return (EINVAL);
 
-	if (posix_memalign(&host, PAGE_SIZE, len) != 0)
-		return (ENOMEM);
-	memset(host, 0, len);
+	if ((prot & PROT_DONT_ALLOCATE) != 0) {
+		if (addr == NULL || *addr == 0)
+			return (EINVAL);
+		host = (void *)*addr;
+		owned = false;
+	} else {
+		if (posix_memalign(&host, PAGE_SIZE, len) != 0)
+			return (ENOMEM);
+		memset(host, 0, len);
+		owned = true;
+	}
 
-	error = vm_add_memslot(ctx, gpa, len, host);
+	error = vm_add_memslot(ctx, gpa, len, host, prot);
 	if (error != 0) {
-		free(host);
+		if (owned)
+			free(host);
 		return (error);
 	}
 	if (addr != NULL)

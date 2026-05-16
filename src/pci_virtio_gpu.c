@@ -64,10 +64,6 @@
 #include "virtio_gpu.h"
 #include "vmmapi.h"
 
-#define KB	(1024UL)
-#define MB	(1024 * 1024UL)
-#define FB_SIZE (128 * MB)
-
 static int vgpu_debug = 0;
 #define DPRINTF(params) \
 	if (vgpu_debug) \
@@ -98,10 +94,7 @@ static int vgpu_debug = 0;
 
 #define DMEMSZ		       512
 
-#define FB_SIZE		       (128 * MB)
-
-#define COLS_MAX	       3840
-#define ROWS_MAX	       2160
+#define FB_SIZE		       (128 * 1024UL * 1024UL)
 
 struct vgpu_scanout {
 	uint32_t resource_id;
@@ -968,9 +961,7 @@ pci_vgpu_init(struct pci_devinst *pi, nvlist_t *nvl)
 	sc->vsc_queues[VGPU_CURSOR].vq_qsize = VGPU_RINGSZ;
 	sc->vsc_queues[VGPU_CURSOR].vq_notify = pci_vgpu_ping_cursor;
 
-	value = get_config_value_node(nvl, "fb");
-	if (value && !strcmp(value, "on"))
-		sc->fb_enabled = true;
+	sc->fb_enabled = get_config_bool_node_default(nvl, "fb", true);
 
 	value = get_config_value_node(nvl, "hdpi");
 	if (value && !strcmp(value, "on"))
