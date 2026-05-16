@@ -170,57 +170,66 @@ Compatibility timers are not part of the default platform:
 
 ## EDK2 Task List
 
-- [ ] Add `OvmfPkg/Scorpi/ScorpiX64.dsc`.
-- [ ] Add `OvmfPkg/Scorpi/ScorpiX64.fdf`.
-- [ ] Build with `SMM_REQUIRE=FALSE` for v1.
-- [ ] Include UEFI CPU, PCI bus, PCI host bridge, virtio, AHCI, xHCI, GOP,
+- [x] Add `OvmfPkg/Scorpi/ScorpiX64.dsc`.
+- [x] Add `OvmfPkg/Scorpi/ScorpiX64.fdf`.
+- [x] Build with `SMM_REQUIRE=FALSE` for v1.
+- [x] Include UEFI CPU, PCI bus, PCI host bridge, virtio, AHCI, GOP,
   variable, secure boot, and boot manager support.
-- [ ] Include Scorpi GOP/RFB support.
+- [x] Include virtio-gpu GOP and graphics console support.
+- [ ] Include xHCI and USB HID support for the Windows inbox profile.
+- [ ] Include Scorpi GOP/RFB support if a non-virtio framebuffer path remains
+  required.
 - [ ] Reuse or move Scorpi secure boot enrollment so it builds for X64 without
   ARM-only assumptions.
-- [ ] Add `OvmfPkg/Include/IndustryStandard/ScorpiX64HwInfo.h` matching the
+- [x] Add `OvmfPkg/Include/IndustryStandard/ScorpiX64HwInfo.h` matching the
   v1 ABI in this document.
-- [ ] Add Scorpi X64 hardware-info parser library using `QemuFwCfgLib` to read
+- [x] Add Scorpi X64 hardware-info parser library using `QemuFwCfgLib` to read
   `opt/scorpi/x64-hardware-info`.
-- [ ] Add Scorpi PlatformPei logic that builds memory/resource HOBs from
+- [x] Add Scorpi PlatformPei logic that builds memory/resource HOBs from
   hardware info, not CMOS/E820.
 - [x] Use a TSC-based TimerLib for Scorpi X64 firmware delay/stall paths.
 - [x] Keep APIC timer ownership in `LocalApicTimerDxe`, not Scorpi TimerLib.
-- [ ] Add Scorpi PCI host bridge library exposing PCIe ECAM, one segment, bus 0
+- [x] Add Scorpi PCI host bridge library exposing PCIe ECAM, one segment, bus 0
   root bridge, MMIO32/MMIO64 apertures, and no CF8/CFC dependency.
-- [ ] Use DynamicTablesPkg for firmware-owned Scorpi X64 ACPI generation.
-- [ ] Add a Scorpi X64 Configuration Manager that populates DynamicTablesPkg
+- [x] Use DynamicTablesPkg for firmware-owned Scorpi X64 ACPI generation.
+- [x] Add a Scorpi X64 Configuration Manager that populates DynamicTablesPkg
   CM objects from Scorpi hardware info.
-- [ ] Use X64/common DynamicTablesPkg generators where they fit: FADT, MADT,
-  MCFG, SSDT PCIe, TPM2, SPCR, WSMT, and optional HPET.
-- [ ] Provide Scorpi-specific DSDT/SSDT AML through a raw table object or a
-  small custom generator for reset/shutdown and any Scorpi platform devices.
-- [ ] Generate MADT, MCFG, FADT/FACS, DSDT, and optional TPM2/SPCR/BGRT.
-- [ ] Describe PCIe root bridge resources in DSDT.
-- [ ] Describe reset/shutdown through a modern Scorpi ACPI/MMIO device.
-- [ ] Ensure FADT/DSDT do not require PIC/PIT/PM1/CMOS/LPC.
-- [ ] Do not call OVMF `InstallQemuFwCfgTables()` on Scorpi X64.
+- [x] Use X64/common DynamicTablesPkg generators where they fit for FADT,
+  MCFG, SSDT PCIe, and raw-table install.
+- [x] Provide Scorpi-specific DSDT AML through a raw table object.
+- [x] Generate MADT, MCFG, FADT/FACS, DSDT, SSDT PCIe, and SPCR.
+- [ ] Add optional TPM2, WSMT, and BGRT ACPI tables when the corresponding
+  devices/features are enabled.
+- [x] Describe PCIe root bridge resources through the SSDT PCIe generator.
+- [x] Describe reset through the FADT reset register block.
+- [ ] Describe shutdown through a modern Scorpi ACPI/MMIO device.
+- [x] Ensure FADT/DSDT do not require PIC/PIT/PM1/CMOS/LPC.
+- [x] Do not call OVMF `InstallQemuFwCfgTables()` on Scorpi X64.
 - [ ] Validate generated ACPI against Linux and Windows.
 
 ## scorpi-hv Task List
 
-- [ ] Enable `linux/x86_64/kvm` as a Meson-supported platform.
-- [ ] Add `src/arch/x86/` platform entry code.
-- [ ] Add `src/libvmm/kvm/x86/kvm_arch.c`.
-- [ ] Create VMs with `KVM_CREATE_IRQCHIP`.
-- [ ] Do not implement userspace PIC/PIT/ATPIC for this platform.
-- [ ] Use LAPIC at `0xFEE00000` and IOAPIC at `0xFEC00000`.
-- [ ] Add PCIe ECAM config-space emulation.
-- [ ] Avoid CF8/CFC PCI config I/O.
-- [ ] Implement x86 GSI routing with `KVM_SET_GSI_ROUTING`.
-- [ ] Route INTx through `KVM_IRQ_LINE`.
-- [ ] Route MSI/MSI-X through `KVM_SIGNAL_MSI`.
-- [ ] Add `include/scorpi_x64_hwinfo.h` matching the v1 ABI in this document.
-- [ ] Add Scorpi hardware-info blob production for firmware.
-- [ ] Publish the hardware-info blob through fw_cfg as
+- [x] Enable `linux/x86_64/kvm` as a Meson-supported platform.
+- [x] Add `src/arch/x86/` platform entry code.
+- [x] Add the x86 KVM backend under `src/libvmm/kvm/x86/`.
+- [x] Create VMs with `KVM_CREATE_IRQCHIP`.
+- [x] Do not implement userspace PIC/PIT/ATPIC for this platform.
+- [x] Use LAPIC at `0xFEE00000` and IOAPIC at `0xFEC00000`.
+- [x] Add PCIe ECAM config-space emulation.
+- [ ] Disable or remove CF8/CFC PCI config I/O handlers for Scorpi X64.
+- [x] Implement x86 GSI routing with `KVM_SET_GSI_ROUTING`.
+- [x] Route INTx through `KVM_IRQ_LINE`.
+- [x] Route MSI/MSI-X through `KVM_SIGNAL_MSI`.
+- [x] Add `include/scorpi_x64_hwinfo.h` matching the v1 ABI in this document.
+- [x] Add Scorpi hardware-info blob production for firmware.
+- [x] Publish the hardware-info blob through fw_cfg as
   `opt/scorpi/x64-hardware-info`.
-- [ ] Include RAM map, reserved MMIO ranges, vCPU/APIC IDs, IOAPIC info, PCIe
-  ECAM, PCI windows, boot devices, framebuffer, TPM, and device profile.
+- [x] Include RAM map, reserved MMIO ranges, vCPU/APIC IDs, IOAPIC info, PCIe
+  ECAM, PCI windows, TPM, reset, and device profile in the hardware-info blob.
+- [ ] Add `DEVICE` and `FRAMEBUFFER` hardware-info entries.
+- [x] Start and resume AP vCPU threads for firmware boot.
+- [x] Initialize KVM x86 APs with `KVM_MP_STATE_UNINITIALIZED` and BSP with
+  `KVM_MP_STATE_RUNNABLE`.
 - [x] Publish guest TSC frequency through CPUID leaf `0x15`.
 - [ ] Verify KVM in-kernel LAPIC timer delivery with OVMF and Linux.
 - [ ] Add KVM pvclock/kvm-clock exposure for the Linux profile.
@@ -228,9 +237,9 @@ Compatibility timers are not part of the default platform:
 - [ ] Add KVM steal-time accounting for the Linux profile.
 - [ ] Add Hyper-V reference TSC page support for the Windows profile.
 - [ ] Add Hyper-V synthetic timer support for the Windows profile.
-- [ ] Keep HPET absent by default; add only as an explicit compatibility
+- [x] Keep HPET absent by default; add only as an explicit compatibility
   device if required.
-- [ ] Do not publish VMM-built ACPI tables.
+- [x] Do not publish VMM-built ACPI tables.
 - [ ] Add Linux default profile using virtio devices only.
 - [ ] Add Windows default profile using AHCI + xHCI + USB HID + USB network +
   Scorpi GOP.
