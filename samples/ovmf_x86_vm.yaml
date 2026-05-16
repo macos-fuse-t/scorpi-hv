@@ -1,7 +1,7 @@
 name: scorpi-x86-ovmf
 cpu: 1
 memory: 512M
-console: off
+console: stdio
 bootrom: ../edk2/Build/ScorpiX64/DEBUG_GCC5/FV/SCORPI_EFI.fd
 x86.msi: true
 
@@ -9,9 +9,6 @@ devices:
   pci:
     - device: hostbridge
       slot: 0
-    - device: pci-uart
-      slot: 1
-      backend: stdio
     - device: virtio-blk
       slot: 2
       path: ./samples/ovmf_x86_esp.raw

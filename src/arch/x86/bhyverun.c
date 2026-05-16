@@ -27,6 +27,7 @@
 #include "pci_irq.h"
 #include "qemu_fwcfg.h"
 #include "smbiostbl.h"
+#include <support/pci_reg.h>
 
 #ifdef __linux__
 const char *getprogname(void);
@@ -140,6 +141,101 @@ bhyve_start_vcpu(struct vcpu *vcpu, bool bsp)
 	}
 
 	fbsdrun_addcpu(vcpu_id(vcpu));
+}
+
+static bool
+x86_pci_uart_configured(void)
+{
+	const nvlist_t *bus, *func, *pci, *slot;
+	const char *bus_name, *dev, *func_name, *slot_name;
+	void *bus_cookie, *func_cookie, *slot_cookie;
+	int bus_type, func_type, slot_type;
+
+	pci = find_config_node("pci");
+	if (pci == NULL)
+		return (false);
+
+	bus_cookie = NULL;
+	while ((bus_name = nvlist_next(pci, &bus_type, &bus_cookie)) != NULL) {
+		if (bus_type != NV_TYPE_NVLIST)
+			continue;
+		bus = nvlist_get_nvlist(pci, bus_name);
+		slot_cookie = NULL;
+		while ((slot_name = nvlist_next(bus, &slot_type,
+		    &slot_cookie)) != NULL) {
+			if (slot_type != NV_TYPE_NVLIST)
+				continue;
+			slot = nvlist_get_nvlist(bus, slot_name);
+			func_cookie = NULL;
+			while ((func_name = nvlist_next(slot, &func_type,
+			    &func_cookie)) != NULL) {
+				if (func_type != NV_TYPE_NVLIST)
+					continue;
+				func = nvlist_get_nvlist(slot, func_name);
+				dev = get_config_value_node(func, "device");
+				if (dev != NULL && strcmp(dev, "pci-uart") == 0)
+					return (true);
+			}
+		}
+	}
+
+	return (false);
+}
+
+static bool
+x86_pci_slot_used(unsigned int slot)
+{
+	char path[32];
+
+	snprintf(path, sizeof(path), "pci.0.%u", slot);
+	return (find_config_node(path) != NULL);
+}
+
+static int
+x86_console_slot(unsigned int *slotp)
+{
+	unsigned int slot;
+
+	for (slot = 1; slot <= PCI_SLOTMAX; slot++) {
+		if (!x86_pci_slot_used(slot)) {
+			*slotp = slot;
+			return (0);
+		}
+	}
+
+	return (EX_USAGE);
+}
+
+int
+bhyve_config_defaults(void)
+{
+	char path[64];
+	const char *console;
+	unsigned int slot;
+	int error;
+
+	console = get_config_value("console");
+	if (console == NULL || strcmp(console, "off") == 0)
+		return (0);
+	if (strcmp(console, "stdio") != 0) {
+		warnx("unsupported x86 console '%s'", console);
+		return (EX_USAGE);
+	}
+
+	if (x86_pci_uart_configured())
+		return (0);
+
+	error = x86_console_slot(&slot);
+	if (error != 0) {
+		warnx("no free PCI slot for x86 console");
+		return (error);
+	}
+
+	snprintf(path, sizeof(path), "pci.0.%u.0.device", slot);
+	set_config_value(path, "pci-uart");
+	snprintf(path, sizeof(path), "pci.0.%u.0.backend", slot);
+	set_config_value(path, "stdio");
+	return (0);
 }
 
 int

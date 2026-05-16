@@ -819,6 +819,10 @@ bhyve_run_configured_vm(void)
 	if (vmname == NULL)
 		return (EX_USAGE);
 
+	error = bhyve_config_defaults();
+	if (error != 0)
+		return (error);
+
 	if (get_config_bool_default("config.dump", false)) {
 		dump_config();
 		return (1);

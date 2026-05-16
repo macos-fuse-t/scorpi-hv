@@ -619,3 +619,9 @@ bhyve_msi_supported(void)
 {
 	return (get_config_bool_default("gic.msi", false));
 }
+
+int
+bhyve_config_defaults(void)
+{
+	return (0);
+}

@@ -73,6 +73,7 @@ void bhyve_set_yaml_config_file(const char *path);
 const char *bhyve_get_yaml_config_file(void);
 void bhyve_note_legacy_config_used(void);
 bool bhyve_legacy_config_used(void);
+int bhyve_config_defaults(void);
 
 /* Interfaces used by command-line option-parsing code. */
 bool bhyve_parse_config_option(const char *option);
