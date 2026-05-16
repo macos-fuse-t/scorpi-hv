@@ -33,6 +33,10 @@
 #include <strings.h>
 #include <sys/types.h>
 
+#if !defined(__APPLE__) && !defined(__FreeBSD__)
+typedef unsigned long u_long;
+#endif
+
 static inline void atomic_set_long(volatile u_long *ptr, long mask) {
     atomic_fetch_or((volatile _Atomic long *)ptr, mask);
 }

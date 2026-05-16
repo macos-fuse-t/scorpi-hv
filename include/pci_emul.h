@@ -33,6 +33,7 @@
 #include <sys/types.h>
 #include <sys/queue.h>
 #include <sys/kernel.h>
+#include <pthread.h>
 #include "nv.h"
 #include <support/pciio.h>
 //#include <sys/_pthreadtypes.h>

@@ -31,6 +31,7 @@
 #define	_VMMAPI_H_
 
 #include <sys/param.h>
+#include <sys/time.h>
 #include <support/cpuset.h>
 #include <vmm.h>
 

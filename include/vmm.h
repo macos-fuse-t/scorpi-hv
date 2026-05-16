@@ -32,6 +32,7 @@
 #include "arch/arm64/vmm_dev.h"
 #include "arch/arm64/vmm.h"
 #elif defined(__x86_64__)
+#include "arch/x86/vmm_dev.h"
 #include "arch/x86/vmm.h"
 #else
 #error "Unsupported architecture"

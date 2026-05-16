@@ -190,8 +190,11 @@ endif
 if arch == 'x86_64'
     arch_src = files(
         'src/arch/x86/bhyverun.c',
+        'src/arch/x86/inout.c',
+        'src/arch/x86/pci_irq.c',
         'src/arch/x86/qemu_fwcfg_arch.c',
         'src/arch/x86/scorpi_hwinfo.c',
+        'src/arch/x86/vmexit.c',
     )
 elif arch == 'aarch64'
     arch_src = files(

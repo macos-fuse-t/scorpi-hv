@@ -34,6 +34,7 @@
 #include "debug.h"
 
 #ifdef __linux__
+#include <errno.h>
 #include <sched.h>
 #include <string.h>
 extern char *program_invocation_short_name;
@@ -43,12 +44,42 @@ extern char *program_invocation_short_name;
 #endif
 
 #ifdef __linux__
+extern char *program_invocation_short_name;
+
 const char *
 getprogname(void)
 {
-	if (program_invocation_short_name != NULL)
-		return (program_invocation_short_name);
-	return ("scorpi-hv");
+	return (program_invocation_short_name != NULL ?
+	    program_invocation_short_name : "scorpi-hv");
+}
+
+size_t
+strlcpy(char *dst, const char *src, size_t dsize)
+{
+	size_t len, copy;
+
+	len = strlen(src);
+	if (dsize != 0) {
+		copy = len >= dsize ? dsize - 1 : len;
+		memcpy(dst, src, copy);
+		dst[copy] = '\0';
+	}
+	return (len);
+}
+
+size_t
+strlcat(char *dst, const char *src, size_t dsize)
+{
+	size_t dlen, slen, copy;
+
+	dlen = strnlen(dst, dsize);
+	slen = strlen(src);
+	if (dlen == dsize)
+		return (dsize + slen);
+	copy = slen >= dsize - dlen ? dsize - dlen - 1 : slen;
+	memcpy(dst + dlen, src, copy);
+	dst[dlen + copy] = '\0';
+	return (dlen + slen);
 }
 #endif
 

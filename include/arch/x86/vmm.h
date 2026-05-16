@@ -31,8 +31,11 @@
 #define	_VMM_H_
 
 #include "common.h"
+#include <stddef.h>
 #include <support/cpuset.h>
+#if defined(__FreeBSD__)
 #include <sys/sdt.h>
+#endif
 //#include <x86/segments.h>
 
 struct vcpu;
@@ -163,6 +166,11 @@ enum vm_intr_trigger {
 	EDGE_TRIGGER,
 	LEVEL_TRIGGER
 };
+
+#define	IDT_UD	6
+#define	IDT_SS	12
+#define	IDT_GP	13
+#define	IDT_AC	17
 
 /*
  * The 'access' field has the format specified in Table 21-2 of the Intel

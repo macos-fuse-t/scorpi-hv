@@ -41,14 +41,8 @@
 __attribute__((no_sanitize("address"), used, section("__DATA,__" #set))) \
     static void const *__set_##set##_sym_##sym = &(sym)
 
-/* For convenience: */
 #define DATA_SET(set, sym)  __MAKE_SET(set, sym)
 
-/*
- * Provide Mach-O boundary symbols:
- *   section$start$__DATA$__<set>
- *   section$end$__DATA$__<set>
- */
 #define SET_DECLARE(set, T) \
     extern T *__start_##set[] __asm("section$start$__DATA$__" #set); \
     extern T *__stop_##set[]  __asm("section$end$__DATA$__" #set)

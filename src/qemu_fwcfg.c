@@ -23,10 +23,10 @@
 
 #include "acpi_device.h"
 #include "bhyverun.h"
+#include "compat.h"
 #include "config.h"
 #ifdef __amd64__
 #include "amd64/inout.h"
-#include "amd64/pci_lpc.h"
 #endif
 #include "debug.h"
 #include "mem.h"
@@ -610,23 +610,8 @@ qemu_fwcfg_init(struct vmctx *const ctx, uint64_t mmio_base, size_t mmio_size)
 	bool fwcfg_enabled;
 	struct mem_range mr;
 
-	/*
-	 * The fwcfg implementation currently only provides an I/O port
-	 * interface and thus is amd64-specific for now.  An MMIO interface is
-	 * required for other platforms.
-	 */
-#ifdef __amd64__
-	fwcfg_enabled = strcmp(lpc_fwcfg(), "qemu") == 0;
-#else
 	fwcfg_enabled = true;
-#endif
 
-	/*
-	 * Bhyve supports fwctl (bhyve) and fwcfg (qemu) as firmware interfaces.
-	 * Both are using the same ports. So, it's not possible to provide both
-	 * interfaces at the same time to the guest. Therefore, only create acpi
-	 * tables and register io ports for fwcfg, if it's used.
-	 */
 	if (fwcfg_enabled) {
 		error = acpi_device_create(&fwcfg_sc.acpi_dev, &fwcfg_sc, ctx,
 		    &qemu_fwcfg_acpi_device_emul);
@@ -816,8 +801,8 @@ qemu_fwcfg_parse_cmdline_arg(const char *opt)
 		fwcfg_file->data = malloc(sb.st_size);
 		if (fwcfg_file->data == NULL) {
 			warnx(
-			    "Can't allocate fw_cfg_user_file file \"%s\" (size: 0x%16llx)",
-			    opt_ptr, sb.st_size);
+		    "Can't allocate fw_cfg_user_file file \"%s\" (size: 0x%16llx)",
+		    opt_ptr, (unsigned long long)sb.st_size);
 			close(fd);
 			return (ENOMEM);
 		}

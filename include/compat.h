@@ -35,10 +35,13 @@
 #define SCORPI_CPUSET_T_DEFINED
 typedef struct _cpuset cpuset_t;
 #endif
+#include <stddef.h>
 
 int compat_set_thread_name(pthread_t thread, const char *name);
 int compat_set_thread_affinity(pthread_t thread, int core_id, cpuset_t *cpuset);
 
 #ifdef __linux__
 const char *getprogname(void);
+size_t strlcpy(char *dst, const char *src, size_t dsize);
+size_t strlcat(char *dst, const char *src, size_t dsize);
 #endif

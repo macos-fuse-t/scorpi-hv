@@ -77,6 +77,11 @@ main(int argc, char *argv[])
 	argv += optind;
 
 	yaml_file = bhyve_get_yaml_config_file();
+#if defined(__amd64__)
+	if (yaml_file == NULL)
+		errx(EX_USAGE,
+		    "x86 configuration must be provided with -f yaml_file");
+#endif
 	if (yaml_file != NULL) {
 		if (argc != 0)
 			errx(EX_USAGE, "-f cannot be combined with a vmname");
