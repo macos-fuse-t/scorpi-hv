@@ -29,6 +29,11 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#undef CPU_AND
+#undef CPU_CLR
+#undef CPU_ISSET
+#undef CPU_SET
+#undef CPU_ZERO
 #include <support/cpuset.h>
 #include "compat.h"
 #include "debug.h"
@@ -37,7 +42,6 @@
 #include <errno.h>
 #include <sched.h>
 #include <string.h>
-extern char *program_invocation_short_name;
 #elif __APPLE__
 #include <sys/syslimits.h>
 #include <mach/mach.h>
@@ -115,6 +119,8 @@ compat_set_thread_affinity(pthread_t thread, int core_id, cpuset_t *cpuset)
 	int res;
 	cpu_set_t linux_cpuset;
 
+	(void)thread;
+	(void)core_id;
 	memset(&linux_cpuset, 0, sizeof(linux_cpuset));
 	for (int cpu = 0; cpu < SCORPI_CPU_SETSIZE; cpu++) {
 		if (SCORPI_CPU_ISSET(cpu, cpuset))

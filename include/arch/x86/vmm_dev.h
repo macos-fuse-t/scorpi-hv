@@ -19,4 +19,8 @@ struct vm_run {
 	struct vm_exit *vm_exit;
 };
 
+#define	VM_ACTIVE_CPUS		0
+#define	VM_SUSPENDED_CPUS	1
+#define	VM_DEBUG_CPUS		2
+
 #endif

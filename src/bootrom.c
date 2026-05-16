@@ -46,6 +46,7 @@
 
 #include <vmmapi.h>
 
+#include "bootrom_arch.h"
 #include "bhyverun.h"
 #include "bootrom.h"
 #include "cfi_reg.h"
@@ -391,12 +392,12 @@ bootrom_loadrom(struct vmctx *ctx)
 		goto done;
 	}
 
-	/* Read 'romfile' into the guest address space */
+	/* Read 'romfile' into the guest address space. */
 	data = mmap(NULL, rom_size, PROT_READ, MAP_PRIVATE, fd, 0);
 	if (data == MAP_FAILED)
 		err(1, "mmap(%s)", romfile);
 	close(fd);
-	memcpy(ptr, data, rom_size);
+	bootrom_copyrom(ptr, BOOTROM_SIZE, data, rom_size);
 
 	if (munmap(data, rom_size) != 0)
 		err(1, "munmap(%s)", romfile);

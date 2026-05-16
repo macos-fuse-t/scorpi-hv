@@ -66,7 +66,7 @@ hypervisor_backend = get_option('hypervisor')
 if hypervisor_backend == 'auto'
     if host_system == 'darwin' and arch == 'aarch64'
         hypervisor_backend = 'hvf'
-    elif host_system == 'linux' and arch == 'aarch64'
+    elif host_system == 'linux' and (arch == 'aarch64' or arch == 'x86_64')
         hypervisor_backend = 'kvm'
     else
         error('No default hypervisor backend for ' + host_system + '/' + arch)
@@ -78,8 +78,8 @@ if hypervisor_backend == 'hvf'
         error('HVF backend requires darwin/aarch64')
     endif
 elif hypervisor_backend == 'kvm'
-    if host_system != 'linux' or arch != 'aarch64'
-        error('KVM backend currently requires linux/aarch64; linux/x86_64 is deferred')
+    if host_system != 'linux' or (arch != 'aarch64' and arch != 'x86_64')
+        error('KVM backend requires linux/aarch64 or linux/x86_64')
     endif
 else
     error('Unsupported hypervisor backend: ' + hypervisor_backend)
@@ -189,6 +189,7 @@ endif
 # Set architecture-specific source
 if arch == 'x86_64'
     arch_src = files(
+        'src/arch/x86/bootrom_arch.c',
         'src/arch/x86/bhyverun.c',
         'src/arch/x86/inout.c',
         'src/arch/x86/pci_irq.c',
@@ -198,6 +199,7 @@ if arch == 'x86_64'
     )
 elif arch == 'aarch64'
     arch_src = files(
+        'src/arch/arm64/bootrom_arch.c',
         'src/arch/arm64/bhyverun.c',
         'src/arch/arm64/fdt.c',
         'src/arch/arm64/pci_irq.c',
@@ -217,13 +219,15 @@ if hypervisor_backend == 'hvf'
         'src/vmnet_net_backend.c',
     )
 elif hypervisor_backend == 'kvm'
-    backend_src += files(
-        'src/libvmm/kvm/vmmapi.c',
-    )
-
     if arch == 'aarch64'
         backend_src += files(
+            'src/libvmm/kvm/vmmapi.c',
             'src/libvmm/kvm/arm64/kvm_arch.c',
+        )
+    elif arch == 'x86_64'
+        backend_src += files(
+            'src/libvmm/kvm/x86/vmmapi.c',
+            'src/libvmm/kvm/x86/vmm_instruction_emul.c',
         )
     endif
 endif
