@@ -496,6 +496,8 @@ pci_vtblk_init(struct pci_devinst *pi, nvlist_t *nvl)
 	}
 
 	bcopy(&vtblk_vi_consts, &sc->vbsc_consts, sizeof(vtblk_vi_consts));
+	if (blockif_is_ro(sc->bc))
+		sc->vbsc_consts.vc_hv_caps |= VTBLK_F_RO;
 	if (blockif_candelete(sc->bc))
 		sc->vbsc_consts.vc_hv_caps |= VTBLK_F_DISCARD;
 
