@@ -19,7 +19,6 @@
 
 #include <vmmapi.h>
 
-#include "arch/x86/com.h"
 #include "arch/x86/inout.h"
 #include "bhyverun.h"
 #include "bootrom.h"
@@ -152,10 +151,6 @@ bhyve_init_platform(struct vmctx *ctx, struct vcpu *bsp __unused)
 
 	init_inout();
 	init_bootrom(ctx);
-
-	error = com_init(ctx);
-	if (error != 0)
-		return (error);
 
 	error = bootrom_loadrom(ctx);
 	if (error != 0) {
