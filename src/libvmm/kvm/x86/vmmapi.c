@@ -44,13 +44,17 @@
 #define	KVM_IDENTITY_MAP_ADDR	0xbffbc000
 #define	KVM_IOAPIC_PINS		24
 
+#define	CPUID_SIGNATURE		0x00000000
 #define	CPUID_VERSION_INFO		0x00000001
 #define	CPUID_EXTENDED_TOPOLOGY		0x0000000b
+#define	CPUID_TSC_FREQ			0x00000015
 #define	CPUID_EXTENDED_TOPOLOGY_V2	0x0000001f
 #define	CPUID_1_EBX_APICID_SHIFT	24
 #define	CPUID_1_EBX_CPU_COUNT_SHIFT	16
 #define	CPUID_1_EBX_APICID_MASK		0xff000000
 #define	CPUID_1_EBX_CPU_COUNT_MASK	0x00ff0000
+#define	CPUID_15_CRYSTAL_HZ		1000000U
+#define	CPUID_15_DENOMINATOR		1000U
 
 enum {
 	VM_MEMSEG_LOW,
@@ -112,6 +116,21 @@ kvm_check_extension(struct vmctx *ctx, int cap)
 	    (void *)(uintptr_t)cap));
 }
 
+static uint32_t
+kvm_tsc_khz(struct vcpu *vcpu)
+{
+	int khz;
+
+	if (kvm_check_extension(vcpu->ctx, KVM_CAP_GET_TSC_KHZ) <= 0)
+		return (0);
+
+	khz = kvm_ioctl(vcpu->fd, KVM_GET_TSC_KHZ, NULL);
+	if (khz <= 0)
+		return (0);
+
+	return ((uint32_t)khz);
+}
+
 static int
 kvm_set_irq_routing(struct vmctx *ctx)
 {
@@ -153,25 +172,36 @@ kvm_set_identity_map(struct vmctx *ctx)
 }
 
 static void
-kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid)
+kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 {
 	struct kvm_cpuid_entry2 *entry;
-	uint32_t apic_id, cpu_count;
+	struct kvm_cpuid_entry2 *tsc_entry;
+	uint32_t apic_id, cpu_count, tsc_khz;
 
 	apic_id = (uint32_t)vcpu->vcpuid;
 	cpu_count = MIN((uint32_t)guest_ncpus, 0xffU);
 	if (cpu_count == 0)
 		cpu_count = 1;
 
+	tsc_khz = kvm_tsc_khz(vcpu);
+	tsc_entry = NULL;
 	for (uint32_t i = 0; i < cpuid->nent; i++) {
 		entry = &cpuid->entries[i];
 
 		switch (entry->function) {
+		case CPUID_SIGNATURE:
+			if (entry->index == 0 && entry->eax < CPUID_TSC_FREQ)
+				entry->eax = CPUID_TSC_FREQ;
+			break;
 		case CPUID_VERSION_INFO:
 			entry->ebx &= ~(CPUID_1_EBX_APICID_MASK |
 			    CPUID_1_EBX_CPU_COUNT_MASK);
 			entry->ebx |= apic_id << CPUID_1_EBX_APICID_SHIFT;
 			entry->ebx |= cpu_count << CPUID_1_EBX_CPU_COUNT_SHIFT;
+			break;
+		case CPUID_TSC_FREQ:
+			if (entry->index == 0)
+				tsc_entry = entry;
 			break;
 		case CPUID_EXTENDED_TOPOLOGY:
 		case CPUID_EXTENDED_TOPOLOGY_V2:
@@ -181,6 +211,22 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid)
 			break;
 		}
 	}
+
+	if (tsc_khz == 0)
+		return;
+
+	if (tsc_entry == NULL) {
+		if (cpuid->nent >= maxent)
+			return;
+		tsc_entry = &cpuid->entries[cpuid->nent++];
+		memset(tsc_entry, 0, sizeof(*tsc_entry));
+		tsc_entry->function = CPUID_TSC_FREQ;
+	}
+
+	tsc_entry->eax = CPUID_15_DENOMINATOR;
+	tsc_entry->ebx = tsc_khz;
+	tsc_entry->ecx = CPUID_15_CRYSTAL_HZ;
+	tsc_entry->edx = 0;
 }
 
 static int
@@ -205,7 +251,7 @@ again:
 	if (kvm_ioctl(vcpu->ctx->sys_fd, KVM_GET_SUPPORTED_CPUID, cpuid) < 0)
 		error = errno;
 	else {
-		kvm_fix_cpuid(vcpu, cpuid);
+		kvm_fix_cpuid(vcpu, cpuid, (uint32_t)entries);
 		if (kvm_ioctl(vcpu->fd, KVM_SET_CPUID2, cpuid) < 0)
 			error = errno;
 	}
