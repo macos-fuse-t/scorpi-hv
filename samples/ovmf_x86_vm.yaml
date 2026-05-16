@@ -9,3 +9,5 @@ devices:
   pci:
     - device: hostbridge
       slot: 0
+    - device: lpc
+      slot: 1
