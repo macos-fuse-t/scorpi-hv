@@ -39,6 +39,8 @@
 #define SCORPI_HWINFO_IOAPIC_GSI_BASE	0
 #define SCORPI_HWINFO_IOAPIC_GSI_COUNT	24
 #define SCORPI_HWINFO_ECAM_SIZE		((PCI_BUSMAX + 1) * 1024 * 1024ULL)
+#define SCORPI_HWINFO_LOWMEM_HOLE_BASE	0xA0000ULL
+#define SCORPI_HWINFO_LOWMEM_HOLE_END	0x100000ULL
 
 #define SCORPI_HWINFO_RESET_BASE		0xF0000000ULL
 #define SCORPI_HWINFO_RESET_SIZE		0x1000
@@ -128,6 +130,41 @@ scorpi_hwinfo_add_range(struct scorpi_hwinfo_builder *b, uint16_t type, uint64_t
 	range.range_type = htole32(range_type);
 
 	return (scorpi_hwinfo_append(b, &range, sizeof(range)));
+}
+
+static int
+scorpi_hwinfo_add_ram(struct scorpi_hwinfo_builder *b, uint64_t base, uint64_t end,
+    bool have_tpm, uint64_t tpm_base, uint64_t tpm_size)
+{
+	uint64_t tpm_end;
+
+	if (end <= base)
+		return (0);
+
+	if (!have_tpm || tpm_size == 0)
+		return (scorpi_hwinfo_add_range(b, SCORPI_X64_ENTRY_RAM_RANGE, base,
+		    end - base, SCORPI_X64_RANGE_USABLE));
+
+	tpm_end = tpm_base + tpm_size;
+	if (tpm_end < tpm_base)
+		tpm_end = UINT64_MAX;
+	if (tpm_base >= end || tpm_end <= base)
+		return (scorpi_hwinfo_add_range(b, SCORPI_X64_ENTRY_RAM_RANGE, base,
+		    end - base, SCORPI_X64_RANGE_USABLE));
+
+	if (tpm_base > base) {
+		int error;
+
+		error = scorpi_hwinfo_add_range(b, SCORPI_X64_ENTRY_RAM_RANGE, base,
+		    MIN(tpm_base, end) - base, SCORPI_X64_RANGE_USABLE);
+		if (error != 0)
+			return (error);
+	}
+	if (tpm_end < end)
+		return (scorpi_hwinfo_add_range(b, SCORPI_X64_ENTRY_RAM_RANGE, tpm_end,
+		    end - tpm_end, SCORPI_X64_RANGE_USABLE));
+
+	return (0);
 }
 
 static int
@@ -355,6 +392,7 @@ scorpi_hwinfo_build(struct vmctx *ctx, void **data, uint32_t *size)
 	struct scorpi_x64_hwinfo_header header;
 	struct scorpi_hwinfo_builder b;
 	uint64_t high_base, pci64_base, tpm_base, tpm_size;
+	uint64_t low_end, low_hole_end;
 	uint64_t vars_base, vars_size;
 	size_t low_size, high_size;
 	bool have_tpm;
@@ -374,6 +412,7 @@ scorpi_hwinfo_build(struct vmctx *ctx, void **data, uint32_t *size)
 	high_base = vm_get_highmem_base(ctx);
 	high_size = vm_get_highmem_size(ctx);
 	have_tpm = scorpi_hwinfo_tpm_range(&tpm_base, &tpm_size, NULL);
+	low_end = low_size;
 
 #define SCORPI_HWINFO_ADD(expr)				\
 	do {					\
@@ -382,21 +421,18 @@ scorpi_hwinfo_build(struct vmctx *ctx, void **data, uint32_t *size)
 			goto fail;		\
 	} while (0)
 
-	if (have_tpm && tpm_base < low_size) {
-		uint64_t tpm_end;
-
-		tpm_end = tpm_base + tpm_size;
-		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b, SCORPI_X64_ENTRY_RAM_RANGE, 0,
-		    tpm_base, SCORPI_X64_RANGE_USABLE));
-		if (tpm_end < low_size) {
-			SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b,
-			    SCORPI_X64_ENTRY_RAM_RANGE, tpm_end,
-			    low_size - tpm_end, SCORPI_X64_RANGE_USABLE));
-		}
-	} else {
-		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b, SCORPI_X64_ENTRY_RAM_RANGE, 0,
-		    low_size, SCORPI_X64_RANGE_USABLE));
+	SCORPI_HWINFO_ADD(scorpi_hwinfo_add_ram(&b, 0,
+	    MIN(low_end, SCORPI_HWINFO_LOWMEM_HOLE_BASE), have_tpm, tpm_base,
+	    tpm_size));
+	if (low_end > SCORPI_HWINFO_LOWMEM_HOLE_BASE) {
+		low_hole_end = MIN(low_end, SCORPI_HWINFO_LOWMEM_HOLE_END);
+		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b,
+		    SCORPI_X64_ENTRY_RESERVED_RANGE, SCORPI_HWINFO_LOWMEM_HOLE_BASE,
+		    low_hole_end - SCORPI_HWINFO_LOWMEM_HOLE_BASE,
+		    SCORPI_X64_RANGE_RESERVED));
 	}
+	SCORPI_HWINFO_ADD(scorpi_hwinfo_add_ram(&b, SCORPI_HWINFO_LOWMEM_HOLE_END,
+	    low_end, have_tpm, tpm_base, tpm_size));
 	SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b, SCORPI_X64_ENTRY_RAM_RANGE, high_base,
 	    high_size, SCORPI_X64_RANGE_USABLE));
 
