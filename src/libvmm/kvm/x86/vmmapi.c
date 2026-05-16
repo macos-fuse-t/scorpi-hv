@@ -32,7 +32,7 @@
 
 #include <vmmapi.h>
 
-#include "amd64/inout.h"
+#include "arch/x86/inout.h"
 #include "debug.h"
 #include "mem.h"
 

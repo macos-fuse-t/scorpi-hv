@@ -5,8 +5,8 @@
  * All rights reserved.
  */
 
-#ifndef _AMD64_INOUT_H_
-#define _AMD64_INOUT_H_
+#ifndef _ARCH_X86_INOUT_H_
+#define _ARCH_X86_INOUT_H_
 
 #include <sys/param.h>
 
@@ -47,4 +47,4 @@ int emulate_inout(struct vmctx *ctx, struct vcpu *vcpu, struct vm_exit *vmexit);
 int register_inout(struct inout_port *iop);
 int unregister_inout(struct inout_port *iop);
 
-#endif /* _AMD64_INOUT_H_ */
+#endif /* _ARCH_X86_INOUT_H_ */

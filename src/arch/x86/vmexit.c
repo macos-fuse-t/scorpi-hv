@@ -14,7 +14,7 @@
 
 #include <vmmapi.h>
 
-#include "amd64/inout.h"
+#include "arch/x86/inout.h"
 #include "bhyverun.h"
 #include "bootrom.h"
 #include "debug.h"

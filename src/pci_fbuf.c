@@ -51,9 +51,6 @@
 #include "debug.h"
 #include "pci_emul.h"
 #include "rfb.h"
-#ifdef __amd64__
-#include "amd64/vga.h"
-#endif
 #include <zlib.h>
 #include "cnc.h"
 #include "virtio_gpu.h"

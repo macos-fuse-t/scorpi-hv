@@ -54,7 +54,7 @@
 #include "config.h"
 #include "debug.h"
 #ifdef __amd64__
-#include "amd64/inout.h"
+#include "arch/x86/inout.h"
 #endif
 #include "mem.h"
 #include "pci_emul.h"
@@ -68,8 +68,6 @@
 #define MAXBUSES	(PCI_BUSMAX + 1)
 #define MAXSLOTS	(PCI_SLOTMAX + 1)
 #define MAXFUNCS	(PCI_FUNCMAX + 1)
-
-#define GB		(1024 * 1024 * 1024UL)
 
 #ifdef __linux__
 uint32_t

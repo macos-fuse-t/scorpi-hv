@@ -14,7 +14,7 @@
 
 #include <vmmapi.h>
 
-#include "amd64/inout.h"
+#include "arch/x86/inout.h"
 #include "config.h"
 
 SET_DECLARE(inout_port_set, struct inout_port);

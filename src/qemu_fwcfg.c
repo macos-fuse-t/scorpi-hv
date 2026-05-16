@@ -26,7 +26,7 @@
 #include "compat.h"
 #include "config.h"
 #ifdef __amd64__
-#include "amd64/inout.h"
+#include "arch/x86/inout.h"
 #endif
 #include "debug.h"
 #include "mem.h"
