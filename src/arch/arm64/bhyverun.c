@@ -613,3 +613,9 @@ bhyve_init_platform_late(struct vmctx *ctx, struct vcpu *bsp __unused)
 
 	return (0);
 }
+
+bool
+bhyve_msi_supported(void)
+{
+	return (get_config_bool_default("gic.msi", false));
+}

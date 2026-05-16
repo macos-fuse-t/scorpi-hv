@@ -37,6 +37,10 @@ typedef struct _cpuset cpuset_t;
 #endif
 #include <stddef.h>
 
+#ifndef	MAXCOMLEN
+#define	MAXCOMLEN	19
+#endif
+
 int compat_set_thread_name(pthread_t thread, const char *name);
 int compat_set_thread_affinity(pthread_t thread, int core_id, cpuset_t *cpuset);
 

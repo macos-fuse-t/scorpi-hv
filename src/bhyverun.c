@@ -63,6 +63,12 @@
 #include <libxo/xo.h>
 #endif
 
+#undef CPU_AND
+#undef CPU_CLR
+#undef CPU_ISSET
+#undef CPU_SET
+#undef CPU_ZERO
+
 #include <vmmapi.h>
 
 #include "acpi.h"
@@ -76,9 +82,6 @@
 #include "mem.h"
 #include "mevent.h"
 #include "pci_emul.h"
-#ifdef __amd64__
-#include "amd64/pci_lpc.h"
-#endif
 #include "qemu_fwcfg.h"
 #ifdef BHYVE_SNAPSHOT
 #include "snapshot.h"
@@ -280,12 +283,13 @@ bhyve_pincpu_parse(const char *opt)
 static void
 parse_cpuset(int vcpu, const char *list, cpuset_t *set)
 {
-	char *cp, *token;
+	char *cp;
+	const char *token;
 	int pcpu, start;
 
 	SCORPI_CPU_ZERO(set);
 	start = -1;
-	token = __DECONST(char *, list);
+	token = list;
 	for (;;) {
 		pcpu = strtoul(token, &cp, 0);
 		if (cp == token)
@@ -366,7 +370,7 @@ msix_supported(void)
 int
 msi_supported(void)
 {
-	return (get_config_bool_default("gic.msi", true));
+	return (bhyve_msi_supported());
 }
 
 struct vcpu *

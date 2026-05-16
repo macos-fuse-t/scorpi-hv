@@ -177,3 +177,9 @@ bhyve_init_platform_late(struct vmctx *ctx __unused, struct vcpu *bsp __unused)
 {
 	return (0);
 }
+
+bool
+bhyve_msi_supported(void)
+{
+	return (get_config_bool_default("x86.msi", true));
+}
