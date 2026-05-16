@@ -6,10 +6,12 @@
  */
 
 #include <sys/types.h>
+#include <sys/mman.h>
 
 #include <assert.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <vmmapi.h>
@@ -59,6 +61,60 @@ vmexit_dump_regs(struct vcpu *vcpu)
 	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RSI),
 	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RDI),
 	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RBP));
+}
+
+static int
+vmexit_read_gla(struct vmctx *ctx, struct vcpu *vcpu, uint64_t gla,
+    uint64_t *val)
+{
+	uint64_t gpa;
+	void *ptr;
+	int error, fault;
+
+	error = vm_gla2gpa_nofault(vcpu, NULL, gla, PROT_READ, &gpa, &fault);
+	if (error != 0 || fault)
+		return (-1);
+
+	ptr = vm_map_gpa(ctx, gpa, sizeof(*val));
+	if (ptr == NULL)
+		return (-1);
+
+	memcpy(val, ptr, sizeof(*val));
+	return (0);
+}
+
+static void
+vmexit_dump_stack(struct vmctx *ctx, struct vcpu *vcpu)
+{
+	uint64_t rsp, val;
+
+	rsp = vmexit_reg(vcpu, VM_REG_GUEST_RSP);
+	for (int i = 0; i < 16; i++) {
+		if (vmexit_read_gla(ctx, vcpu, rsp + i * sizeof(val), &val) != 0)
+			break;
+		EPRINTLN("vcpu %d stack[%#llx] %#llx", vcpu_id(vcpu),
+		    (unsigned long long)(rsp + i * sizeof(val)),
+		    (unsigned long long)val);
+	}
+}
+
+static void
+vmexit_dump_frames(struct vmctx *ctx, struct vcpu *vcpu)
+{
+	uint64_t rbp, next, ret;
+
+	rbp = vmexit_reg(vcpu, VM_REG_GUEST_RBP);
+	for (int i = 0; i < 16 && rbp != 0; i++) {
+		if (vmexit_read_gla(ctx, vcpu, rbp, &next) != 0 ||
+		    vmexit_read_gla(ctx, vcpu, rbp + sizeof(ret), &ret) != 0)
+			break;
+		EPRINTLN("vcpu %d frame[%d] rbp %#llx ret %#llx",
+		    vcpu_id(vcpu), i, (unsigned long long)rbp,
+		    (unsigned long long)ret);
+		if (next <= rbp)
+			break;
+		rbp = next;
+	}
 }
 
 static int
@@ -144,6 +200,8 @@ vmexit_suspend(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 	case VM_SUSPEND_TRIPLEFAULT:
 		EPRINTLN("vcpu %d triple fault", vcpu_id(vcpu));
 		vmexit_dump_regs(vcpu);
+		vmexit_dump_stack(ctx, vcpu);
+		vmexit_dump_frames(ctx, vcpu);
 		exit(4);
 	default:
 		EPRINTLN("vmexit_suspend: invalid reason %d",

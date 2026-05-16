@@ -1181,15 +1181,27 @@ vm_gla2gpa(struct vcpu *vcpu __unused, struct vm_guest_paging *paging __unused,
     uint64_t gla __unused, int prot __unused, uint64_t *gpa __unused,
     int *fault __unused)
 {
-	return (EOPNOTSUPP);
+	return (vm_gla2gpa_nofault(vcpu, paging, gla, prot, gpa, fault));
 }
 
 int
-vm_gla2gpa_nofault(struct vcpu *vcpu __unused,
-    struct vm_guest_paging *paging __unused, uint64_t gla __unused,
-    int prot __unused, uint64_t *gpa __unused, int *fault __unused)
+vm_gla2gpa_nofault(struct vcpu *vcpu, struct vm_guest_paging *paging __unused,
+    uint64_t gla, int prot __unused, uint64_t *gpa, int *fault)
 {
-	return (EOPNOTSUPP);
+	struct kvm_translation tr;
+
+	memset(&tr, 0, sizeof(tr));
+	tr.linear_address = gla;
+	if (kvm_ioctl(vcpu->fd, KVM_TRANSLATE, &tr) < 0)
+		return (errno);
+
+	if (fault != NULL)
+		*fault = tr.valid ? 0 : 1;
+	if (!tr.valid)
+		return (EFAULT);
+
+	*gpa = tr.physical_address;
+	return (0);
 }
 
 int
