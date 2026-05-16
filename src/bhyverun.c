@@ -538,6 +538,8 @@ create_all_vcpu_threads_at_boot(void)
 {
 #if defined(__aarch64__)
 	return (true);
+#elif defined(__x86_64__)
+	return (bootrom_boot());
 #else
 	return (false);
 #endif
@@ -548,6 +550,8 @@ resume_all_vcpus_at_boot(struct vmctx *ctx)
 {
 #if defined(__aarch64__)
 	return (vm_uses_in_kernel_psci(ctx));
+#elif defined(__x86_64__)
+	return (bootrom_boot());
 #else
 	return (false);
 #endif

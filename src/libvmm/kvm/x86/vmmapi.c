@@ -34,6 +34,7 @@
 
 #include "arch/x86/inout.h"
 #include "bhyverun.h"
+#include "config.h"
 #include "debug.h"
 #include "mem.h"
 
@@ -53,6 +54,7 @@
 #define	CPUID_1_EBX_CPU_COUNT_SHIFT	16
 #define	CPUID_1_EBX_APICID_MASK		0xff000000
 #define	CPUID_1_EBX_CPU_COUNT_MASK	0x00ff0000
+#define	CPUID_1_ECX_X2APIC		(1U << 21)
 #define	CPUID_15_CRYSTAL_HZ		1000000U
 #define	CPUID_15_DENOMINATOR		1000U
 
@@ -198,6 +200,8 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 			    CPUID_1_EBX_CPU_COUNT_MASK);
 			entry->ebx |= apic_id << CPUID_1_EBX_APICID_SHIFT;
 			entry->ebx |= cpu_count << CPUID_1_EBX_CPU_COUNT_SHIFT;
+			if (!get_config_bool_default("x86.x2apic", false))
+				entry->ecx &= ~CPUID_1_ECX_X2APIC;
 			break;
 		case CPUID_TSC_FREQ:
 			if (entry->index == 0)
@@ -264,6 +268,20 @@ again:
 
 	free(cpuid);
 	return (error);
+}
+
+static int
+kvm_set_mp_state(struct vcpu *vcpu, uint32_t state)
+{
+	struct kvm_mp_state mp_state;
+
+	if (kvm_check_extension(vcpu->ctx, KVM_CAP_MP_STATE) <= 0)
+		return (0);
+
+	memset(&mp_state, 0, sizeof(mp_state));
+	mp_state.mp_state = state;
+	return (kvm_ioctl(vcpu->fd, KVM_SET_MP_STATE, &mp_state) < 0 ?
+	    errno : 0);
 }
 
 int
@@ -415,6 +433,13 @@ vm_vcpu_init(struct vcpu *vcpu)
 	}
 	vcpu->tid = pthread_self();
 	error = kvm_set_cpuid(vcpu);
+	if (error != 0) {
+		vm_vcpu_deinit(vcpu);
+		errno = error;
+		return (-1);
+	}
+	error = kvm_set_mp_state(vcpu, vcpu->vcpuid == 0 ?
+	    KVM_MP_STATE_RUNNABLE : KVM_MP_STATE_UNINITIALIZED);
 	if (error != 0) {
 		vm_vcpu_deinit(vcpu);
 		errno = error;
@@ -843,6 +868,7 @@ vcpu_reset(struct vcpu *vcpu)
 {
 	struct kvm_regs regs;
 	struct kvm_sregs sregs;
+	int error;
 
 	if (kvm_ioctl(vcpu->fd, KVM_GET_SREGS, &sregs) < 0)
 		return (errno);
@@ -864,7 +890,9 @@ vcpu_reset(struct vcpu *vcpu)
 	memset(&regs, 0, sizeof(regs));
 	regs.rip = 0xfff0;
 	regs.rflags = 0x2;
-	return (vm_put_regs(vcpu, &regs));
+	if ((error = vm_put_regs(vcpu, &regs)) != 0)
+		return (error);
+	return (kvm_set_mp_state(vcpu, KVM_MP_STATE_RUNNABLE));
 }
 
 static int
@@ -930,7 +958,7 @@ vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 	vme = vmrun->vm_exit;
 	for (;;) {
 		if (kvm_ioctl(vcpu->fd, KVM_RUN, NULL) < 0) {
-			if (errno == EINTR)
+			if (errno == EINTR || errno == EAGAIN)
 				continue;
 			return (-1);
 		}
