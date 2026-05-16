@@ -126,6 +126,48 @@ Optional entries:
 
 The VMM must not provide ACPI blobs for this platform.
 
+## Timer And Clock Design
+
+Scorpi X64 separates timekeeping into two platform responsibilities:
+
+- Clocksource: a low-exit way for firmware and guests to compute elapsed time.
+- Event timer: an interrupt source for one-shot and periodic timer events.
+
+Modern profiles should prefer TSC and paravirtual clocksources over emulated
+legacy hardware timers. The local APIC timer remains the baseline architectural
+event timer and is owned by firmware/guest timer drivers, not delay-loop helper
+libraries.
+
+Baseline firmware and architectural timer policy:
+
+- Expose a stable guest TSC frequency through CPUID leaf `0x15`.
+- Use TSC-based firmware delay/stall code.
+- Let `LocalApicTimerDxe` own the local APIC timer for UEFI timer events.
+- Use KVM in-kernel LAPIC timer support for guest APIC timer delivery.
+- Do not use HPET, PIT/i8254, RTC periodic interrupts, or ACPI PM timer by
+  default.
+
+Linux profile:
+
+- Expose KVM pvclock/kvm-clock as the preferred Linux clocksource.
+- Expose the stable kvmclock bit when KVM can provide a stable guest TSC.
+- Add KVM steal-time accounting after the core boot path is stable.
+- Keep LAPIC timer as the architectural event timer fallback.
+
+Windows profile:
+
+- Expose Hyper-V reference TSC page (`hv_time`) as the preferred Windows
+  clocksource.
+- Add Hyper-V synthetic timers for Windows event-timer optimization.
+- Keep LAPIC timer as the architectural fallback.
+
+Compatibility timers are not part of the default platform:
+
+- HPET may be added later only as an explicit compatibility device if a real
+  guest requirement appears.
+- PIT/i8254, PIC, RTC periodic interrupts, and legacy ACPI PM timer are out of
+  scope for the default Scorpi X64 machine.
+
 ## EDK2 Task List
 
 - [ ] Add `OvmfPkg/Scorpi/ScorpiX64.dsc`.
@@ -142,6 +184,8 @@ The VMM must not provide ACPI blobs for this platform.
   `opt/scorpi/x64-hardware-info`.
 - [ ] Add Scorpi PlatformPei logic that builds memory/resource HOBs from
   hardware info, not CMOS/E820.
+- [x] Use a TSC-based TimerLib for Scorpi X64 firmware delay/stall paths.
+- [x] Keep APIC timer ownership in `LocalApicTimerDxe`, not Scorpi TimerLib.
 - [ ] Add Scorpi PCI host bridge library exposing PCIe ECAM, one segment, bus 0
   root bridge, MMIO32/MMIO64 apertures, and no CF8/CFC dependency.
 - [ ] Use DynamicTablesPkg for firmware-owned Scorpi X64 ACPI generation.
@@ -177,6 +221,15 @@ The VMM must not provide ACPI blobs for this platform.
   `opt/scorpi/x64-hardware-info`.
 - [ ] Include RAM map, reserved MMIO ranges, vCPU/APIC IDs, IOAPIC info, PCIe
   ECAM, PCI windows, boot devices, framebuffer, TPM, and device profile.
+- [x] Publish guest TSC frequency through CPUID leaf `0x15`.
+- [ ] Verify KVM in-kernel LAPIC timer delivery with OVMF and Linux.
+- [ ] Add KVM pvclock/kvm-clock exposure for the Linux profile.
+- [ ] Expose kvmclock stable bit when guest TSC is stable.
+- [ ] Add KVM steal-time accounting for the Linux profile.
+- [ ] Add Hyper-V reference TSC page support for the Windows profile.
+- [ ] Add Hyper-V synthetic timer support for the Windows profile.
+- [ ] Keep HPET absent by default; add only as an explicit compatibility
+  device if required.
 - [ ] Do not publish VMM-built ACPI tables.
 - [ ] Add Linux default profile using virtio devices only.
 - [ ] Add Windows default profile using AHCI + xHCI + USB HID + USB network +
@@ -214,11 +267,19 @@ The VMM must not provide ACPI blobs for this platform.
 
 - [ ] Build Scorpi X64 EDK2 firmware in `DEBUG` and `RELEASE`.
 - [ ] Boot UEFI shell with 1, 2, and 4 vCPUs.
+- [ ] Verify UEFI shell serial input after idle to catch broken firmware timer
+  events.
 - [ ] Boot Linux installer with default virtio-only profile.
+- [ ] Verify Linux selects kvm-clock after KVM pvclock is implemented.
+- [ ] Verify Linux LAPIC timer fallback works when pvclock is disabled.
 - [ ] Dump Linux ACPI with `acpidump` and validate with `iasl`.
 - [ ] Verify Linux sees LAPIC, IOAPIC, MCFG, virtio devices, and expected memory
   map.
 - [ ] Boot Windows installer without virtio drivers.
+- [ ] Verify Windows uses Hyper-V reference TSC page after Hyper-V clock
+  support is implemented.
+- [ ] Verify Windows synthetic timer delivery after Hyper-V timer support is
+  implemented.
 - [ ] Install Windows to AHCI disk.
 - [ ] Verify Windows keyboard, mouse, display, storage, and network.
 - [ ] Verify MSI/MSI-X and INTx delivery.
