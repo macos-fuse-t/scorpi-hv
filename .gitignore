@@ -2,3 +2,4 @@ subprojects/.wraplock
 subprojects/libslirp/
 subprojects/libwebsockets/
 subprojects/packagecache/
+samples/ovmf_x86_esp.raw

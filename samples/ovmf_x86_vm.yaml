@@ -12,3 +12,6 @@ devices:
     - device: pci-uart
       slot: 1
       backend: stdio
+    - device: virtio-blk
+      slot: 2
+      path: ./samples/ovmf_x86_esp.raw
