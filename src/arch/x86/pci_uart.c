@@ -20,17 +20,28 @@
 #define	PCI_UART_BAR_SIZE	16
 
 struct pci_uart_softc {
+	struct pci_devinst *pi;
 	struct uart_ns16550_softc *uart;
 };
 
 static void
-pci_uart_intr_assert(void *arg __unused)
+pci_uart_intr_assert(void *arg)
 {
+	struct pci_uart_softc *sc;
+
+	sc = arg;
+	if (sc->pi->pi_lintr.pin != 0)
+		pci_lintr_assert(sc->pi);
 }
 
 static void
-pci_uart_intr_deassert(void *arg __unused)
+pci_uart_intr_deassert(void *arg)
 {
+	struct pci_uart_softc *sc;
+
+	sc = arg;
+	if (sc->pi->pi_lintr.pin != 0)
+		pci_lintr_deassert(sc->pi);
 }
 
 static uint64_t
@@ -80,6 +91,7 @@ pci_uart_init(struct pci_devinst *pi, nvlist_t *nvl)
 	if (sc == NULL)
 		return (ENOMEM);
 
+	sc->pi = pi;
 	pi->pi_arg = sc;
 
 	sc->uart = uart_ns16550_init(pci_uart_intr_assert,
@@ -116,6 +128,7 @@ pci_uart_init(struct pci_devinst *pi, nvlist_t *nvl)
 		free(sc);
 		return (error);
 	}
+	pci_lintr_request(pi);
 
 	return (0);
 }
