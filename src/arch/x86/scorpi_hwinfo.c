@@ -406,9 +406,6 @@ scorpi_hwinfo_build(struct vmctx *ctx, void **data, uint32_t *size)
 		    PCI_EMUL_MEMBASE32 - low_size, SCORPI_X64_RANGE_RESERVED));
 	}
 	SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b, SCORPI_X64_ENTRY_RESERVED_RANGE,
-	    PCI_EMUL_MEMBASE32, PCI_EMUL_MEMLIMIT32 - PCI_EMUL_MEMBASE32,
-	    SCORPI_X64_RANGE_RESERVED));
-	SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b, SCORPI_X64_ENTRY_RESERVED_RANGE,
 	    PCI_EMUL_ECFG_BASE, SCORPI_HWINFO_ECAM_SIZE,
 	    SCORPI_X64_RANGE_RESERVED));
 	if (bootrom_boot()) {
