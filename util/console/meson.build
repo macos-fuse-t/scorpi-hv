@@ -3,7 +3,7 @@ console_src = files('tty.c', 'websock_client.c')
 console_executable = executable(
   'scorpi_console',
   console_src,
-  dependencies: [libwebsockets_dep]
+  dependencies: [libwebsockets_dep, threads_dep]
 )
 
 if host_machine.system() == 'darwin'

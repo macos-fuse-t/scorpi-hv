@@ -7,13 +7,6 @@ option(
 )
 
 option(
-  'cnc',
-  type: 'boolean',
-  value: false,
-  description: 'Build the WebSocket control channel',
-)
-
-option(
   'fbuf',
   type: 'boolean',
   value: false,

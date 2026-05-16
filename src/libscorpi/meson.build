@@ -4,7 +4,7 @@ libscorpi_src = files(
   'scorpi.c',
 )
 
-scorpi_kit_sources = libscorpi_src + runtime_core_sources
+scorpi_kit_sources = libscorpi_src + runtime_core_sources + [libwebsockets_static]
 scorpi_kit_private_deps = [
   libnv_dep,
   libfdt_dep,
@@ -15,7 +15,7 @@ scorpi_kit_private_deps = [
   slirp_dep,
   threads_dep,
   uuid_dep,
-] + platform_deps + cnc_deps
+] + platform_deps + [libwebsockets_dep]
 
 scorpi_kit = shared_library(
   'scorpi_kit',

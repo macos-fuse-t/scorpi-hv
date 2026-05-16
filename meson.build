@@ -24,7 +24,6 @@ endif
 zlib_dep = dependency('zlib', required: true)
 uuid_dep = dependency('uuid', required: true)
 threads_dep = dependency('threads')
-cnc_deps = []
 platform_deps = []
 if host_system == 'linux'
     platform_deps += cc.find_library('rt', required: false)
@@ -35,36 +34,27 @@ libslirp_proj = subproject(
     default_options: ['default_library=static'])
 slirp_dep = libslirp_proj.get_variable('libslirp_libdep')
 
-if get_option('cnc')
-    cmake = import('cmake')
-    libwebsockets_opts = cmake.subproject_options()
-    if host_system == 'darwin'
-        libwebsockets_opts.add_cmake_defines({
-            'CMAKE_POSITION_INDEPENDENT_CODE': true,
-            'CMAKE_OSX_DEPLOYMENT_TARGET': macos_min_version,
-            'CMAKE_C_FLAGS': '-D_GNU_SOURCE ' + macos_min_flag,
-            'LWS_WITH_SHARED': false,
-            'LWS_WITH_STATIC': true,
-            'LWS_WITH_SSL': false,
-            'LWS_WITHOUT_TESTAPPS': true,
-        })
-    else
-        libwebsockets_opts.add_cmake_defines({
-            'CMAKE_POSITION_INDEPENDENT_CODE': true,
-            'CMAKE_C_FLAGS': '-D_GNU_SOURCE',
-            'LWS_WITH_SHARED': false,
-            'LWS_WITH_STATIC': true,
-            'LWS_WITH_SSL': false,
-            'LWS_WITHOUT_TESTAPPS': true,
-        })
-    endif
-    libwebsockets_opts.set_install(false)
-    libwebsockets_proj = cmake.subproject(
-        'libwebsockets',
-        options: libwebsockets_opts)
-    libwebsockets_dep = libwebsockets_proj.dependency('websockets')
-    cnc_deps += libwebsockets_dep
-endif
+libwebsockets_build_dir = meson.current_build_dir() / 'libwebsockets-build'
+libwebsockets_static = custom_target(
+    'libwebsockets-static',
+    output: ['libwebsockets.a', 'lws_config.h'],
+    command: [
+        files('build-aux/build-libwebsockets.sh'),
+        meson.project_source_root() / 'subprojects/libwebsockets',
+        libwebsockets_build_dir,
+        '@OUTPUT0@',
+        '@OUTPUT1@',
+        host_system,
+        macos_min_version,
+    ],
+)
+libwebsockets_dep = declare_dependency(
+    sources: libwebsockets_static,
+    compile_args: [
+        '-I' + meson.project_source_root() / 'subprojects/libwebsockets/include',
+        '-I' + meson.current_build_dir(),
+    ],
+)
 
 codesign_identity = run_command('sh', '-c', 'echo $CODESIGN_IDENTITY').stdout().strip()
 
@@ -175,13 +165,8 @@ runtime_core_sources = files(
     'src/usb_net.c',
     'src/pci_virtio_gpu.c',
     'src/pci_virtio_console.c',
+    'src/cnc.c',
 )
-
-if get_option('cnc')
-    runtime_core_sources += files('src/cnc.c')
-else
-    runtime_core_sources += files('src/cnc_stub.c')
-endif
 
 if get_option('fbuf')
     runtime_core_sources += files('src/pci_fbuf.c')
@@ -271,9 +256,7 @@ scorpi_image_executable = executable(
 
 subdir('src/libscorpi')
 subdir('tests')
-if get_option('cnc')
-    subdir('util/console')
-endif
+subdir('util/console')
 subdir('samples')
 
 scorpi_executable=executable(
