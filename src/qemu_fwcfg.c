@@ -713,6 +713,11 @@ qemu_fwcfg_init(struct vmctx *const ctx, uint64_t mmio_base, size_t mmio_size)
 		goto done;
 	}
 
+	if ((error = qemu_fwcfg_arch_init(ctx)) != 0) {
+		warnx("%s: Unable to add arch fw_cfg files", __func__);
+		goto done;
+	}
+
 	if ((error = qemu_fwcfg_add_scorpi_boot_params()) != 0) {
 		warnx("%s: Unable to add Scorpi boot params", __func__);
 		goto done;

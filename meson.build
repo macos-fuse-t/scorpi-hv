@@ -189,13 +189,16 @@ endif
 # Set architecture-specific source
 if arch == 'x86_64'
     arch_src = files(
-        'src/arch/x86/bhyverun.c'
+        'src/arch/x86/bhyverun.c',
+        'src/arch/x86/qemu_fwcfg_arch.c',
+        'src/arch/x86/scorpi_hwinfo.c',
     )
 elif arch == 'aarch64'
     arch_src = files(
         'src/arch/arm64/bhyverun.c',
         'src/arch/arm64/fdt.c',
         'src/arch/arm64/pci_irq.c',
+        'src/arch/arm64/qemu_fwcfg_arch.c',
         'src/arch/arm64/vmexit.c',
     )
 else
