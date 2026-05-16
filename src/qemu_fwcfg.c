@@ -583,8 +583,24 @@ int
 qemu_fwcfg_add_scorpi_boot_map(void)
 {
 	char *bootmap;
+	char *bootorder;
 	int error;
 	size_t bootmap_len;
+	size_t bootorder_len;
+
+	if (get_config_value("scorpi.boot-order") == NULL &&
+	    get_config_value("boot-order") == NULL) {
+		bootorder = pci_emul_get_boot_order(&bootorder_len);
+		if (bootorder != NULL) {
+			error = qemu_fwcfg_add_file_deferred(
+			    "opt/scorpi/boot-order", (uint32_t)bootorder_len + 1,
+			    bootorder);
+			if (error != 0) {
+				free(bootorder);
+				return (error);
+			}
+		}
+	}
 
 	bootmap = pci_emul_get_boot_device_map(&bootmap_len);
 	if (bootmap == NULL)

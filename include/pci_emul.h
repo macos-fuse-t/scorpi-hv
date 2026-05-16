@@ -290,6 +290,7 @@ int 	pci_emul_add_boot_device(struct pci_devinst *const pi,
 int	pci_emul_add_boot_device_id(struct pci_devinst *const pi,
 	    const char *id, const char *type, int port);
 char	*pci_emul_get_boot_device_map(size_t *len);
+char	*pci_emul_get_boot_order(size_t *len);
 int pci_emul_add_capability(struct pci_devinst *pi, u_char *capdata,
 	int caplen);
 int	pci_emul_add_msicap(struct pci_devinst *pi, int msgnum);

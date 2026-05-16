@@ -1072,6 +1072,25 @@ pci_emul_valid_boot_id(const char *id)
 	return (true);
 }
 
+static void
+pci_emul_boot_id(char *buf, size_t len, int bootindex)
+{
+	snprintf(buf, len, "boot%d", bootindex);
+}
+
+static bool
+pci_emul_boot_id_exists(const char *id)
+{
+	struct boot_device_id *device;
+
+	TAILQ_FOREACH(device, &boot_device_ids, chain) {
+		if (strcmp(device->id, id) == 0)
+			return (true);
+	}
+
+	return (false);
+}
+
 int
 pci_emul_add_boot_device_id(struct pci_devinst *const pi, const char *id,
     const char *type, int port)
@@ -1113,19 +1132,30 @@ char *
 pci_emul_get_boot_device_map(size_t *len)
 {
 	struct boot_device_id *device;
+	struct boot_device *boot_device;
 	FILE *fp;
 	char *map;
+	char id[sizeof("boot2147483647")];
 
 	if (len == NULL)
 		return (NULL);
 	*len = 0;
 
-	if (TAILQ_EMPTY(&boot_device_ids))
+	if (TAILQ_EMPTY(&boot_devices) && TAILQ_EMPTY(&boot_device_ids))
 		return (NULL);
 
 	fp = open_memstream(&map, len);
 	if (fp == NULL)
 		return (NULL);
+
+	TAILQ_FOREACH(boot_device, &boot_devices, boot_device_chain) {
+		pci_emul_boot_id(id, sizeof(id), boot_device->bootindex);
+		if (pci_emul_boot_id_exists(id))
+			continue;
+		fprintf(fp, "id=%s,bus=%u,slot=%u,func=%u,type=hd\n", id,
+		    boot_device->pdi->pi_bus, boot_device->pdi->pi_slot,
+		    boot_device->pdi->pi_func);
+	}
 
 	TAILQ_FOREACH(device, &boot_device_ids, chain) {
 		fprintf(fp, "id=%s,bus=%u,slot=%u,func=%u,type=%s",
@@ -1138,6 +1168,37 @@ pci_emul_get_boot_device_map(size_t *len)
 	fclose(fp);
 
 	return (map);
+}
+
+char *
+pci_emul_get_boot_order(size_t *len)
+{
+	struct boot_device *device;
+	FILE *fp;
+	char *order;
+	bool first;
+	char id[sizeof("boot2147483647")];
+
+	if (len == NULL)
+		return (NULL);
+	*len = 0;
+
+	if (TAILQ_EMPTY(&boot_devices))
+		return (NULL);
+
+	fp = open_memstream(&order, len);
+	if (fp == NULL)
+		return (NULL);
+
+	first = true;
+	TAILQ_FOREACH(device, &boot_devices, boot_device_chain) {
+		pci_emul_boot_id(id, sizeof(id), device->bootindex);
+		fprintf(fp, "%s%s", first ? "" : ":", id);
+		first = false;
+	}
+	fclose(fp);
+
+	return (order);
 }
 
 #define CAP_START_OFFSET 0x40
@@ -1569,6 +1630,17 @@ init_bootorder(void)
 
 	fp = open_memstream(&bootorder, &bootorder_len);
 	TAILQ_FOREACH(device, &boot_devices, boot_device_chain) {
+		if (strcmp(device->pdi->pi_d->pe_emu, "virtio-blk") == 0) {
+			if (device->pdi->pi_func == 0) {
+				fprintf(fp, "/pci@i0cf8/scsi@%d/disk@0,0\n",
+				    device->pdi->pi_slot);
+			} else {
+				fprintf(fp, "/pci@i0cf8/scsi@%d,%d/disk@0,0\n",
+				    device->pdi->pi_slot, device->pdi->pi_func);
+			}
+			continue;
+		}
+
 		fprintf(fp, "/pci@i0cf8/pci@%d,%d\n", device->pdi->pi_slot,
 		    device->pdi->pi_func);
 	}
