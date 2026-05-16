@@ -173,6 +173,13 @@ uart_reset(struct uart_ns16550_softc *sc)
 	uart_rxfifo_reset(sc->backend, 1);
 }
 
+static void
+uart_rx_poll(struct uart_ns16550_softc *sc)
+{
+	if ((sc->mcr & MCR_LOOPBACK) == 0)
+		uart_rxfifo_drain(sc->backend, false);
+}
+
 /*
  * Toggle the COM port's intr pin depending on whether or not we have an
  * interrupt condition to report to the processor.
@@ -354,6 +361,9 @@ uart_ns16550_read(struct uart_ns16550_softc *sc, int offset)
 			goto done;
 		}
 	}
+
+	if (offset == REG_DATA || offset == REG_IIR || offset == REG_LSR)
+		uart_rx_poll(sc);
 
 	switch (offset) {
 	case REG_DATA:
