@@ -5,3 +5,17 @@ option(
   value: 'auto',
   description: 'Hypervisor backend to build',
 )
+
+option(
+  'cnc',
+  type: 'boolean',
+  value: false,
+  description: 'Build the WebSocket control channel',
+)
+
+option(
+  'fbuf',
+  type: 'boolean',
+  value: false,
+  description: 'Build the bhyve framebuffer/VGA device',
+)

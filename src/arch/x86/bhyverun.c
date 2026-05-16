@@ -88,6 +88,9 @@ bhyve_init_vcpu(struct vcpu *vcpu)
 	enum x2apic_state x2apic_state;
 	int error, tmp;
 
+	if (vm_vcpu_init(vcpu) != 0)
+		err(EX_OSERR, "failed to init vcpu");
+
 	if (get_config_bool_default("x86.vmexit_on_hlt", false)) {
 		error = vm_get_capability(vcpu, VM_CAP_HALT_EXIT, &tmp);
 		if (error < 0)
@@ -125,7 +128,10 @@ bhyve_start_vcpu(struct vcpu *vcpu, bool bsp)
 				err(EX_OSERR,
 				    "ROM boot requires unrestricted guest");
 			error = vcpu_reset(vcpu);
-			assert(error == 0);
+			if (error != 0) {
+				errno = error;
+				err(EX_OSERR, "failed to reset BSP vcpu");
+			}
 		}
 	} else {
 		bhyve_init_vcpu(vcpu);
@@ -144,7 +150,6 @@ bhyve_init_platform(struct vmctx *ctx, struct vcpu *bsp __unused)
 	int error;
 
 	init_inout();
-	pci_irq_init(ctx);
 	init_bootrom(ctx);
 
 	error = bootrom_loadrom(ctx);

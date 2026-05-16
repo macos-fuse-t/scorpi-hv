@@ -38,7 +38,7 @@ struct pci_irq {
 	int	ioapic_irq;
 };
 
-void	pci_irq_init(struct vmctx *ctx);
+void	pci_irq_init(int intrs[static 4]);
 void	pci_irq_reserve(int irq);
 void	pci_irq_use(int irq);
 int	pirq_irq(int pin);

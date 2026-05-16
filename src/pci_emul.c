@@ -58,10 +58,6 @@
 #endif
 #include "mem.h"
 #include "pci_emul.h"
-#ifdef __amd64__
-#include "amd64/pci_lpc.h"
-#include "pci_passthru.h"
-#endif
 #include "qemu_fwcfg.h"
 
 #define CONF1_ADDR_PORT 0x0cf8
@@ -74,6 +70,15 @@
 #define MAXFUNCS	(PCI_FUNCMAX + 1)
 
 #define GB		(1024 * 1024 * 1024UL)
+
+#ifdef __linux__
+uint32_t
+pci_host_read_config(const struct pcisel *sel __unused, long reg __unused,
+    int width __unused)
+{
+	return (0xffffffffU);
+}
+#endif
 
 struct funcinfo {
 	nvlist_t *fi_config;
@@ -1717,10 +1722,6 @@ init_pci(struct vmctx *ctx)
 			}
 		}
 	}
-#ifdef __amd64__
-	lpc_pirq_routed();
-#endif
-
 	if ((error = init_bootorder()) != 0) {
 		warnx("%s: Unable to init bootorder", __func__);
 		return (error);
@@ -1797,19 +1798,9 @@ static void
 pci_pirq_prt_entry(int bus __unused, int slot, int pin, struct pci_irq *irq,
     void *arg __unused)
 {
-	char *name;
-
-	name = lpc_pirq_name(irq->pirq_pin);
-	if (name == NULL)
-		return;
-	dsdt_line("  Package ()");
-	dsdt_line("  {");
-	dsdt_line("    0x%X,", slot << 16 | 0xffff);
-	dsdt_line("    0x%02X,", pin - 1);
-	dsdt_line("    %s,", name);
-	dsdt_line("    0x00");
-	dsdt_line("  },");
-	free(name);
+	(void)slot;
+	(void)pin;
+	(void)irq;
 }
 #endif
 

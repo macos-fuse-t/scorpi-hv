@@ -81,6 +81,18 @@
 #define	MAXPHYS	(128 * 1024)
 #endif
 
+#ifndef KB
+#define	KB	(1024UL)
+#endif
+
+#ifndef MB
+#define	MB	(1024UL * KB)
+#endif
+
+#ifndef GB
+#define	GB	(1024UL * MB)
+#endif
+
 #ifndef OFF_MAX
 #define	OFF_MAX	((off_t)INT64_MAX)
 #endif

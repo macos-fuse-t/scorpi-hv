@@ -38,6 +38,8 @@ scorpi_header_compile_test_executable = executable(
 
 test('scorpi_header_compile_test', scorpi_header_compile_test_executable)
 
+compat_src = files('../src/compat.c')
+
 if host_machine.system() == 'linux'
   mevent_linux_test_executable = executable(
     'mevent_linux_test',
@@ -70,6 +72,7 @@ endif
 scorpi_image_backend_test_executable = executable(
   'scorpi_image_backend_test',
   files(
+    '../src/compat.c',
     'scorpi_image_backend_test.c',
     '../src/scorpi_image.c',
   ),
@@ -82,6 +85,7 @@ test('scorpi_image_backend_test', scorpi_image_backend_test_executable)
 scorpi_image_open_test_executable = executable(
   'scorpi_image_open_test',
   files(
+    '../src/compat.c',
     'scorpi_image_open_test.c',
     '../src/scorpi_image_chain.c',
     '../src/scorpi_image.c',
@@ -96,7 +100,12 @@ test('scorpi_image_open_test', scorpi_image_open_test_executable)
 
 scorpi_image_uri_test_executable = executable(
   'scorpi_image_uri_test',
-  files('scorpi_image_uri_test.c', '../src/scorpi_image_uri.c'),
+  files(
+    '../src/compat.c',
+    'scorpi_image_uri_test.c',
+    '../src/scorpi_image_uri.c',
+  ),
+  dependencies: threads_dep,
   include_directories: [inc, include_directories('../src')],
 )
 
@@ -104,7 +113,12 @@ test('scorpi_image_uri_test', scorpi_image_uri_test_executable)
 
 scorpi_image_raw_test_executable = executable(
   'scorpi_image_raw_test',
-  files('scorpi_image_raw_test.c', '../src/scorpi_image_raw.c'),
+  files(
+    '../src/compat.c',
+    'scorpi_image_raw_test.c',
+    '../src/scorpi_image_raw.c',
+  ),
+  dependencies: threads_dep,
   include_directories: [inc, include_directories('../src')],
 )
 
@@ -113,6 +127,7 @@ test('scorpi_image_raw_test', scorpi_image_raw_test_executable)
 scorpi_image_qcow2_test_executable = executable(
   'scorpi_image_qcow2_test',
   files(
+    '../src/compat.c',
     'scorpi_image_qcow2_test.c',
     '../src/scorpi_image_chain.c',
     '../src/scorpi_image.c',
@@ -129,6 +144,7 @@ test('scorpi_image_qcow2_test', scorpi_image_qcow2_test_executable)
 scorpi_image_sco_test_executable = executable(
   'scorpi_image_sco_test',
   files(
+    '../src/compat.c',
     'scorpi_image_sco_test.c',
     '../src/scorpi_image_chain.c',
     '../src/scorpi_image.c',
@@ -159,6 +175,7 @@ test('scorpi_image_cli_test', scorpi_image_cli_test_executable,
 scorpi_image_chain_test_executable = executable(
   'scorpi_image_chain_test',
   files(
+    '../src/compat.c',
     'scorpi_image_chain_test.c',
     '../src/scorpi_image_chain.c',
     '../src/scorpi_image.c',
@@ -174,6 +191,7 @@ test('scorpi_image_chain_test', scorpi_image_chain_test_executable)
 scorpi_image_chain_resolver_test_executable = executable(
   'scorpi_image_chain_resolver_test',
   files(
+    '../src/compat.c',
     'scorpi_image_chain_resolver_test.c',
     '../src/scorpi_image_chain.c',
     '../src/scorpi_image.c',

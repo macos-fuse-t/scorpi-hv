@@ -76,6 +76,8 @@ static char *romptr;	    /* Pointer to userspace-mapped bootrom region. */
 static vm_paddr_t gpa_base; /* GPA of low end of region. */
 static vm_paddr_t gpa_allocbot; /* Low GPA of free region. */
 static vm_paddr_t gpa_alloctop; /* High GPA, minus 1, of free region. */
+static vm_paddr_t rom_gpa;
+static size_t rom_len;
 
 typedef enum read_state {
 	CFI_STATE_READ_ARRAY,
@@ -312,6 +314,8 @@ bootrom_loadrom(struct vmctx *ctx)
 {
 	struct stat sbuf;
 	off_t rom_size, var_size, total_size;
+	size_t alloc_size;
+	uint64_t alloc_gpa;
 	char *ptr, *romfile;
 	int fd, varfd, rv;
 	const char *bootrom, *varfile;
@@ -385,19 +389,24 @@ bootrom_loadrom(struct vmctx *ctx)
 		    total_size);
 		goto done;
 	}
+	alloc_size = (rom_size + PAGE_MASK) & ~PAGE_MASK;
+	if (alloc_size == 0)
+		alloc_size = PAGE_SIZE;
 
 	/* Map the bootrom into the guest address space */
-	if (bootrom_alloc(ctx, BOOTROM_SIZE, PROT_READ | PROT_EXEC,
-		BOOTROM_ALLOC_TOP, &ptr, NULL) != 0) {
+	if (bootrom_alloc(ctx, alloc_size, PROT_READ | PROT_EXEC,
+		BOOTROM_ALLOC_TOP, &ptr, &alloc_gpa) != 0) {
 		goto done;
 	}
+	rom_gpa = alloc_gpa;
+	rom_len = alloc_size;
 
 	/* Read 'romfile' into the guest address space. */
 	data = mmap(NULL, rom_size, PROT_READ, MAP_PRIVATE, fd, 0);
 	if (data == MAP_FAILED)
 		err(1, "mmap(%s)", romfile);
 	close(fd);
-	bootrom_copyrom(ptr, BOOTROM_SIZE, data, rom_size);
+	bootrom_copyrom(ptr, alloc_size, data, rom_size);
 
 	if (munmap(data, rom_size) != 0)
 		err(1, "munmap(%s)", romfile);
@@ -459,11 +468,11 @@ bootrom_romptr()
 uint64_t
 bootrom_romsize()
 {
-	return BOOTROM_SIZE;
+	return (rom_len != 0 ? rom_len : BOOTROM_SIZE);
 }
 
 uint64_t
 bootrom_rombase()
 {
-	return gpa_base;
+	return (rom_gpa != 0 ? rom_gpa : gpa_base);
 }

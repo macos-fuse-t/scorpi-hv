@@ -36,13 +36,11 @@
 #include "debug.h"
 #include "mem.h"
 
-#define	MB			(1024 * 1024UL)
-#define	GB			(1024 * 1024 * 1024UL)
 #define	VM_LOWMEM_LIMIT		(3 * GB)
 #define	VM_HIGHMEM_BASE		(4 * GB)
 #define	VM_MAX_MEMSLOTS		32
-#define	KVM_TSS_ADDR		0xfffbd000
-#define	KVM_IDENTITY_MAP_ADDR	0xfffbc000
+#define	KVM_TSS_ADDR		0xbffbd000
+#define	KVM_IDENTITY_MAP_ADDR	0xbffbc000
 #define	KVM_IOAPIC_PINS		24
 
 enum {
@@ -153,8 +151,9 @@ kvm_set_cpuid(struct vcpu *vcpu)
 	size_t len;
 
 	entries = kvm_check_extension(vcpu->ctx, KVM_CAP_EXT_CPUID);
-	if (entries <= 0)
+	if (entries <= 0 || entries > 256)
 		entries = 100;
+again:
 
 	len = sizeof(*cpuid) + entries * sizeof(cpuid->entries[0]);
 	cpuid = calloc(1, len);
@@ -167,6 +166,12 @@ kvm_set_cpuid(struct vcpu *vcpu)
 		error = errno;
 	else if (kvm_ioctl(vcpu->fd, KVM_SET_CPUID2, cpuid) < 0)
 		error = errno;
+
+	if (error == E2BIG && entries < 256) {
+		free(cpuid);
+		entries = 256;
+		goto again;
+	}
 
 	free(cpuid);
 	return (error);
@@ -238,8 +243,8 @@ vm_openf(const char *name, int flags __unused)
 	}
 
 	ctx->suspend_reason = VM_SUSPEND_NONE;
-	CPU_ZERO(&ctx->active_cpus);
-	CPU_ZERO(&ctx->suspended_cpus);
+	SCORPI_CPU_ZERO(&ctx->active_cpus);
+	SCORPI_CPU_ZERO(&ctx->suspended_cpus);
 	return (ctx);
 
 fail:
@@ -1176,7 +1181,7 @@ vm_get_cpus(struct vmctx *ctx, int which, cpuset_t *cpus)
 		memcpy(cpus, &ctx->suspended_cpus, sizeof(*cpus));
 		return (0);
 	default:
-		CPU_ZERO(cpus);
+		SCORPI_CPU_ZERO(cpus);
 		return (0);
 	}
 }
@@ -1202,16 +1207,16 @@ vm_debug_cpus(struct vmctx *ctx, cpuset_t *cpus)
 int
 vm_activate_cpu(struct vcpu *vcpu)
 {
-	CPU_SET_ATOMIC(vcpu->vcpuid, &vcpu->ctx->active_cpus);
-	CPU_CLR_ATOMIC(vcpu->vcpuid, &vcpu->ctx->suspended_cpus);
+	SCORPI_CPU_SET_ATOMIC(vcpu->vcpuid, &vcpu->ctx->active_cpus);
+	SCORPI_CPU_CLR_ATOMIC(vcpu->vcpuid, &vcpu->ctx->suspended_cpus);
 	return (0);
 }
 
 int
 vm_suspend_cpu(struct vcpu *vcpu)
 {
-	CPU_CLR_ATOMIC(vcpu->vcpuid, &vcpu->ctx->active_cpus);
-	CPU_SET_ATOMIC(vcpu->vcpuid, &vcpu->ctx->suspended_cpus);
+	SCORPI_CPU_CLR_ATOMIC(vcpu->vcpuid, &vcpu->ctx->active_cpus);
+	SCORPI_CPU_SET_ATOMIC(vcpu->vcpuid, &vcpu->ctx->suspended_cpus);
 	return (0);
 }
 

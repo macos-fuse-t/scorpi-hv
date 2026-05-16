@@ -27,6 +27,18 @@
 #define	__offsetof(type, field)	__builtin_offsetof(type, field)
 #endif
 
+#undef __CONCAT
+#define	__CONCAT1(x, y)	x ## y
+#define	__CONCAT(x, y)	__CONCAT1(x, y)
+
 #if !defined(__weak)
 #define	__weak	__attribute__((__weak__))
+#endif
+
+#if !defined(__FBSDID)
+#define	__FBSDID(s)	struct __hack
+#endif
+
+#if !defined(__DECONST)
+#define	__DECONST(type, var)	((type)(__UINTPTR_TYPE__)(const void *)(var))
 #endif

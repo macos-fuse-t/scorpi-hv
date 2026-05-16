@@ -2,15 +2,13 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <vmmapi.h>
-
 #include "pci_emul.h"
 #include "pci_irq.h"
 
 static int pci_irqs[4];
 
 void
-pci_irq_init(struct vmctx *ctx __unused)
+pci_irq_init(int intrs[static 4] __unused)
 {
 	pci_irqs[0] = 16;
 	pci_irqs[1] = 17;

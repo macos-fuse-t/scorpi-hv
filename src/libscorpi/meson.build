@@ -13,10 +13,9 @@ scorpi_kit_private_deps = [
   libyaml_dep,
   zlib_dep,
   slirp_dep,
-  libwebsockets_dep,
   threads_dep,
   uuid_dep,
-]
+] + platform_deps + cnc_deps
 
 scorpi_kit = shared_library(
   'scorpi_kit',
