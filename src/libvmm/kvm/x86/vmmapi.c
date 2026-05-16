@@ -33,6 +33,7 @@
 #include <vmmapi.h>
 
 #include "arch/x86/inout.h"
+#include "bhyverun.h"
 #include "debug.h"
 #include "mem.h"
 
@@ -42,6 +43,14 @@
 #define	KVM_TSS_ADDR		0xbffbd000
 #define	KVM_IDENTITY_MAP_ADDR	0xbffbc000
 #define	KVM_IOAPIC_PINS		24
+
+#define	CPUID_VERSION_INFO		0x00000001
+#define	CPUID_EXTENDED_TOPOLOGY		0x0000000b
+#define	CPUID_EXTENDED_TOPOLOGY_V2	0x0000001f
+#define	CPUID_1_EBX_APICID_SHIFT	24
+#define	CPUID_1_EBX_CPU_COUNT_SHIFT	16
+#define	CPUID_1_EBX_APICID_MASK		0xff000000
+#define	CPUID_1_EBX_CPU_COUNT_MASK	0x00ff0000
 
 enum {
 	VM_MEMSEG_LOW,
@@ -143,6 +152,37 @@ kvm_set_identity_map(struct vmctx *ctx)
 	    errno : 0);
 }
 
+static void
+kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid)
+{
+	struct kvm_cpuid_entry2 *entry;
+	uint32_t apic_id, cpu_count;
+
+	apic_id = (uint32_t)vcpu->vcpuid;
+	cpu_count = MIN((uint32_t)guest_ncpus, 0xffU);
+	if (cpu_count == 0)
+		cpu_count = 1;
+
+	for (uint32_t i = 0; i < cpuid->nent; i++) {
+		entry = &cpuid->entries[i];
+
+		switch (entry->function) {
+		case CPUID_VERSION_INFO:
+			entry->ebx &= ~(CPUID_1_EBX_APICID_MASK |
+			    CPUID_1_EBX_CPU_COUNT_MASK);
+			entry->ebx |= apic_id << CPUID_1_EBX_APICID_SHIFT;
+			entry->ebx |= cpu_count << CPUID_1_EBX_CPU_COUNT_SHIFT;
+			break;
+		case CPUID_EXTENDED_TOPOLOGY:
+		case CPUID_EXTENDED_TOPOLOGY_V2:
+			entry->edx = apic_id;
+			break;
+		default:
+			break;
+		}
+	}
+}
+
 static int
 kvm_set_cpuid(struct vcpu *vcpu)
 {
@@ -164,8 +204,11 @@ again:
 	error = 0;
 	if (kvm_ioctl(vcpu->ctx->sys_fd, KVM_GET_SUPPORTED_CPUID, cpuid) < 0)
 		error = errno;
-	else if (kvm_ioctl(vcpu->fd, KVM_SET_CPUID2, cpuid) < 0)
-		error = errno;
+	else {
+		kvm_fix_cpuid(vcpu, cpuid);
+		if (kvm_ioctl(vcpu->fd, KVM_SET_CPUID2, cpuid) < 0)
+			error = errno;
+	}
 
 	if (error == E2BIG && entries < 256) {
 		free(cpuid);
