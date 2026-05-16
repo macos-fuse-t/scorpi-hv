@@ -21,6 +21,46 @@
 #include "mem.h"
 #include "vmexit.h"
 
+static uint64_t
+vmexit_reg(struct vcpu *vcpu, int reg)
+{
+	uint64_t val;
+
+	if (vm_get_register(vcpu, reg, &val) != 0)
+		return (0);
+
+	return (val);
+}
+
+static void
+vmexit_dump_regs(struct vcpu *vcpu)
+{
+
+	EPRINTLN("vcpu %d state: rip %#llx rsp %#llx rflags %#llx",
+	    vcpu_id(vcpu),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RIP),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RSP),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RFLAGS));
+	EPRINTLN("vcpu %d state: cr0 %#llx cr2 %#llx cr3 %#llx cr4 %#llx",
+	    vcpu_id(vcpu),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_CR0),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_CR2),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_CR3),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_CR4));
+	EPRINTLN("vcpu %d state: efer %#llx rax %#llx rbx %#llx rcx %#llx",
+	    vcpu_id(vcpu),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_EFER),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RAX),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RBX),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RCX));
+	EPRINTLN("vcpu %d state: rdx %#llx rsi %#llx rdi %#llx rbp %#llx",
+	    vcpu_id(vcpu),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RDX),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RSI),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RDI),
+	    (unsigned long long)vmexit_reg(vcpu, VM_REG_GUEST_RBP));
+}
+
 static int
 vmexit_inout(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 {
@@ -101,6 +141,10 @@ vmexit_suspend(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 		exit(0);
 	case VM_SUSPEND_HALT:
 		exit(2);
+	case VM_SUSPEND_TRIPLEFAULT:
+		EPRINTLN("vcpu %d triple fault", vcpu_id(vcpu));
+		vmexit_dump_regs(vcpu);
+		exit(4);
 	default:
 		EPRINTLN("vmexit_suspend: invalid reason %d",
 		    vme->u.suspended.how);
