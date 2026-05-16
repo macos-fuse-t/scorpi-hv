@@ -413,6 +413,10 @@ pci_vtcon_sock_accept(int fd __unused, enum ev_type t __unused, void *arg)
 	s = accept(sock->vss_server_fd, NULL, NULL);
 	if (s < 0)
 		return;
+	if (fcntl(s, F_SETFL, O_NONBLOCK) < 0) {
+		close(s);
+		return;
+	}
 
 	if (sock->vss_open) {
 		close(s);
@@ -434,26 +438,16 @@ pci_vtcon_sock_rx(int fd __unused, enum ev_type t __unused, void *arg)
 	struct vqueue_info *vq;
 	struct vi_req req;
 	struct iovec iov;
-	static char dummybuf[2048];
 	int len, n;
 
 	port = sock->vss_port;
 	vq = pci_vtcon_port_to_vq(port, true);
 
-	if (!sock->vss_open || !port->vsp_rx_ready) {
-		len = read(sock->vss_conn_fd, dummybuf, sizeof(dummybuf));
-		if (len == 0)
-			goto close;
-
+	if (!sock->vss_open)
 		return;
-	}
 
 	if (!vq_has_descs(vq)) {
-		len = read(sock->vss_conn_fd, dummybuf, sizeof(dummybuf));
 		vq_endchains(vq, 1);
-		if (len == 0)
-			goto close;
-
 		return;
 	}
 
