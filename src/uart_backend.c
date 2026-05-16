@@ -77,6 +77,9 @@ struct uart_softc {
 	struct ttyfd tty;
 	struct fifo rxfifo;
 	struct mevent *mev;
+	struct mevent *stdio_timer;
+	void (*drain)(int, enum ev_type, void *);
+	void *drain_arg;
 	pthread_mutex_t mtx;
 };
 
@@ -154,7 +157,7 @@ uart_rxfifo_getchar(struct uart_softc *sc)
 		fifo->rindex = (fifo->rindex + 1) % fifo->size;
 		fifo->num--;
 		if (wasfull) {
-			if (sc->tty.opened) {
+			if (sc->tty.opened && sc->mev != NULL) {
 				error = mevent_enable(sc->mev);
 				assert(error == 0);
 			}
@@ -183,7 +186,7 @@ rxfifo_putchar(struct uart_softc *sc, uint8_t ch)
 		fifo->windex = (fifo->windex + 1) % fifo->size;
 		fifo->num++;
 		if (!rxfifo_available(sc)) {
-			if (sc->tty.opened) {
+			if (sc->tty.opened && sc->mev != NULL) {
 				/*
 				 * Disable mevent callback if the FIFO is full.
 				 */
@@ -262,8 +265,10 @@ uart_rxfifo_reset(struct uart_softc *sc, int size)
 		 * Enable mevent to trigger when new characters are available
 		 * on the tty fd.
 		 */
-		error = mevent_enable(sc->mev);
-		assert(error == 0);
+		if (sc->mev != NULL) {
+			error = mevent_enable(sc->mev);
+			assert(error == 0);
+		}
 	}
 }
 
@@ -439,6 +444,18 @@ uart_stdio_backend(struct uart_softc *sc)
 	return (0);
 }
 
+static void
+uart_stdio_timer(int fd __unused, enum ev_type ev, void *arg)
+{
+	struct uart_softc *sc;
+
+	assert(ev == EVF_TIMER);
+
+	sc = arg;
+	if (sc->tty.opened && sc->drain != NULL)
+		sc->drain(sc->tty.rfd, EVF_READ, sc->drain_arg);
+}
+
 static int
 uart_tty_backend(struct uart_softc *sc, const char *path)
 {
@@ -578,8 +595,10 @@ uart_tty_open(struct uart_softc *sc, const char *path,
     void (*drain)(int, enum ev_type, void *), void *arg)
 {
 	int retval;
+	bool stdio;
 
-	if (strcmp("stdio", path) == 0)
+	stdio = strcmp("stdio", path) == 0;
+	if (stdio)
 		retval = uart_stdio_backend(sc);
 	else if (strncmp(path, "unix:", 5) == 0)
 		retval = uart_unix_backend(sc, path, drain, arg);
@@ -594,8 +613,16 @@ uart_tty_open(struct uart_softc *sc, const char *path,
 	 */
 	if (retval == 0 && !sc->tty.is_socket) {
 		ttyopen(&sc->tty);
+		sc->drain = drain;
+		sc->drain_arg = arg;
 		sc->mev = mevent_add(sc->tty.rfd, EVF_READ, drain, arg);
-		assert(sc->mev != NULL);
+		if (sc->mev == NULL && !stdio)
+			return (-1);
+		if (stdio) {
+			sc->stdio_timer = mevent_add(10, EVF_TIMER,
+			    uart_stdio_timer, sc);
+			assert(sc->stdio_timer != NULL);
+		}
 	}
 
 	return (retval);

@@ -208,6 +208,7 @@ if arch == 'x86_64'
         'src/arch/x86/com.c',
         'src/arch/x86/inout.c',
         'src/arch/x86/pci_lpc.c',
+        'src/arch/x86/pci_uart.c',
         'src/arch/x86/pci_irq.c',
         'src/arch/x86/qemu_fwcfg_arch.c',
         'src/arch/x86/scorpi_hwinfo.c',
