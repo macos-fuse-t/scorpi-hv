@@ -39,12 +39,12 @@
 #include "debug.h"
 #include "mem.h"
 
-#define	VM_LOWMEM_LIMIT		(3 * GB)
 #define	VM_HIGHMEM_BASE		(4 * GB)
 #define	VM_MAX_MEMSLOTS		32
 #define	KVM_TSS_ADDR		0xbffbd000
 #define	KVM_IDENTITY_MAP_ADDR	0xbffbc000
 #define	KVM_IOAPIC_PINS		24
+#define	VM_LOWMEM_LIMIT		KVM_IDENTITY_MAP_ADDR
 
 #define	CPUID_SIGNATURE		0x00000000
 #define	CPUID_VERSION_INFO		0x00000001
