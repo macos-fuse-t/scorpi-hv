@@ -14,8 +14,8 @@
 #include "pci_emul.h"
 #include "uart_emul.h"
 
-#define	PCI_UART_VENDOR		0xFB5D
-#define	PCI_UART_DEVICE		0x1655
+#define	PCI_UART_VENDOR		0x1D0F
+#define	PCI_UART_DEVICE		0x8250
 #define	PCI_UART_BAR		0
 #define	PCI_UART_BAR_SIZE	16
 
@@ -119,7 +119,7 @@ pci_uart_init(struct pci_devinst *pi, nvlist_t *nvl)
 	pci_set_cfgdata8(pi, PCIR_HDRTYPE, PCIM_HDRTYPE_NORMAL);
 	pci_set_cfgdata8(pi, PCIR_CLASS, PCIC_SIMPLECOMM);
 	pci_set_cfgdata8(pi, PCIR_SUBCLASS, PCIS_SIMPLECOMM_UART);
-	pci_set_cfgdata8(pi, PCIR_PROGIF, PCIP_SIMPLECOMM_UART_16450A);
+	pci_set_cfgdata8(pi, PCIR_PROGIF, PCIP_SIMPLECOMM_UART_16550A);
 	pci_set_cfgdata8(pi, PCIR_REVID, 0);
 
 	error = pci_emul_alloc_bar(pi, PCI_UART_BAR, PCIBAR_MEM32,
