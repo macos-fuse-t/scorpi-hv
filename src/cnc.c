@@ -44,6 +44,7 @@
 #include "mjson.h"
 
 #define BUFFER_SIZE	     1024
+#define MAX_REQUEST_SIZE     (64 * 1024)
 #define MAX_PENDING_MESSAGES 50
 #define MAX_STRLEN	     128
 #define MAX_ARGS	     8
@@ -58,6 +59,9 @@ struct per_session_data {
 	struct lws *wsi;
 	STAILQ_HEAD(message_queue, queued_message) queue;
 	int queue_size;
+	char *rx_data;
+	size_t rx_len;
+	bool rx_discarding;
 	LIST_ENTRY(per_session_data) entries;
 	pthread_mutex_t queue_lock;
 };
@@ -234,17 +238,16 @@ cnc_send_notification(const char *data)
 }
 
 static void
-cnc_execute_command(struct per_session_data *pss, const char *in, size_t len)
+cnc_execute_command(struct per_session_data *pss, char *json)
 {
-	char action[MAX_STRLEN];
-	char req_type[MAX_STRLEN];
+	char action[MAX_STRLEN] = "";
+	char req_type[MAX_STRLEN] = "";
 	char args[MAX_ARGS * MAX_STRLEN];
 	char *argv[MAX_ARGS];
-	int argc, err, req_id;
+	int argc = 0, err, req_id = 0;
 	struct cnc_command *cmd;
 	CMD_HANDLER handler = NULL;
 	void *param = NULL;
-	char buf[BUFFER_SIZE];
 
 	struct json_attr_t json_attrs_req[] = {
 		{ "type", t_string, .addr.string = req_type,
@@ -259,12 +262,13 @@ cnc_execute_command(struct per_session_data *pss, const char *in, size_t len)
 		{ NULL },
 	};
 
-	len = MIN(len, BUFFER_SIZE - 1);
-	strncpy(buf, in, len);
-	buf[len] = 0;
-	err = json_read_object(buf, json_attrs_req, NULL);
+	err = json_read_object(json, json_attrs_req, NULL);
 	if (err) {
-		EPRINTLN("Failed to parse JSON request");
+		EPRINTLN("Failed to parse JSON request %s", json);
+		return;
+	}
+	if (strcmp(req_type, "request") != 0) {
+		EPRINTLN("Ignoring unexpected JSON message type %s", req_type);
 		return;
 	}
 
@@ -282,6 +286,65 @@ cnc_execute_command(struct per_session_data *pss, const char *in, size_t len)
 }
 
 static void
+cnc_reset_rx_message(struct per_session_data *pss)
+{
+	free(pss->rx_data);
+	pss->rx_data = NULL;
+	pss->rx_len = 0;
+}
+
+static int
+cnc_append_rx_message(struct per_session_data *pss, const char *in,
+    size_t len)
+{
+	char *data;
+
+	if (len > MAX_REQUEST_SIZE - 1 ||
+	    pss->rx_len > MAX_REQUEST_SIZE - 1 - len) {
+		EPRINTLN("Dropping oversized JSON request");
+		cnc_reset_rx_message(pss);
+		pss->rx_discarding = true;
+		return (-1);
+	}
+
+	data = realloc(pss->rx_data, pss->rx_len + len + 1);
+	if (data == NULL) {
+		EPRINTLN("Failed to allocate JSON request buffer");
+		cnc_reset_rx_message(pss);
+		pss->rx_discarding = true;
+		return (-1);
+	}
+
+	pss->rx_data = data;
+	memcpy(pss->rx_data + pss->rx_len, in, len);
+	pss->rx_len += len;
+	pss->rx_data[pss->rx_len] = '\0';
+	return (0);
+}
+
+static void
+cnc_receive_command(struct per_session_data *pss, struct lws *wsi,
+    const char *in, size_t len)
+{
+	bool final = lws_is_final_fragment(wsi) &&
+	    lws_remaining_packet_payload(wsi) == 0;
+
+	if (pss->rx_discarding) {
+		if (final)
+			pss->rx_discarding = false;
+		return;
+	}
+
+	if (cnc_append_rx_message(pss, in, len) < 0)
+		return;
+
+	if (final) {
+		cnc_execute_command(pss, pss->rx_data);
+		cnc_reset_rx_message(pss);
+	}
+}
+
+static void
 cnc_clean_context(struct per_session_data *pss)
 {
 	struct per_session_data *tmp_pss;
@@ -296,6 +359,7 @@ cnc_clean_context(struct per_session_data *pss)
 
 	pthread_mutex_unlock(&pss->queue_lock);
 	pthread_mutex_destroy(&pss->queue_lock);
+	cnc_reset_rx_message(pss);
 
 	pthread_mutex_lock(&sessions_lock);
 	LIST_FOREACH(tmp_pss, &sessions, entries) {
@@ -323,11 +387,14 @@ cnc_callback(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 		pss->wsi = wsi;
 		STAILQ_INIT(&pss->queue);
 		pss->queue_size = 0;
+		pss->rx_data = NULL;
+		pss->rx_len = 0;
+		pss->rx_discarding = false;
 		pthread_mutex_init(&pss->queue_lock, NULL);
 		break;
 
 	case LWS_CALLBACK_RECEIVE:
-		cnc_execute_command(pss, (const char *)in, len);
+		cnc_receive_command(pss, wsi, (const char *)in, len);
 		break;
 
 	case LWS_CALLBACK_SERVER_WRITEABLE:
