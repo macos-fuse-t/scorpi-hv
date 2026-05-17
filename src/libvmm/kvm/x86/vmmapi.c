@@ -1041,10 +1041,20 @@ vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 		case KVM_EXIT_IO:
 			if (kvm_handle_io(vcpu) != 0)
 				return (-1);
+			if (vcpu->ctx->suspend_reason != VM_SUSPEND_NONE) {
+				vme->exitcode = VM_EXITCODE_SUSPENDED;
+				vme->u.suspended.how = vcpu->ctx->suspend_reason;
+				return (0);
+			}
 			break;
 		case KVM_EXIT_MMIO:
 			if (kvm_handle_mmio(vcpu) != 0)
 				return (-1);
+			if (vcpu->ctx->suspend_reason != VM_SUSPEND_NONE) {
+				vme->exitcode = VM_EXITCODE_SUSPENDED;
+				vme->u.suspended.how = vcpu->ctx->suspend_reason;
+				return (0);
+			}
 			break;
 		case KVM_EXIT_HLT:
 			vme->exitcode = VM_EXITCODE_HLT;
@@ -1052,7 +1062,7 @@ vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 			return (0);
 		case KVM_EXIT_SHUTDOWN:
 			vme->exitcode = VM_EXITCODE_SUSPENDED;
-			vme->u.suspended.how = VM_SUSPEND_TRIPLEFAULT;
+			vme->u.suspended.how = VM_SUSPEND_RESET;
 			return (0);
 		case KVM_EXIT_INTERNAL_ERROR:
 		case KVM_EXIT_FAIL_ENTRY:
@@ -1069,6 +1079,8 @@ int
 vm_suspend(struct vmctx *ctx, enum vm_suspend_how how)
 {
 	ctx->suspend_reason = how;
+	if (how != VM_SUSPEND_NONE)
+		return (vm_suspend_all_cpus(ctx));
 	return (0);
 }
 

@@ -186,11 +186,12 @@ vmexit_suspend(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 	switch (vme->u.suspended.how) {
 	case VM_SUSPEND_RESET:
 		if (vcpu_id(vcpu) == 0) {
-			vm_activate_cpu(vcpu);
 			if (bhyve_reset_devices(ctx) != 0)
 				return (VMEXIT_ABORT);
 			if (vcpu_reset(vcpu) != 0)
 				return (VMEXIT_ABORT);
+			vm_suspend(ctx, VM_SUSPEND_NONE);
+			vm_activate_cpu(vcpu);
 			return (VMEXIT_CONTINUE);
 		}
 		return (VMEXIT_QUIT);
