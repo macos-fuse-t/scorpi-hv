@@ -57,11 +57,32 @@ struct scorpi_hwinfo_builder {
 };
 
 static int
+scorpi_hwinfo_wrval(uint64_t val, int size, uint32_t *wrval)
+{
+	switch (size) {
+	case 1:
+		*wrval = val & UINT8_MAX;
+		return (0);
+	case 2:
+		*wrval = val & UINT16_MAX;
+		return (0);
+	case 4:
+	case 8:
+		*wrval = val & UINT32_MAX;
+		return (0);
+	default:
+		warnx("%s: invalid write size %d", __func__, size);
+		return (-1);
+	}
+}
+
+static int
 scorpi_hwinfo_reset_handler(struct vcpu *vcpu, int dir, uint64_t addr, int size,
     uint64_t *val, void *arg1, long arg2)
 {
 	struct vmctx *ctx;
 	uint64_t off;
+	uint32_t wrval;
 
 	(void)vcpu;
 	(void)arg2;
@@ -72,16 +93,14 @@ scorpi_hwinfo_reset_handler(struct vcpu *vcpu, int dir, uint64_t addr, int size,
 		return (0);
 	}
 
-	if (size != sizeof(uint32_t)) {
-		warnx("%s: invalid write size %d", __func__, size);
+	if (scorpi_hwinfo_wrval(*val, size, &wrval) != 0)
 		return (-1);
-	}
 
 	off = addr - SCORPI_HWINFO_RESET_BASE;
-	if (off == SCORPI_HWINFO_RESET_OFF && (uint32_t)*val == SCORPI_HWINFO_RESET_VALUE)
+	if (off == SCORPI_HWINFO_RESET_OFF && wrval == SCORPI_HWINFO_RESET_VALUE)
 		return (vm_suspend(ctx, VM_SUSPEND_RESET));
 	if (off == SCORPI_HWINFO_SHUTDOWN_OFF &&
-	    (uint32_t)*val == SCORPI_HWINFO_SHUTDOWN_VALUE)
+	    wrval == SCORPI_HWINFO_SHUTDOWN_VALUE)
 		return (vm_suspend(ctx, VM_SUSPEND_POWEROFF));
 
 	return (0);
