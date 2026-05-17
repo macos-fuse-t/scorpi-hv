@@ -120,6 +120,30 @@ struct qemu_fwcfg_user_file {
 static STAILQ_HEAD(qemu_fwcfg_user_file_list,
     qemu_fwcfg_user_file) user_files = STAILQ_HEAD_INITIALIZER(user_files);
 
+static const char *
+qemu_fwcfg_arch_name(const union qemu_fwcfg_selector selector)
+{
+	return (selector.architecture ? "specific" : "generic");
+}
+
+static bool
+qemu_fwcfg_item_is_optional(const union qemu_fwcfg_selector selector)
+{
+	if (selector.architecture != QEMU_FWCFG_ARCHITECTURE_GENERIC)
+		return (false);
+
+	switch (selector.index) {
+	case 0x08: /* FW_CFG_KERNEL_SIZE */
+	case 0x0b: /* FW_CFG_INITRD_SIZE */
+	case 0x0e: /* FW_CFG_BOOT_MENU */
+	case 0x14: /* FW_CFG_CMDLINE_SIZE */
+	case 0x17: /* FW_CFG_SETUP_SIZE */
+		return (true);
+	default:
+		return (false);
+	}
+}
+
 #ifdef __amd64__
 static int
 qemu_fwcfg_selector_port_handler(struct vmctx *const ctx __unused, const int in,
@@ -165,11 +189,12 @@ qemu_fwcfg_data_port_handler(struct vmctx *const ctx __unused, const int in,
 	    &fwcfg_sc.items[fwcfg_sc.selector.architecture]
 			   [fwcfg_sc.selector.index];
 	if (item->data == NULL) {
-		warnx(
-		    "%s: qemu fwcfg item doesn't exist (architecture %s index 0x%x)",
-		    __func__,
-		    fwcfg_sc.selector.architecture ? "specific" : "generic",
-		    fwcfg_sc.selector.index);
+		if (!qemu_fwcfg_item_is_optional(fwcfg_sc.selector)) {
+			warnx(
+			    "%s: qemu fwcfg item doesn't exist (architecture %s index 0x%x)",
+			    __func__, qemu_fwcfg_arch_name(fwcfg_sc.selector),
+			    fwcfg_sc.selector.index);
+		}
 		*eax = 0x00;
 		return (0);
 	} else if (fwcfg_sc.data_offset >= item->size) {
@@ -221,11 +246,12 @@ fwcfg_data_handler(int dir, uint64_t *val, int bytes)
 			   [fwcfg_sc.selector.index];
 
 	if (item->data == NULL) {
-		warnx(
-		    "%s: qemu fwcfg item doesn't exist (architecture %s index 0x%x)",
-		    __func__,
-		    fwcfg_sc.selector.architecture ? "specific" : "generic",
-		    fwcfg_sc.selector.index);
+		if (!qemu_fwcfg_item_is_optional(fwcfg_sc.selector)) {
+			warnx(
+			    "%s: qemu fwcfg item doesn't exist (architecture %s index 0x%x)",
+			    __func__, qemu_fwcfg_arch_name(fwcfg_sc.selector),
+			    fwcfg_sc.selector.index);
+		}
 		*val = 0x00;
 		return (0);
 	} else if (fwcfg_sc.data_offset >= item->size) {
@@ -624,7 +650,9 @@ qemu_fwcfg_init(struct vmctx *const ctx, uint64_t mmio_base, size_t mmio_size)
 {
 	int error;
 	bool fwcfg_enabled;
+#ifndef __amd64__
 	struct mem_range mr;
+#endif
 
 	fwcfg_enabled = true;
 

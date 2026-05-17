@@ -123,6 +123,10 @@ vi_reset_dev(struct virtio_softc *vs)
 		vq->vq_save_used = 0;
 		vq->vq_pfn = 0;
 		vq->vq_msix_idx = VIRTIO_MSI_NO_VECTOR;
+		vq->vq_desc_gpa = 0;
+		vq->vq_avail_gpa = 0;
+		vq->vq_used_gpa = 0;
+		vq->vq_enabled = false;
 	}
 	vs->vs_negotiated_caps = 0;
 	vs->vs_curq = 0;
