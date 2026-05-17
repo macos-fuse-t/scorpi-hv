@@ -38,7 +38,6 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include "compat.h"
 
@@ -1052,8 +1051,15 @@ vi_pci_write_common_cfg_modern(struct pci_devinst *pi, uint64_t offset,
 		if (vs->vs_curq < vc->vc_nvq)
 			SETHI(vs->vs_queues[vs->vs_curq].vq_used_gpa, value);
 		break;
+	case VIRTIO_PCI_COMMON_DF:
+	case VIRTIO_PCI_COMMON_NUMQ:
+	case VIRTIO_PCI_COMMON_CFGGENERATION:
+	case VIRTIO_PCI_COMMON_Q_NOFF:
+		break;
 	default:
-		exit(-1);
+		EPRINTLN(
+		    "vi_pci_write_common_cfg_modern: bad offset %#llx size %d value %#llx",
+		    (unsigned long long)offset, size, (unsigned long long)value);
 		break;
 	}
 }
@@ -1152,8 +1158,8 @@ vi_pci_read_common_cfg_modern(struct pci_devinst *pi, uint64_t offset, int size)
 		break;
 	case VIRTIO_PCI_COMMON_Q_MSIX:
 		if (vs->vs_curq >= vc->vc_nvq) {
-			EPRINTLN("write queue msix: curq %d >= max %d",
-			    vs->vs_curq, vc->vc_nvq);
+			EPRINTLN("read queue msix: curq %d >= max %d", vs->vs_curq,
+			    vc->vc_nvq);
 			break;
 		}
 		vq = &vs->vs_queues[vs->vs_curq];
@@ -1163,9 +1169,8 @@ vi_pci_read_common_cfg_modern(struct pci_devinst *pi, uint64_t offset, int size)
 		val = vs->vs_curq;
 		break;
 	case VIRTIO_PCI_COMMON_Q_ENABLE:
-		if (vs->vs_curq >= vc->vc_nvq) {
+		if (vs->vs_curq < vc->vc_nvq)
 			val = vs->vs_queues[vs->vs_curq].vq_enabled;
-		}
 		break;
 	case VIRTIO_PCI_COMMON_Q_DESCLO:
 		if (vs->vs_curq < vc->vc_nvq)
