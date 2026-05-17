@@ -73,6 +73,8 @@
 #define	HV_SIGNATURE_ECX		0x666f736fU
 #define	HV_SIGNATURE_EDX		0x76482074U
 #define	HV_CPUID_FEATURES		0x40000003
+#define	HV_CPUID_ENLIGHTENMENTS		0x40000004
+#define	HV_CPUID_NESTED_FEATURES	0x4000000a
 #define	HV_FEATURE_TIME_REF_COUNT	(1U << 1)
 #define	HV_FEATURE_SYNIC		(1U << 2)
 #define	HV_FEATURE_SYNTIMER		(1U << 3)
@@ -81,6 +83,7 @@
 #define	HV_FEATURE_REFERENCE_TSC		(1U << 9)
 #define	HV_FEATURE_FREQUENCY_MSRS	(1U << 8)
 #define	HV_FEATURE_STIMER_DIRECT	(1U << 19)
+#define	HV_ENLIGHTENMENT_RELAXED_TIMING	(1U << 5)
 
 struct kvm_hv_caps {
 	bool synic;
@@ -327,6 +330,15 @@ kvm_filter_hv_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid)
 			if (caps.stimer_direct)
 				x86_features |= HV_FEATURE_STIMER_DIRECT;
 			entry->edx &= x86_features;
+		} else if (entry->function == HV_CPUID_ENLIGHTENMENTS ||
+		    entry->function == HV_CPUID_NESTED_FEATURES) {
+			if (entry->function == HV_CPUID_ENLIGHTENMENTS)
+				entry->eax &= HV_ENLIGHTENMENT_RELAXED_TIMING;
+			else
+				entry->eax = 0;
+			entry->ebx = 0;
+			entry->ecx = 0;
+			entry->edx = 0;
 		}
 	}
 }
