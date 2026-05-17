@@ -726,6 +726,7 @@ static void
 blockif_resized(int fd, enum ev_type type __unused, void *arg)
 {
 	struct blockif_ctxt *bc;
+	const struct scorpi_image_info *info;
 	struct stat sb;
 	off_t mediasize;
 
@@ -739,9 +740,13 @@ blockif_resized(int fd, enum ev_type type __unused, void *arg)
 			return;
 		}
 	} else*/
-	mediasize = sb.st_size;
-
 	bc = arg;
+	info = scorpi_image_chain_top_info(bc->bc_image_chain);
+	if (info != NULL && info->format != SCORPI_IMAGE_FORMAT_RAW)
+		mediasize = (off_t)info->virtual_size;
+	else
+		mediasize = sb.st_size;
+
 	pthread_mutex_lock(&bc->bc_mtx);
 	if (mediasize != bc->bc_size) {
 		bc->bc_size = mediasize;
