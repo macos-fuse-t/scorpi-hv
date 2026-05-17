@@ -1007,7 +1007,12 @@ vi_pci_write_common_cfg_modern(struct pci_devinst *pi, uint64_t offset,
 		vs->gf_select = (uint16_t)(value & 0xff);
 		break;
 	case VIRTIO_PCI_COMMON_GF:
-		vs->vs_negotiated_caps = value & vc->vc_hv_caps;
+		if (vs->gf_select == 0) {
+			SETLO(vs->vs_negotiated_caps, value);
+		} else if (vs->gf_select == 1) {
+			SETHI(vs->vs_negotiated_caps, value);
+		}
+		vs->vs_negotiated_caps &= vc->vc_hv_caps;
 		if (vc->vc_apply_features)
 			(*vc->vc_apply_features)(DEV_SOFTC(vs),
 			    vs->vs_negotiated_caps);
@@ -1039,9 +1044,10 @@ vi_pci_write_common_cfg_modern(struct pci_devinst *pi, uint64_t offset,
 		}
 		if (value == 0 || !powerof2(value) ||
 		    value > vq->vq_maxqsize) {
-			EPRINTLN("write queue size: invalid queue %d size %ju "
-			    "max %u", vs->vs_curq, (uintmax_t)value,
-			    vq->vq_maxqsize);
+			EPRINTLN("%s: write queue size: invalid queue %d "
+			    "offset %ju access %d value %ju max %u",
+			    vc->vc_name, vs->vs_curq, (uintmax_t)offset, size,
+			    (uintmax_t)value, vq->vq_maxqsize);
 			break;
 		}
 		vq->vq_qsize = value;
@@ -1107,6 +1113,14 @@ vi_pci_write_modern(struct pci_devinst *pi, int baridx, uint64_t offset,
 	struct vqueue_info *vq;
 
 	vc = vs->vs_vc;
+
+	if (vs->vs_flags & VIRTIO_USE_MSIX) {
+		if (baridx == pci_msix_table_bar(pi) ||
+		    baridx == pci_msix_pba_bar(pi)) {
+			pci_emul_msix_twrite(pi, offset, size, value);
+			return;
+		}
+	}
 
 	pthread_mutex_lock(vs->vs_mtx);
 
@@ -1248,6 +1262,13 @@ vi_pci_read_modern(struct pci_devinst *pi, int baridx, uint64_t offset,
 	uint64_t val = 0;
 
 	vc = vs->vs_vc;
+
+	if (vs->vs_flags & VIRTIO_USE_MSIX) {
+		if (baridx == pci_msix_table_bar(pi) ||
+		    baridx == pci_msix_pba_bar(pi)) {
+			return (pci_emul_msix_tread(pi, offset, size));
+		}
+	}
 
 	pthread_mutex_lock(vs->vs_mtx);
 
