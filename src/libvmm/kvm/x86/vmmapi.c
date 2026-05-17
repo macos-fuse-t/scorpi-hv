@@ -1261,6 +1261,112 @@ kvm_handle_hyperv(struct vcpu *vcpu)
 	}
 }
 
+static const char *
+kvm_exit_name(uint32_t reason)
+{
+	switch (reason) {
+	case KVM_EXIT_IO:
+		return ("IO");
+	case KVM_EXIT_MMIO:
+		return ("MMIO");
+	case KVM_EXIT_HLT:
+		return ("HLT");
+	case KVM_EXIT_INTR:
+		return ("INTR");
+	case KVM_EXIT_SHUTDOWN:
+		return ("SHUTDOWN");
+	case KVM_EXIT_FAIL_ENTRY:
+		return ("FAIL_ENTRY");
+	case KVM_EXIT_INTERNAL_ERROR:
+		return ("INTERNAL_ERROR");
+	case KVM_EXIT_HYPERV:
+		return ("HYPERV");
+	default:
+		return ("OTHER");
+	}
+}
+
+static bool
+kvm_trace_exits(void)
+{
+	const char *env;
+
+	env = getenv("SCORPI_TRACE_KVM_EXITS");
+	if (env != NULL && env[0] != '\0' && strcmp(env, "0") != 0)
+		return (true);
+
+	return (get_config_bool_default("x86.trace_exits", false));
+}
+
+static void
+kvm_trace_exit(struct vcpu *vcpu)
+{
+	static __thread struct {
+		bool initialized;
+		uint64_t total;
+		uint64_t reason[64];
+		uint64_t io_count;
+		uint64_t mmio_count;
+		uint16_t io_port;
+		uint64_t mmio_addr;
+		struct timespec last;
+	} trace;
+	struct timespec now;
+	uint32_t reason;
+	uint64_t elapsed_ns;
+	uint64_t max_count;
+	uint32_t max_reason;
+
+	if (!kvm_trace_exits())
+		return;
+
+	reason = vcpu->run->exit_reason;
+	if (!trace.initialized) {
+		clock_gettime(CLOCK_MONOTONIC, &trace.last);
+		trace.initialized = true;
+	}
+
+	trace.total++;
+	if (reason < nitems(trace.reason))
+		trace.reason[reason]++;
+
+	if (reason == KVM_EXIT_IO) {
+		trace.io_count++;
+		trace.io_port = vcpu->run->io.port;
+	} else if (reason == KVM_EXIT_MMIO) {
+		trace.mmio_count++;
+		trace.mmio_addr = vcpu->run->mmio.phys_addr;
+	}
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	elapsed_ns = (now.tv_sec - trace.last.tv_sec) * 1000000000ULL +
+	    (now.tv_nsec - trace.last.tv_nsec);
+	if (elapsed_ns < 1000000000ULL)
+		return;
+
+	max_reason = 0;
+	max_count = 0;
+	for (uint32_t i = 0; i < nitems(trace.reason); i++) {
+		if (trace.reason[i] > max_count) {
+			max_count = trace.reason[i];
+			max_reason = i;
+		}
+	}
+
+	PRINTLN("vcpu %d exits: total=%llu top=%s(%u)=%llu io=%llu last_port=%#x mmio=%llu last_addr=%#llx",
+	    vcpu_id(vcpu), (unsigned long long)trace.total,
+	    kvm_exit_name(max_reason), max_reason, (unsigned long long)max_count,
+	    (unsigned long long)trace.io_count, trace.io_port,
+	    (unsigned long long)trace.mmio_count,
+	    (unsigned long long)trace.mmio_addr);
+
+	memset(trace.reason, 0, sizeof(trace.reason));
+	trace.total = 0;
+	trace.io_count = 0;
+	trace.mmio_count = 0;
+	trace.last = now;
+}
+
 int
 vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 {
@@ -1285,6 +1391,8 @@ vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 			vme->u.suspended.how = vcpu->ctx->suspend_reason;
 			return (0);
 		}
+
+		kvm_trace_exit(vcpu);
 
 		switch (vcpu->run->exit_reason) {
 		case KVM_EXIT_IO:
