@@ -54,8 +54,6 @@
 #define	CPUID_KVM_FEATURES		0x40000001
 #define	CPUID_HV_SIGNATURE		0x40000000
 #define	CPUID_HV_END			0x400000ff
-#define	CPUID_KVM_HV_SIGNATURE		0x40000100
-#define	CPUID_KVM_HV_FEATURES		0x40000101
 #define	CPUID_1_EBX_APICID_SHIFT	24
 #define	CPUID_1_EBX_CPU_COUNT_SHIFT	16
 #define	CPUID_1_EBX_APICID_MASK		0xff000000
@@ -74,6 +72,12 @@
 #define	HV_SIGNATURE_EBX		0x7263694dU
 #define	HV_SIGNATURE_ECX		0x666f736fU
 #define	HV_SIGNATURE_EDX		0x76482074U
+#define	HV_CPUID_FEATURES		0x40000003
+#define	HV_FEATURE_TIME_REF_COUNT	(1U << 1)
+#define	HV_FEATURE_HYPERCALL		(1U << 5)
+#define	HV_FEATURE_VP_INDEX		(1U << 6)
+#define	HV_FEATURE_REFERENCE_TSC		(1U << 9)
+#define	HV_FEATURE_FREQUENCY_MSRS	(1U << 8)
 
 enum {
 	VM_MEMSEG_LOW,
@@ -227,6 +231,24 @@ kvm_set_hv_signature(struct kvm_cpuid2 *cpuid)
 	}
 }
 
+static void
+kvm_filter_hv_cpuid(struct kvm_cpuid2 *cpuid)
+{
+	struct kvm_cpuid_entry2 *entry;
+
+	for (uint32_t i = 0; i < cpuid->nent; i++) {
+		entry = &cpuid->entries[i];
+		if (entry->function == HV_CPUID_FEATURES) {
+			entry->eax &= HV_FEATURE_TIME_REF_COUNT |
+			    HV_FEATURE_HYPERCALL |
+			    HV_FEATURE_VP_INDEX |
+			    HV_FEATURE_REFERENCE_TSC;
+			entry->ebx = 0;
+			entry->edx &= HV_FEATURE_FREQUENCY_MSRS;
+		}
+	}
+}
+
 static int
 kvm_add_hv_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid,
     uint32_t maxent)
@@ -236,7 +258,7 @@ kvm_add_hv_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid,
 	int error, nent;
 
 	if (kvm_check_extension(vcpu->ctx, KVM_CAP_HYPERV_CPUID) <= 0)
-		return (0);
+		return (ENOTSUP);
 
 	nent = 64;
 again:
@@ -268,6 +290,7 @@ again:
 	memcpy(&cpuid->entries[cpuid->nent], hv_cpuid->entries,
 	    hv_cpuid->nent * sizeof(cpuid->entries[0]));
 	cpuid->nent += hv_cpuid->nent;
+	kvm_filter_hv_cpuid(cpuid);
 	kvm_set_hv_signature(cpuid);
 
 	free(hv_cpuid);
@@ -361,10 +384,7 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 	}
 
 	kvm_del_cpuid_range(cpuid, CPUID_HV_SIGNATURE, CPUID_HV_END);
-	if (hyperv && kvm_add_hv_cpuid(vcpu, cpuid, maxent) == 0) {
-		kvm_set_kvm_cpuid(cpuid, maxent, CPUID_KVM_HV_SIGNATURE,
-		    CPUID_KVM_HV_FEATURES);
-	} else {
+	if (!hyperv || kvm_add_hv_cpuid(vcpu, cpuid, maxent) != 0) {
 		kvm_set_kvm_cpuid(cpuid, maxent, CPUID_KVM_SIGNATURE,
 		    CPUID_KVM_FEATURES);
 	}
