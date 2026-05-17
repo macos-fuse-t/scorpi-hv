@@ -51,6 +51,7 @@
 #define	CPUID_EXTENDED_TOPOLOGY		0x0000000b
 #define	CPUID_TSC_FREQ			0x00000015
 #define	CPUID_EXTENDED_TOPOLOGY_V2	0x0000001f
+#define	CPUID_EXTENDED_SIGNATURE	0x80000000
 #define	CPUID_KVM_SIGNATURE		0x40000000
 #define	CPUID_KVM_FEATURES		0x40000001
 #define	CPUID_HV_SIGNATURE		0x40000000
@@ -181,6 +182,28 @@ kvm_hyperv_enabled(void)
 	    get_config_bool_default("x86.hyperv", true));
 }
 
+static bool
+kvm_cfg_u32(const char *path, uint32_t *val)
+{
+	const char *cfg;
+	char *end;
+	unsigned long long n;
+
+	cfg = get_config_value(path);
+	if (cfg == NULL)
+		return (false);
+
+	errno = 0;
+	n = strtoull(cfg, &end, 0);
+	if (errno != 0 || end == cfg || *end != '\0' || n > UINT32_MAX) {
+		warnx("invalid uint32 value %s for %s", cfg, path);
+		return (false);
+	}
+
+	*val = (uint32_t)n;
+	return (true);
+}
+
 static int
 kvm_enable_vcpu_cap(struct vcpu *vcpu, uint32_t cap_id)
 {
@@ -249,6 +272,55 @@ kvm_del_cpuid_range(struct kvm_cpuid2 *cpuid, uint32_t low, uint32_t high)
 	for (uint32_t src = 0; src < cpuid->nent; src++) {
 		if (cpuid->entries[src].function >= low &&
 		    cpuid->entries[src].function <= high)
+			continue;
+		if (dst != src)
+			cpuid->entries[dst] = cpuid->entries[src];
+		dst++;
+	}
+	cpuid->nent = dst;
+}
+
+static struct kvm_cpuid_entry2 *
+kvm_find_cpuid(struct kvm_cpuid2 *cpuid, uint32_t function, uint32_t index)
+{
+	struct kvm_cpuid_entry2 *entry;
+
+	for (uint32_t i = 0; i < cpuid->nent; i++) {
+		entry = &cpuid->entries[i];
+		if (entry->function == function && entry->index == index)
+			return (entry);
+	}
+
+	return (NULL);
+}
+
+static void
+kvm_cap_cpuid(struct kvm_cpuid2 *cpuid, uint32_t basic, bool has_basic,
+    uint32_t ext, bool has_ext)
+{
+	struct kvm_cpuid_entry2 *entry;
+	uint32_t dst;
+
+	if (has_basic) {
+		entry = kvm_find_cpuid(cpuid, CPUID_SIGNATURE, 0);
+		if (entry != NULL && entry->eax > basic)
+			entry->eax = basic;
+	}
+
+	if (has_ext) {
+		entry = kvm_find_cpuid(cpuid, CPUID_EXTENDED_SIGNATURE, 0);
+		if (entry != NULL && entry->eax > ext)
+			entry->eax = ext;
+	}
+
+	dst = 0;
+	for (uint32_t src = 0; src < cpuid->nent; src++) {
+		entry = &cpuid->entries[src];
+		if (has_basic && entry->function > basic &&
+		    entry->function < CPUID_KVM_SIGNATURE)
+			continue;
+		if (has_ext && entry->function > ext &&
+		    entry->function >= CPUID_EXTENDED_SIGNATURE)
 			continue;
 		if (dst != src)
 			cpuid->entries[dst] = cpuid->entries[src];
@@ -445,9 +517,13 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 	struct kvm_cpuid_entry2 *entry;
 	struct kvm_cpuid_entry2 *tsc_entry;
 	uint32_t apic_id, cpu_count, tsc_khz;
+	uint32_t basic_max, ext_max;
+	bool has_basic_max, has_ext_max;
 	bool hypervisor;
 	bool hyperv;
 
+	has_basic_max = kvm_cfg_u32("x86.cpuid.max_basic", &basic_max);
+	has_ext_max = kvm_cfg_u32("x86.cpuid.max_ext", &ext_max);
 	apic_id = (uint32_t)vcpu->vcpuid;
 	cpu_count = MIN((uint32_t)guest_ncpus, 0xffU);
 	if (cpu_count == 0)
@@ -462,7 +538,9 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 
 		switch (entry->function) {
 		case CPUID_SIGNATURE:
-			if (entry->index == 0 && entry->eax < CPUID_TSC_FREQ)
+			if (entry->index == 0 &&
+			    (!has_basic_max || basic_max >= CPUID_TSC_FREQ) &&
+			    entry->eax < CPUID_TSC_FREQ)
 				entry->eax = CPUID_TSC_FREQ;
 			break;
 		case CPUID_VERSION_INFO:
@@ -497,12 +575,21 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 		    CPUID_KVM_FEATURES);
 	}
 
-	if (tsc_khz == 0)
+	if (has_basic_max && basic_max < CPUID_TSC_FREQ) {
+		kvm_cap_cpuid(cpuid, basic_max, has_basic_max, ext_max,
+		    has_ext_max);
 		return;
+	}
+
+	if (tsc_khz == 0) {
+		kvm_cap_cpuid(cpuid, basic_max, has_basic_max, ext_max,
+		    has_ext_max);
+		return;
+	}
 
 	if (tsc_entry == NULL) {
 		if (cpuid->nent >= maxent)
-			return;
+			goto out;
 		tsc_entry = &cpuid->entries[cpuid->nent++];
 		memset(tsc_entry, 0, sizeof(*tsc_entry));
 		tsc_entry->function = CPUID_TSC_FREQ;
@@ -512,6 +599,9 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 	tsc_entry->ebx = tsc_khz;
 	tsc_entry->ecx = CPUID_15_CRYSTAL_HZ;
 	tsc_entry->edx = 0;
+
+out:
+	kvm_cap_cpuid(cpuid, basic_max, has_basic_max, ext_max, has_ext_max);
 }
 
 static int
