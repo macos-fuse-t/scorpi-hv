@@ -255,10 +255,12 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 		kvm_features->function = CPUID_KVM_FEATURES;
 	}
 	if (kvm_features != NULL) {
-		kvm_features->eax |=
-		    KVM_FEATURE_BIT(KVM_FEATURE_NOP_IO_DELAY) |
+		kvm_features->eax = KVM_FEATURE_BIT(KVM_FEATURE_NOP_IO_DELAY) |
 		    KVM_FEATURE_BIT(KVM_FEATURE_CLOCKSOURCE2) |
 		    KVM_FEATURE_BIT(KVM_FEATURE_CLOCKSOURCE_STABLE_BIT);
+		kvm_features->ebx = 0;
+		kvm_features->ecx = 0;
+		kvm_features->edx = 0;
 	}
 
 	if (tsc_khz == 0)
