@@ -48,6 +48,7 @@
 #define SCORPI_HWINFO_SHUTDOWN_OFF	4
 #define SCORPI_HWINFO_RESET_VALUE	1
 #define SCORPI_HWINFO_SHUTDOWN_VALUE	1
+#define SCORPI_HWINFO_ACPI_S5_VALUE	((5 << 2) | (1 << 5))
 
 struct scorpi_hwinfo_builder {
 	uint8_t *data;
@@ -100,7 +101,8 @@ scorpi_hwinfo_reset_handler(struct vcpu *vcpu, int dir, uint64_t addr, int size,
 	if (off == SCORPI_HWINFO_RESET_OFF && wrval == SCORPI_HWINFO_RESET_VALUE)
 		return (vm_suspend(ctx, VM_SUSPEND_RESET));
 	if (off == SCORPI_HWINFO_SHUTDOWN_OFF &&
-	    wrval == SCORPI_HWINFO_SHUTDOWN_VALUE)
+	    (wrval == SCORPI_HWINFO_SHUTDOWN_VALUE ||
+	    wrval == SCORPI_HWINFO_ACPI_S5_VALUE))
 		return (vm_suspend(ctx, VM_SUSPEND_POWEROFF));
 
 	return (0);
