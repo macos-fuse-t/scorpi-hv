@@ -168,9 +168,16 @@ kvm_tsc_khz(struct vcpu *vcpu)
 }
 
 static bool
+kvm_hypervisor_enabled(void)
+{
+	return (get_config_bool_default("x86.hypervisor", true));
+}
+
+static bool
 kvm_hyperv_enabled(void)
 {
-	return (get_config_bool_default("x86.hyperv", true));
+	return (kvm_hypervisor_enabled() &&
+	    get_config_bool_default("x86.hyperv", true));
 }
 
 static int
@@ -437,6 +444,7 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 	struct kvm_cpuid_entry2 *entry;
 	struct kvm_cpuid_entry2 *tsc_entry;
 	uint32_t apic_id, cpu_count, tsc_khz;
+	bool hypervisor;
 	bool hyperv;
 
 	apic_id = (uint32_t)vcpu->vcpuid;
@@ -446,6 +454,7 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 
 	tsc_khz = kvm_tsc_khz(vcpu);
 	tsc_entry = NULL;
+	hypervisor = kvm_hypervisor_enabled();
 	hyperv = kvm_hyperv_enabled();
 	for (uint32_t i = 0; i < cpuid->nent; i++) {
 		entry = &cpuid->entries[i];
@@ -460,7 +469,10 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 			    CPUID_1_EBX_CPU_COUNT_MASK);
 			entry->ebx |= apic_id << CPUID_1_EBX_APICID_SHIFT;
 			entry->ebx |= cpu_count << CPUID_1_EBX_CPU_COUNT_SHIFT;
-			entry->ecx |= CPUID_1_ECX_HYPERVISOR;
+			if (hypervisor)
+				entry->ecx |= CPUID_1_ECX_HYPERVISOR;
+			else
+				entry->ecx &= ~CPUID_1_ECX_HYPERVISOR;
 			if (!get_config_bool_default("x86.x2apic", false))
 				entry->ecx &= ~CPUID_1_ECX_X2APIC;
 			break;
@@ -478,7 +490,8 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 	}
 
 	kvm_del_cpuid_range(cpuid, CPUID_HV_SIGNATURE, CPUID_HV_END);
-	if (!hyperv || kvm_add_hv_cpuid(vcpu, cpuid, maxent) != 0) {
+	if (hypervisor && (!hyperv ||
+	    kvm_add_hv_cpuid(vcpu, cpuid, maxent) != 0)) {
 		kvm_set_kvm_cpuid(cpuid, maxent, CPUID_KVM_SIGNATURE,
 		    CPUID_KVM_FEATURES);
 	}

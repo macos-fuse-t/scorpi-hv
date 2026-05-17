@@ -45,6 +45,7 @@ bhyve_init_config(void)
 	set_config_bool("x86.strictio", false);
 	set_config_bool("x86.vmexit_on_hlt", false);
 	set_config_bool("x86.vmexit_on_pause", false);
+	set_config_bool("x86.hypervisor", true);
 	set_config_bool("x86.x2apic", false);
 }
 
