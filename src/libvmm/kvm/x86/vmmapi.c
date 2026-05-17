@@ -1019,6 +1019,12 @@ vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 
 	vme = vmrun->vm_exit;
 	for (;;) {
+		if (vcpu->ctx->suspend_reason != VM_SUSPEND_NONE) {
+			vme->exitcode = VM_EXITCODE_SUSPENDED;
+			vme->u.suspended.how = vcpu->ctx->suspend_reason;
+			return (0);
+		}
+
 		if (kvm_ioctl(vcpu->fd, KVM_RUN, NULL) < 0) {
 			if (errno == EINTR || errno == EAGAIN)
 				continue;
