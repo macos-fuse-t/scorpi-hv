@@ -42,6 +42,7 @@
 #define SCORPI_HWINFO_ECAM_SIZE		((PCI_BUSMAX + 1) * 1024 * 1024ULL)
 #define SCORPI_HWINFO_LOWMEM_HOLE_BASE	0xA0000ULL
 #define SCORPI_HWINFO_LOWMEM_HOLE_END	0x100000ULL
+#define SCORPI_HWINFO_PAGE_SIZE		0x1000ULL
 
 #define SCORPI_HWINFO_RESET_BASE		0xF0000000ULL
 #define SCORPI_HWINFO_RESET_SIZE		0x1000
@@ -160,6 +161,32 @@ scorpi_hwinfo_add_range(struct scorpi_hwinfo_builder *b, uint16_t type, uint64_t
 	return (scorpi_hwinfo_append(b, &range, sizeof(range)));
 }
 
+static void
+scorpi_hwinfo_page_range(uint64_t base, uint64_t size, uint64_t *rbase,
+    uint64_t *rsize)
+{
+	uint64_t end;
+
+	if (size > UINT64_MAX - base)
+		end = UINT64_MAX;
+	else
+		end = roundup2(base + size, SCORPI_HWINFO_PAGE_SIZE);
+
+	base &= ~(SCORPI_HWINFO_PAGE_SIZE - 1);
+	*rbase = base;
+	*rsize = end - base;
+}
+
+static int
+scorpi_hwinfo_add_resv(struct scorpi_hwinfo_builder *b, uint64_t base,
+    uint64_t size)
+{
+	scorpi_hwinfo_page_range(base, size, &base, &size);
+
+	return (scorpi_hwinfo_add_range(b, SCORPI_X64_ENTRY_RESERVED_RANGE,
+	    base, size, SCORPI_X64_RANGE_RESERVED));
+}
+
 static int
 scorpi_hwinfo_add_ram(struct scorpi_hwinfo_builder *b, uint64_t base, uint64_t end,
     const struct scorpi_hwinfo_resv *resv, size_t nresv)
@@ -177,10 +204,11 @@ scorpi_hwinfo_add_ram(struct scorpi_hwinfo_builder *b, uint64_t base, uint64_t e
 		if (!resv[i].present || resv[i].size == 0)
 			continue;
 
-		rbase = resv[i].base;
-		rend = rbase + resv[i].size;
-		if (rend < rbase)
-			rend = UINT64_MAX;
+		scorpi_hwinfo_page_range(resv[i].base, resv[i].size, &rbase,
+		    &rend);
+		rend += rbase;
+		if (rend < rbase || rend > end)
+			rend = end;
 		if (rbase >= end || rend <= cursor)
 			continue;
 
@@ -489,10 +517,9 @@ scorpi_hwinfo_build(struct vmctx *ctx, void **data, uint32_t *size)
 	    nitems(resv)));
 	if (low_end > SCORPI_HWINFO_LOWMEM_HOLE_BASE) {
 		low_hole_end = MIN(low_end, SCORPI_HWINFO_LOWMEM_HOLE_END);
-		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b,
-		    SCORPI_X64_ENTRY_RESERVED_RANGE, SCORPI_HWINFO_LOWMEM_HOLE_BASE,
-		    low_hole_end - SCORPI_HWINFO_LOWMEM_HOLE_BASE,
-		    SCORPI_X64_RANGE_RESERVED));
+		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_resv(&b,
+		    SCORPI_HWINFO_LOWMEM_HOLE_BASE,
+		    low_hole_end - SCORPI_HWINFO_LOWMEM_HOLE_BASE));
 	}
 	SCORPI_HWINFO_ADD(scorpi_hwinfo_add_ram(&b, SCORPI_HWINFO_LOWMEM_HOLE_END,
 	    low_end, resv, nitems(resv)));
@@ -500,28 +527,23 @@ scorpi_hwinfo_build(struct vmctx *ctx, void **data, uint32_t *size)
 	    high_size, SCORPI_X64_RANGE_USABLE));
 
 	if (low_size < PCI_EMUL_MEMBASE32) {
-		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b,
-		    SCORPI_X64_ENTRY_RESERVED_RANGE, low_size,
-		    PCI_EMUL_MEMBASE32 - low_size, SCORPI_X64_RANGE_RESERVED));
+		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_resv(&b, low_size,
+		    PCI_EMUL_MEMBASE32 - low_size));
 	}
-	SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b, SCORPI_X64_ENTRY_RESERVED_RANGE,
-	    PCI_EMUL_ECFG_BASE, SCORPI_HWINFO_ECAM_SIZE,
-	    SCORPI_X64_RANGE_RESERVED));
+	SCORPI_HWINFO_ADD(scorpi_hwinfo_add_resv(&b, PCI_EMUL_ECFG_BASE,
+	    SCORPI_HWINFO_ECAM_SIZE));
 	if (bootrom_boot()) {
-		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b,
-		    SCORPI_X64_ENTRY_RESERVED_RANGE, bootrom_rombase(),
-		    bootrom_romsize(), SCORPI_X64_RANGE_RESERVED));
+		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_resv(&b,
+		    bootrom_rombase(), bootrom_romsize()));
 	}
 	if (bootrom_vars(&vars_base, &vars_size) == 0) {
-		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b,
-		    SCORPI_X64_ENTRY_RESERVED_RANGE, vars_base, vars_size,
-		    SCORPI_X64_RANGE_RESERVED));
+		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_resv(&b, vars_base,
+		    vars_size));
 	}
 	for (size_t i = 0; i < nitems(resv); i++) {
 		if (resv[i].present) {
-			SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b,
-			    SCORPI_X64_ENTRY_RESERVED_RANGE, resv[i].base,
-			    resv[i].size, SCORPI_X64_RANGE_RESERVED));
+			SCORPI_HWINFO_ADD(scorpi_hwinfo_add_resv(&b,
+			    resv[i].base, resv[i].size));
 		}
 	}
 
