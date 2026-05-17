@@ -19,9 +19,6 @@
 #include "qemu_fwcfg.h"
 #include "tpm_ppi.h"
 
-#define TPM_PPI_ADDRESS 0x25000
-#define TPM_PPI_SIZE 0x400
-
 #define TPM_PPI_FWCFG_FILE "etc/tpm/config"
 
 #define TPM_PPI_QEMU_NAME "qemu"
@@ -38,7 +35,7 @@ struct tpm_ppi_qemu {
 	uint8_t _reserved1[0x40];   /* RES1 */
 	uint8_t next_step;	    /* next_step */
 } __attribute__((packed));
-static_assert(sizeof(struct tpm_ppi_qemu) <= TPM_PPI_SIZE,
+static_assert(sizeof(struct tpm_ppi_qemu) <= TPM_PPI_QEMU_SIZE,
     "Wrong size of tpm_ppi_qemu");
 
 struct tpm_ppi_fwcfg {
@@ -67,8 +64,8 @@ tpm_ppi_mem_handler(struct vcpu *const vcpu __unused, const int dir,
 		return (EINVAL);
 
 	ppi = arg1;
-	off = addr - TPM_PPI_ADDRESS;
-	if (off >= TPM_PPI_SIZE || off + size > TPM_PPI_SIZE)
+	off = addr - TPM_PPI_QEMU_ADDRESS;
+	if (off >= TPM_PPI_QEMU_SIZE || off + size > TPM_PPI_QEMU_SIZE)
 		return (EINVAL);
 
 	ptr = (uint8_t *)ppi + off;
@@ -84,8 +81,8 @@ tpm_ppi_mem_handler(struct vcpu *const vcpu __unused, const int dir,
 
 static struct mem_range ppi_mmio = {
 	.name = "ppi-mmio",
-	.base = TPM_PPI_ADDRESS,
-	.size = TPM_PPI_SIZE,
+	.base = TPM_PPI_QEMU_ADDRESS,
+	.size = TPM_PPI_QEMU_SIZE,
 	.flags = MEM_F_RW,
 	.handler = tpm_ppi_mem_handler,
 };
@@ -97,7 +94,7 @@ tpm_ppi_init(void **sc)
 	struct tpm_ppi_fwcfg *fwcfg;
 	int error;
 
-	ppi = calloc(1, TPM_PPI_SIZE);
+	ppi = calloc(1, TPM_PPI_QEMU_SIZE);
 	if (ppi == NULL) {
 		warnx("%s: failed to allocate ACPI region for PPI", __func__);
 		return (ENOMEM);
@@ -110,7 +107,7 @@ tpm_ppi_init(void **sc)
 		goto err_out;
 	}
 
-	fwcfg->ppi_address = htole32(TPM_PPI_ADDRESS);
+	fwcfg->ppi_address = htole32(TPM_PPI_QEMU_ADDRESS);
 	fwcfg->tpm_version = 2;
 	fwcfg->ppi_version = 1;
 

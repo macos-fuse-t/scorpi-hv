@@ -9,6 +9,9 @@
 
 #include "config.h"
 
+#define	TPM_PPI_QEMU_ADDRESS	0x25000
+#define	TPM_PPI_QEMU_SIZE	0x400
+
 struct tpm_ppi {
 	const char *name;
 

@@ -27,6 +27,7 @@
 #include "qemu_fwcfg.h"
 #include "tpm_crb.h"
 #include "tpm_tis.h"
+#include "tpm_ppi.h"
 #include "scorpi_hwinfo.h"
 
 #include <scorpi_x64_hwinfo.h>
@@ -55,6 +56,12 @@ struct scorpi_hwinfo_builder {
 	size_t len;
 	size_t cap;
 	uint32_t count;
+};
+
+struct scorpi_hwinfo_resv {
+	bool present;
+	uint64_t base;
+	uint64_t size;
 };
 
 static int
@@ -155,35 +162,42 @@ scorpi_hwinfo_add_range(struct scorpi_hwinfo_builder *b, uint16_t type, uint64_t
 
 static int
 scorpi_hwinfo_add_ram(struct scorpi_hwinfo_builder *b, uint64_t base, uint64_t end,
-    bool have_tpm, uint64_t tpm_base, uint64_t tpm_size)
+    const struct scorpi_hwinfo_resv *resv, size_t nresv)
 {
-	uint64_t tpm_end;
+	uint64_t cursor;
 
 	if (end <= base)
 		return (0);
 
-	if (!have_tpm || tpm_size == 0)
-		return (scorpi_hwinfo_add_range(b, SCORPI_X64_ENTRY_RAM_RANGE, base,
-		    end - base, SCORPI_X64_RANGE_USABLE));
-
-	tpm_end = tpm_base + tpm_size;
-	if (tpm_end < tpm_base)
-		tpm_end = UINT64_MAX;
-	if (tpm_base >= end || tpm_end <= base)
-		return (scorpi_hwinfo_add_range(b, SCORPI_X64_ENTRY_RAM_RANGE, base,
-		    end - base, SCORPI_X64_RANGE_USABLE));
-
-	if (tpm_base > base) {
+	cursor = base;
+	for (size_t i = 0; i < nresv; i++) {
+		uint64_t rbase, rend;
 		int error;
 
-		error = scorpi_hwinfo_add_range(b, SCORPI_X64_ENTRY_RAM_RANGE, base,
-		    MIN(tpm_base, end) - base, SCORPI_X64_RANGE_USABLE);
-		if (error != 0)
-			return (error);
+		if (!resv[i].present || resv[i].size == 0)
+			continue;
+
+		rbase = resv[i].base;
+		rend = rbase + resv[i].size;
+		if (rend < rbase)
+			rend = UINT64_MAX;
+		if (rbase >= end || rend <= cursor)
+			continue;
+
+		if (rbase > cursor) {
+			error = scorpi_hwinfo_add_range(b,
+			    SCORPI_X64_ENTRY_RAM_RANGE, cursor,
+			    MIN(rbase, end) - cursor, SCORPI_X64_RANGE_USABLE);
+			if (error != 0)
+				return (error);
+		}
+		if (rend > cursor)
+			cursor = MIN(rend, end);
 	}
-	if (tpm_end < end)
-		return (scorpi_hwinfo_add_range(b, SCORPI_X64_ENTRY_RAM_RANGE, tpm_end,
-		    end - tpm_end, SCORPI_X64_RANGE_USABLE));
+
+	if (cursor < end)
+		return (scorpi_hwinfo_add_range(b, SCORPI_X64_ENTRY_RAM_RANGE,
+		    cursor, end - cursor, SCORPI_X64_RANGE_USABLE));
 
 	return (0);
 }
@@ -329,6 +343,30 @@ scorpi_hwinfo_tpm_range(uint64_t *base, uint64_t *size, uint32_t *intf_type)
 	return (false);
 }
 
+static bool
+scorpi_hwinfo_tpm_ppi_range(uint64_t *base, uint64_t *size)
+{
+	const char *ppi;
+	nvlist_t *nvl;
+
+	nvl = find_config_node("tpm");
+	if (nvl == NULL)
+		return (false);
+
+	ppi = get_config_value_node(nvl, "ppi");
+	if (ppi != NULL && strcmp(ppi, "none") == 0)
+		return (false);
+	if (ppi != NULL && strcmp(ppi, "qemu") != 0)
+		return (false);
+
+	if (base != NULL)
+		*base = TPM_PPI_QEMU_ADDRESS;
+	if (size != NULL)
+		*size = TPM_PPI_QEMU_SIZE;
+
+	return (true);
+}
+
 static int
 scorpi_hwinfo_add_tpm(struct scorpi_hwinfo_builder *b)
 {
@@ -412,11 +450,11 @@ scorpi_hwinfo_build(struct vmctx *ctx, void **data, uint32_t *size)
 {
 	struct scorpi_x64_hwinfo_header header;
 	struct scorpi_hwinfo_builder b;
-	uint64_t high_base, pci64_base, tpm_base, tpm_size;
+	struct scorpi_hwinfo_resv resv[2];
+	uint64_t high_base, pci64_base;
 	uint64_t low_end, low_hole_end;
 	uint64_t vars_base, vars_size;
 	size_t low_size, high_size;
-	bool have_tpm;
 	int error;
 
 	if (data == NULL || size == NULL)
@@ -432,8 +470,12 @@ scorpi_hwinfo_build(struct vmctx *ctx, void **data, uint32_t *size)
 	low_size = vm_get_lowmem_size(ctx);
 	high_base = vm_get_highmem_base(ctx);
 	high_size = vm_get_highmem_size(ctx);
-	have_tpm = scorpi_hwinfo_tpm_range(&tpm_base, &tpm_size, NULL);
 	low_end = low_size;
+	memset(resv, 0, sizeof(resv));
+	resv[0].present = scorpi_hwinfo_tpm_range(&resv[0].base,
+	    &resv[0].size, NULL);
+	resv[1].present = scorpi_hwinfo_tpm_ppi_range(&resv[1].base,
+	    &resv[1].size);
 
 #define SCORPI_HWINFO_ADD(expr)				\
 	do {					\
@@ -443,8 +485,8 @@ scorpi_hwinfo_build(struct vmctx *ctx, void **data, uint32_t *size)
 	} while (0)
 
 	SCORPI_HWINFO_ADD(scorpi_hwinfo_add_ram(&b, 0,
-	    MIN(low_end, SCORPI_HWINFO_LOWMEM_HOLE_BASE), have_tpm, tpm_base,
-	    tpm_size));
+	    MIN(low_end, SCORPI_HWINFO_LOWMEM_HOLE_BASE), resv,
+	    nitems(resv)));
 	if (low_end > SCORPI_HWINFO_LOWMEM_HOLE_BASE) {
 		low_hole_end = MIN(low_end, SCORPI_HWINFO_LOWMEM_HOLE_END);
 		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b,
@@ -453,7 +495,7 @@ scorpi_hwinfo_build(struct vmctx *ctx, void **data, uint32_t *size)
 		    SCORPI_X64_RANGE_RESERVED));
 	}
 	SCORPI_HWINFO_ADD(scorpi_hwinfo_add_ram(&b, SCORPI_HWINFO_LOWMEM_HOLE_END,
-	    low_end, have_tpm, tpm_base, tpm_size));
+	    low_end, resv, nitems(resv)));
 	SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b, SCORPI_X64_ENTRY_RAM_RANGE, high_base,
 	    high_size, SCORPI_X64_RANGE_USABLE));
 
@@ -475,10 +517,12 @@ scorpi_hwinfo_build(struct vmctx *ctx, void **data, uint32_t *size)
 		    SCORPI_X64_ENTRY_RESERVED_RANGE, vars_base, vars_size,
 		    SCORPI_X64_RANGE_RESERVED));
 	}
-	if (have_tpm) {
-		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b,
-		    SCORPI_X64_ENTRY_RESERVED_RANGE, tpm_base, tpm_size,
-		    SCORPI_X64_RANGE_RESERVED));
+	for (size_t i = 0; i < nitems(resv); i++) {
+		if (resv[i].present) {
+			SCORPI_HWINFO_ADD(scorpi_hwinfo_add_range(&b,
+			    SCORPI_X64_ENTRY_RESERVED_RANGE, resv[i].base,
+			    resv[i].size, SCORPI_X64_RANGE_RESERVED));
+		}
 	}
 
 	for (int vcpuid = 0; vcpuid < guest_ncpus; vcpuid++)
