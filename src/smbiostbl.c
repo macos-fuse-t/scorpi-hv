@@ -52,8 +52,6 @@ extern uuid_t vm_uuid;
 #define MB		 (1024 * 1024)
 #define GB		 (1024ULL * 1024 * 1024)
 
-#define SMBIOS_BASE	 0xF8000
-
 #define FIRMWARE_VERSION "14.0"
 /* The SMBIOS specification defines the date format to be mm/dd/yyyy */
 #define FIRMWARE_RELEASE_DATE	"10/17/2021"
@@ -91,27 +89,6 @@ struct smbios_template_entry {
 	const struct smbios_string *strings;
 	initializer_func_t initializer;
 };
-
-/*
- * SMBIOS Structure Table Entry Point
- */
-#define SMBIOS_ENTRY_EANCHOR	"_SM3_"
-#define SMBIOS_ENTRY_EANCHORLEN 5
-#define SMBIOS_ENTRY_IANCHOR	"_DMI_"
-#define SMBIOS_ENTRY_IANCHORLEN 5
-
-struct smbios_entry_point {
-	char eanchor[5];   /* anchor tag */
-	uint8_t echecksum; /* checksum of entry point structure */
-	uint8_t eplen;	   /* length in bytes of entry point */
-	uint8_t major;	   /* major version of the SMBIOS spec */
-	uint8_t minor;	   /* minor version of the SMBIOS spec */
-	uint8_t docrev;	   /* */
-	uint8_t revision;  /* entry point structure revision */
-	uint8_t rsvd;
-	uint32_t maxssize;
-	uint64_t staddr; /* physical addr of structure table */
-} __packed;
 
 /*
  * BIOS Information
@@ -843,43 +820,11 @@ smbios_type19_initializer(const struct smbios_structure *template_entry,
 	return (0);
 }
 
-static void
-smbios_ep_initializer(struct smbios_entry_point *smbios_ep, uint64_t staddr)
-{
-	memset(smbios_ep, 0, sizeof(*smbios_ep));
-	memcpy(smbios_ep->eanchor, SMBIOS_ENTRY_EANCHOR,
-	    SMBIOS_ENTRY_EANCHORLEN);
-	smbios_ep->eplen = sizeof(struct smbios_entry_point);
-	smbios_ep->major = 3;
-	smbios_ep->minor = 0;
-	smbios_ep->revision = 0;
-	smbios_ep->docrev = 0;
-	smbios_ep->staddr = staddr;
-}
-
-static void
-smbios_ep_finalizer(struct smbios_entry_point *smbios_ep, uint16_t len,
-    uint16_t num, uint16_t maxssize)
-{
-	uint8_t checksum;
-	int i;
-
-	smbios_ep->maxssize = maxssize;
-
-	checksum = 0;
-	for (i = 0; i < smbios_ep->eplen; i++) {
-		checksum -= ((uint8_t *)smbios_ep)[i];
-	}
-	smbios_ep->echecksum = checksum;
-}
-
 int
 smbios_build(struct vmctx *ctx, void **addr, size_t *len)
 {
-	struct smbios_entry_point *smbios_ep;
 	uint16_t n;
-	uint16_t maxssize;
-	char *curaddr, *startaddr, *ststartaddr;
+	char *curaddr, *startaddr;
 	int i;
 	int err;
 
@@ -890,19 +835,12 @@ smbios_build(struct vmctx *ctx, void **addr, size_t *len)
 	startaddr = malloc(SMBIOS_MAX_LENGTH);
 	curaddr = startaddr;
 
-	smbios_ep = (struct smbios_entry_point *)curaddr;
-	smbios_ep_initializer(smbios_ep, sizeof(struct smbios_entry_point));
-	curaddr += sizeof(struct smbios_entry_point);
-	ststartaddr = curaddr;
-
 	n = 0;
-	maxssize = 0;
 	for (i = 0; smbios_template[i].entry != NULL; i++) {
 		const struct smbios_structure *entry;
 		const struct smbios_string *strings;
 		initializer_func_t initializer;
 		char *endaddr;
-		size_t size;
 
 		entry = smbios_template[i].entry;
 		strings = smbios_template[i].strings;
@@ -912,20 +850,15 @@ smbios_build(struct vmctx *ctx, void **addr, size_t *len)
 		if (err != 0)
 			return (err);
 
-		size = endaddr - curaddr;
-		assert(size <= UINT16_MAX);
-		if (size > maxssize)
-			maxssize = (uint16_t)size;
 		curaddr = endaddr;
 	}
 
 	assert(curaddr - startaddr < SMBIOS_MAX_LENGTH);
-	smbios_ep_finalizer(smbios_ep, curaddr - ststartaddr, n, maxssize);
 
 	if (addr)
 		*addr = startaddr;
 	if (len)
-		*len = SMBIOS_MAX_LENGTH;
+		*len = (size_t)(curaddr - startaddr);
 
 	return (0);
 }
