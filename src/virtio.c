@@ -74,6 +74,18 @@ static int virtio_debug = 0;
  */
 #define DEV_SOFTC(vs) ((void *)(vs))
 
+static void
+vi_capture_qsizes(struct virtio_softc *vs)
+{
+	struct vqueue_info *vq;
+	int i;
+
+	for (vq = vs->vs_queues, i = 0; i < vs->vs_vc->vc_nvq; vq++, i++) {
+		if (vq->vq_maxqsize == 0)
+			vq->vq_maxqsize = vq->vq_qsize;
+	}
+}
+
 /*
  * Link a virtio_softc to its constants, the device softc, and
  * the PCI emulation.
@@ -123,6 +135,8 @@ vi_reset_dev(struct virtio_softc *vs)
 		vq->vq_save_used = 0;
 		vq->vq_pfn = 0;
 		vq->vq_msix_idx = VIRTIO_MSI_NO_VECTOR;
+		if (vq->vq_maxqsize != 0)
+			vq->vq_qsize = vq->vq_maxqsize;
 		vq->vq_desc_gpa = 0;
 		vq->vq_avail_gpa = 0;
 		vq->vq_used_gpa = 0;
@@ -176,6 +190,8 @@ int
 vi_intr_init(struct virtio_softc *vs, int barnum, int use_msix)
 {
 	int nvec;
+
+	vi_capture_qsizes(vs);
 
 	if (use_msix && msix_supported()) {
 		vs->vs_flags |= VIRTIO_USE_MSIX;
@@ -1013,8 +1029,22 @@ vi_pci_write_common_cfg_modern(struct pci_devinst *pi, uint64_t offset,
 		vs->vs_curq = value;
 		break;
 	case VIRTIO_PCI_COMMON_Q_SIZE:
-		if (vs->vs_curq < vc->vc_nvq)
-			vs->vs_queues[vs->vs_curq].vq_qsize = value;
+		if (vs->vs_curq >= vc->vc_nvq)
+			break;
+		vq = &vs->vs_queues[vs->vs_curq];
+		if (vq->vq_enabled) {
+			EPRINTLN("write queue size: queue %d is enabled",
+			    vs->vs_curq);
+			break;
+		}
+		if (value == 0 || !powerof2(value) ||
+		    value > vq->vq_maxqsize) {
+			EPRINTLN("write queue size: invalid queue %d size %ju "
+			    "max %u", vs->vs_curq, (uintmax_t)value,
+			    vq->vq_maxqsize);
+			break;
+		}
+		vq->vq_qsize = value;
 		break;
 	case VIRTIO_PCI_COMMON_Q_MSIX:
 		if (vs->vs_curq >= vc->vc_nvq) {

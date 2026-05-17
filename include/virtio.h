@@ -303,6 +303,7 @@ struct virtio_consts {
 #define	VQ_BROKED	0x02	/* ??? */
 struct vqueue_info {
 	uint16_t vq_qsize;	/* size of this queue (a power of 2) */
+	uint16_t vq_maxqsize;	/* reset/advertised size of this queue */
 	void	(*vq_notify)(void *, struct vqueue_info *);
 				/* called instead of vc_notify, if not NULL */
 
