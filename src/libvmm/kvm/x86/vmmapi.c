@@ -74,10 +74,19 @@
 #define	HV_SIGNATURE_EDX		0x76482074U
 #define	HV_CPUID_FEATURES		0x40000003
 #define	HV_FEATURE_TIME_REF_COUNT	(1U << 1)
+#define	HV_FEATURE_SYNIC		(1U << 2)
+#define	HV_FEATURE_SYNTIMER		(1U << 3)
 #define	HV_FEATURE_HYPERCALL		(1U << 5)
 #define	HV_FEATURE_VP_INDEX		(1U << 6)
 #define	HV_FEATURE_REFERENCE_TSC		(1U << 9)
 #define	HV_FEATURE_FREQUENCY_MSRS	(1U << 8)
+#define	HV_FEATURE_STIMER_DIRECT	(1U << 19)
+
+struct kvm_hv_caps {
+	bool synic;
+	bool syntimer;
+	bool stimer_direct;
+};
 
 enum {
 	VM_MEMSEG_LOW,
@@ -118,6 +127,7 @@ struct vcpu {
 	struct kvm_run *run;
 	size_t run_len;
 	pthread_t tid;
+	bool hv_synic;
 };
 
 static int
@@ -158,6 +168,65 @@ static bool
 kvm_hyperv_enabled(void)
 {
 	return (get_config_bool_default("x86.hyperv", true));
+}
+
+static int
+kvm_enable_vcpu_cap(struct vcpu *vcpu, uint32_t cap_id)
+{
+	struct kvm_enable_cap cap;
+
+	memset(&cap, 0, sizeof(cap));
+	cap.cap = cap_id;
+	return (kvm_ioctl(vcpu->fd, KVM_ENABLE_CAP, &cap) < 0 ? errno : 0);
+}
+
+static void
+kvm_init_hv(struct vcpu *vcpu)
+{
+	int cap_id;
+
+	if (!kvm_hyperv_enabled())
+		return;
+
+	if (kvm_check_extension(vcpu->ctx, KVM_CAP_HYPERV_SYNIC2) > 0)
+		cap_id = KVM_CAP_HYPERV_SYNIC2;
+	else if (kvm_check_extension(vcpu->ctx, KVM_CAP_HYPERV_SYNIC) > 0)
+		cap_id = KVM_CAP_HYPERV_SYNIC;
+	else
+		return;
+
+	if (kvm_enable_vcpu_cap(vcpu, (uint32_t)cap_id) != 0) {
+		warnx("could not enable Hyper-V SynIC on vcpu %d",
+		    vcpu->vcpuid);
+		return;
+	}
+
+	vcpu->hv_synic = true;
+}
+
+static struct kvm_hv_caps
+kvm_hv_caps(struct vcpu *vcpu, const struct kvm_cpuid2 *cpuid)
+{
+	const struct kvm_cpuid_entry2 *entry;
+	struct kvm_hv_caps caps;
+
+	memset(&caps, 0, sizeof(caps));
+
+	for (uint32_t i = 0; i < cpuid->nent; i++) {
+		entry = &cpuid->entries[i];
+		if (entry->function != HV_CPUID_FEATURES)
+			continue;
+
+		caps.synic = vcpu->hv_synic &&
+		    ((entry->eax & HV_FEATURE_SYNIC) != 0);
+		caps.syntimer = caps.synic &&
+		    ((entry->eax & HV_FEATURE_SYNTIMER) != 0);
+		caps.stimer_direct = caps.syntimer &&
+		    ((entry->edx & HV_FEATURE_STIMER_DIRECT) != 0);
+		break;
+	}
+
+	return (caps);
 }
 
 static void
@@ -232,19 +301,32 @@ kvm_set_hv_signature(struct kvm_cpuid2 *cpuid)
 }
 
 static void
-kvm_filter_hv_cpuid(struct kvm_cpuid2 *cpuid)
+kvm_filter_hv_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid)
 {
 	struct kvm_cpuid_entry2 *entry;
+	struct kvm_hv_caps caps;
+	uint32_t features;
+	uint32_t x86_features;
+
+	caps = kvm_hv_caps(vcpu, cpuid);
 
 	for (uint32_t i = 0; i < cpuid->nent; i++) {
 		entry = &cpuid->entries[i];
 		if (entry->function == HV_CPUID_FEATURES) {
-			entry->eax &= HV_FEATURE_TIME_REF_COUNT |
-			    HV_FEATURE_HYPERCALL |
-			    HV_FEATURE_VP_INDEX |
+			features = HV_FEATURE_TIME_REF_COUNT |
+			    HV_FEATURE_HYPERCALL | HV_FEATURE_VP_INDEX |
 			    HV_FEATURE_REFERENCE_TSC;
+			if (caps.synic)
+				features |= HV_FEATURE_SYNIC;
+			if (caps.syntimer)
+				features |= HV_FEATURE_SYNTIMER;
+			entry->eax &= features;
 			entry->ebx = 0;
-			entry->edx &= HV_FEATURE_FREQUENCY_MSRS;
+
+			x86_features = HV_FEATURE_FREQUENCY_MSRS;
+			if (caps.stimer_direct)
+				x86_features |= HV_FEATURE_STIMER_DIRECT;
+			entry->edx &= x86_features;
 		}
 	}
 }
@@ -290,7 +372,7 @@ again:
 	memcpy(&cpuid->entries[cpuid->nent], hv_cpuid->entries,
 	    hv_cpuid->nent * sizeof(cpuid->entries[0]));
 	cpuid->nent += hv_cpuid->nent;
-	kvm_filter_hv_cpuid(cpuid);
+	kvm_filter_hv_cpuid(vcpu, cpuid);
 	kvm_set_hv_signature(cpuid);
 
 	free(hv_cpuid);
@@ -605,6 +687,7 @@ vm_vcpu_init(struct vcpu *vcpu)
 		return (-1);
 	}
 	vcpu->tid = pthread_self();
+	kvm_init_hv(vcpu);
 	error = kvm_set_cpuid(vcpu);
 	if (error != 0) {
 		vm_vcpu_deinit(vcpu);
@@ -1138,6 +1221,21 @@ kvm_handle_mmio(struct vcpu *vcpu)
 	return (0);
 }
 
+static int
+kvm_handle_hyperv(struct vcpu *vcpu)
+{
+	struct kvm_hyperv_exit *hv;
+
+	hv = &vcpu->run->hyperv;
+	switch (hv->type) {
+	case KVM_EXIT_HYPERV_SYNIC:
+		return (0);
+	default:
+		warnx("unexpected KVM Hyper-V exit type %u", hv->type);
+		return (-1);
+	}
+}
+
 int
 vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 {
@@ -1181,6 +1279,10 @@ vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 				vme->u.suspended.how = vcpu->ctx->suspend_reason;
 				return (0);
 			}
+			break;
+		case KVM_EXIT_HYPERV:
+			if (kvm_handle_hyperv(vcpu) != 0)
+				return (-1);
 			break;
 		case KVM_EXIT_HLT:
 			vme->exitcode = VM_EXITCODE_HLT;
