@@ -52,6 +52,10 @@
 #define	CPUID_EXTENDED_TOPOLOGY_V2	0x0000001f
 #define	CPUID_KVM_SIGNATURE		0x40000000
 #define	CPUID_KVM_FEATURES		0x40000001
+#define	CPUID_HV_SIGNATURE		0x40000000
+#define	CPUID_HV_END			0x400000ff
+#define	CPUID_KVM_HV_SIGNATURE		0x40000100
+#define	CPUID_KVM_HV_FEATURES		0x40000101
 #define	CPUID_1_EBX_APICID_SHIFT	24
 #define	CPUID_1_EBX_CPU_COUNT_SHIFT	16
 #define	CPUID_1_EBX_APICID_MASK		0xff000000
@@ -67,6 +71,9 @@
 #define	KVM_SIGNATURE_EBX		0x4b4d564bU
 #define	KVM_SIGNATURE_ECX		0x564b4d56U
 #define	KVM_SIGNATURE_EDX		0x0000004dU
+#define	HV_SIGNATURE_EBX		0x7263694dU
+#define	HV_SIGNATURE_ECX		0x666f736fU
+#define	HV_SIGNATURE_EDX		0x76482074U
 
 enum {
 	VM_MEMSEG_LOW,
@@ -143,6 +150,130 @@ kvm_tsc_khz(struct vcpu *vcpu)
 	return ((uint32_t)khz);
 }
 
+static bool
+kvm_hyperv_enabled(void)
+{
+	return (get_config_bool_default("x86.hyperv", true));
+}
+
+static void
+kvm_del_cpuid_range(struct kvm_cpuid2 *cpuid, uint32_t low, uint32_t high)
+{
+	uint32_t dst;
+
+	dst = 0;
+	for (uint32_t src = 0; src < cpuid->nent; src++) {
+		if (cpuid->entries[src].function >= low &&
+		    cpuid->entries[src].function <= high)
+			continue;
+		if (dst != src)
+			cpuid->entries[dst] = cpuid->entries[src];
+		dst++;
+	}
+	cpuid->nent = dst;
+}
+
+static struct kvm_cpuid_entry2 *
+kvm_add_cpuid(struct kvm_cpuid2 *cpuid, uint32_t maxent, uint32_t function)
+{
+	struct kvm_cpuid_entry2 *entry;
+
+	if (cpuid->nent >= maxent)
+		return (NULL);
+
+	entry = &cpuid->entries[cpuid->nent++];
+	memset(entry, 0, sizeof(*entry));
+	entry->function = function;
+	return (entry);
+}
+
+static void
+kvm_set_kvm_cpuid(struct kvm_cpuid2 *cpuid, uint32_t maxent,
+    uint32_t signature_leaf, uint32_t features_leaf)
+{
+	struct kvm_cpuid_entry2 *features;
+	struct kvm_cpuid_entry2 *signature;
+
+	signature = kvm_add_cpuid(cpuid, maxent, signature_leaf);
+	if (signature != NULL) {
+		signature->eax = features_leaf;
+		signature->ebx = KVM_SIGNATURE_EBX;
+		signature->ecx = KVM_SIGNATURE_ECX;
+		signature->edx = KVM_SIGNATURE_EDX;
+	}
+
+	features = kvm_add_cpuid(cpuid, maxent, features_leaf);
+	if (features != NULL) {
+		features->eax = KVM_FEATURE_BIT(KVM_FEATURE_NOP_IO_DELAY) |
+		    KVM_FEATURE_BIT(KVM_FEATURE_CLOCKSOURCE2) |
+		    KVM_FEATURE_BIT(KVM_FEATURE_CLOCKSOURCE_STABLE_BIT);
+	}
+}
+
+static void
+kvm_set_hv_signature(struct kvm_cpuid2 *cpuid)
+{
+	struct kvm_cpuid_entry2 *entry;
+
+	for (uint32_t i = 0; i < cpuid->nent; i++) {
+		entry = &cpuid->entries[i];
+		if (entry->function != CPUID_HV_SIGNATURE)
+			continue;
+
+		entry->ebx = HV_SIGNATURE_EBX;
+		entry->ecx = HV_SIGNATURE_ECX;
+		entry->edx = HV_SIGNATURE_EDX;
+		return;
+	}
+}
+
+static int
+kvm_add_hv_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid,
+    uint32_t maxent)
+{
+	struct kvm_cpuid2 *hv_cpuid;
+	size_t len;
+	int error, nent;
+
+	if (kvm_check_extension(vcpu->ctx, KVM_CAP_HYPERV_CPUID) <= 0)
+		return (0);
+
+	nent = 64;
+again:
+	len = sizeof(*hv_cpuid) + nent * sizeof(hv_cpuid->entries[0]);
+	hv_cpuid = calloc(1, len);
+	if (hv_cpuid == NULL)
+		return (ENOMEM);
+	hv_cpuid->nent = nent;
+
+	error = 0;
+	if (kvm_ioctl(vcpu->ctx->sys_fd, KVM_GET_SUPPORTED_HV_CPUID,
+	    hv_cpuid) < 0)
+		error = errno;
+
+	if (error == E2BIG && nent < 256) {
+		free(hv_cpuid);
+		nent = 256;
+		goto again;
+	}
+	if (error != 0) {
+		free(hv_cpuid);
+		return (error);
+	}
+	if (cpuid->nent + hv_cpuid->nent > maxent) {
+		free(hv_cpuid);
+		return (E2BIG);
+	}
+
+	memcpy(&cpuid->entries[cpuid->nent], hv_cpuid->entries,
+	    hv_cpuid->nent * sizeof(cpuid->entries[0]));
+	cpuid->nent += hv_cpuid->nent;
+	kvm_set_hv_signature(cpuid);
+
+	free(hv_cpuid);
+	return (0);
+}
+
 static int
 kvm_set_irq_routing(struct vmctx *ctx)
 {
@@ -187,10 +318,9 @@ static void
 kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 {
 	struct kvm_cpuid_entry2 *entry;
-	struct kvm_cpuid_entry2 *kvm_features;
-	struct kvm_cpuid_entry2 *kvm_signature;
 	struct kvm_cpuid_entry2 *tsc_entry;
 	uint32_t apic_id, cpu_count, tsc_khz;
+	bool hyperv;
 
 	apic_id = (uint32_t)vcpu->vcpuid;
 	cpu_count = MIN((uint32_t)guest_ncpus, 0xffU);
@@ -198,9 +328,8 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 		cpu_count = 1;
 
 	tsc_khz = kvm_tsc_khz(vcpu);
-	kvm_signature = NULL;
-	kvm_features = NULL;
 	tsc_entry = NULL;
+	hyperv = kvm_hyperv_enabled();
 	for (uint32_t i = 0; i < cpuid->nent; i++) {
 		entry = &cpuid->entries[i];
 
@@ -226,41 +355,18 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 		case CPUID_EXTENDED_TOPOLOGY_V2:
 			entry->edx = apic_id;
 			break;
-		case CPUID_KVM_SIGNATURE:
-			kvm_signature = entry;
-			break;
-		case CPUID_KVM_FEATURES:
-			kvm_features = entry;
-			break;
 		default:
 			break;
 		}
 	}
 
-	if (kvm_signature == NULL && cpuid->nent < maxent) {
-		kvm_signature = &cpuid->entries[cpuid->nent++];
-		memset(kvm_signature, 0, sizeof(*kvm_signature));
-		kvm_signature->function = CPUID_KVM_SIGNATURE;
-	}
-	if (kvm_signature != NULL) {
-		kvm_signature->eax = CPUID_KVM_FEATURES;
-		kvm_signature->ebx = KVM_SIGNATURE_EBX;
-		kvm_signature->ecx = KVM_SIGNATURE_ECX;
-		kvm_signature->edx = KVM_SIGNATURE_EDX;
-	}
-
-	if (kvm_features == NULL && cpuid->nent < maxent) {
-		kvm_features = &cpuid->entries[cpuid->nent++];
-		memset(kvm_features, 0, sizeof(*kvm_features));
-		kvm_features->function = CPUID_KVM_FEATURES;
-	}
-	if (kvm_features != NULL) {
-		kvm_features->eax = KVM_FEATURE_BIT(KVM_FEATURE_NOP_IO_DELAY) |
-		    KVM_FEATURE_BIT(KVM_FEATURE_CLOCKSOURCE2) |
-		    KVM_FEATURE_BIT(KVM_FEATURE_CLOCKSOURCE_STABLE_BIT);
-		kvm_features->ebx = 0;
-		kvm_features->ecx = 0;
-		kvm_features->edx = 0;
+	kvm_del_cpuid_range(cpuid, CPUID_HV_SIGNATURE, CPUID_HV_END);
+	if (hyperv && kvm_add_hv_cpuid(vcpu, cpuid, maxent) == 0) {
+		kvm_set_kvm_cpuid(cpuid, maxent, CPUID_KVM_HV_SIGNATURE,
+		    CPUID_KVM_HV_FEATURES);
+	} else {
+		kvm_set_kvm_cpuid(cpuid, maxent, CPUID_KVM_SIGNATURE,
+		    CPUID_KVM_FEATURES);
 	}
 
 	if (tsc_khz == 0)
