@@ -961,7 +961,9 @@ pci_vgpu_init(struct pci_devinst *pi, nvlist_t *nvl)
 	sc->vsc_queues[VGPU_CURSOR].vq_qsize = VGPU_RINGSZ;
 	sc->vsc_queues[VGPU_CURSOR].vq_notify = pci_vgpu_ping_cursor;
 
-	sc->fb_enabled = get_config_bool_node_default(nvl, "fb", true);
+	value = get_config_value_node(nvl, "fb");
+	if (value && !strcmp(value, "on"))
+		sc->fb_enabled = true;
 
 	value = get_config_value_node(nvl, "hdpi");
 	if (value && !strcmp(value, "on"))
