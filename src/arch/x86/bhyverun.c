@@ -20,6 +20,7 @@
 #include <vmmapi.h>
 
 #include "arch/x86/inout.h"
+#include "arch/x86/rtc.h"
 #include "bhyverun.h"
 #include "bootrom.h"
 #include "config.h"
@@ -247,6 +248,7 @@ bhyve_init_platform(struct vmctx *ctx, struct vcpu *bsp __unused)
 	int error;
 
 	init_inout();
+	x86_rtc_init(ctx);
 	init_bootrom(ctx);
 
 	error = bootrom_loadrom(ctx);

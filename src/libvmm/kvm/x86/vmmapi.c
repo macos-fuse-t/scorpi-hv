@@ -33,6 +33,7 @@
 #include <vmmapi.h>
 
 #include "arch/x86/inout.h"
+#include "arch/x86/rtc.h"
 #include "bhyverun.h"
 #include "config.h"
 #include "debug.h"
@@ -1911,27 +1912,25 @@ vm_disable_pptdev_msix(struct vmctx *ctx __unused, int bus __unused,
 
 int
 vm_rtc_write(struct vmctx *ctx __unused, int offset __unused,
-    uint8_t value __unused)
+    uint8_t value)
 {
-	return (EOPNOTSUPP);
+	return (x86_rtc_write(offset, value));
 }
 
 int
 vm_rtc_read(struct vmctx *ctx __unused, int offset __unused, uint8_t *retval)
 {
-	*retval = 0;
-	return (0);
+	return (x86_rtc_read(offset, retval));
 }
 
 int
-vm_rtc_settime(struct vmctx *ctx __unused, time_t secs __unused)
+vm_rtc_settime(struct vmctx *ctx __unused, time_t secs)
 {
-	return (0);
+	return (x86_rtc_settime(secs));
 }
 
 int
 vm_rtc_gettime(struct vmctx *ctx __unused, time_t *secs)
 {
-	*secs = time(NULL);
-	return (0);
+	return (x86_rtc_gettime(secs));
 }
