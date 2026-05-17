@@ -2,7 +2,7 @@ name: scorpi-x86-ovmf
 cpu: 1
 memory: 512M
 console: stdio
-bootrom: ../edk2/Build/ScorpiX64/DEBUG_GCC5/FV/SCORPI_EFI.fd
+bootrom: ../edk2/Build/ScorpiX64/Artifacts/debug/SCORPI_EFI.fd
 x86.msi: true
 
 devices:

@@ -274,7 +274,8 @@ Compatibility timers are not part of the default platform:
 
 ## Test Plan
 
-- [ ] Build Scorpi X64 EDK2 firmware in `DEBUG` and `RELEASE`.
+- [x] Build Scorpi X64 EDK2 firmware in stable `DEBUG` and `RELEASE`
+  artifact directories.
 - [ ] Boot UEFI shell with 1, 2, and 4 vCPUs.
 - [ ] Verify UEFI shell serial input after idle to catch broken firmware timer
   events.
