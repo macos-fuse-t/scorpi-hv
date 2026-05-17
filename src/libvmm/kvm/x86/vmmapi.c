@@ -50,13 +50,23 @@
 #define	CPUID_EXTENDED_TOPOLOGY		0x0000000b
 #define	CPUID_TSC_FREQ			0x00000015
 #define	CPUID_EXTENDED_TOPOLOGY_V2	0x0000001f
+#define	CPUID_KVM_SIGNATURE		0x40000000
+#define	CPUID_KVM_FEATURES		0x40000001
 #define	CPUID_1_EBX_APICID_SHIFT	24
 #define	CPUID_1_EBX_CPU_COUNT_SHIFT	16
 #define	CPUID_1_EBX_APICID_MASK		0xff000000
 #define	CPUID_1_EBX_CPU_COUNT_MASK	0x00ff0000
 #define	CPUID_1_ECX_X2APIC		(1U << 21)
+#define	CPUID_1_ECX_HYPERVISOR		(1U << 31)
 #define	CPUID_15_CRYSTAL_HZ		1000000U
 #define	CPUID_15_DENOMINATOR		1000U
+#define	KVM_FEATURE_NOP_IO_DELAY	1
+#define	KVM_FEATURE_CLOCKSOURCE2	3
+#define	KVM_FEATURE_CLOCKSOURCE_STABLE_BIT	24
+#define	KVM_FEATURE_BIT(feature)	(1U << (feature))
+#define	KVM_SIGNATURE_EBX		0x4b4d564bU
+#define	KVM_SIGNATURE_ECX		0x564b4d56U
+#define	KVM_SIGNATURE_EDX		0x0000004dU
 
 enum {
 	VM_MEMSEG_LOW,
@@ -177,6 +187,8 @@ static void
 kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 {
 	struct kvm_cpuid_entry2 *entry;
+	struct kvm_cpuid_entry2 *kvm_features;
+	struct kvm_cpuid_entry2 *kvm_signature;
 	struct kvm_cpuid_entry2 *tsc_entry;
 	uint32_t apic_id, cpu_count, tsc_khz;
 
@@ -186,6 +198,8 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 		cpu_count = 1;
 
 	tsc_khz = kvm_tsc_khz(vcpu);
+	kvm_signature = NULL;
+	kvm_features = NULL;
 	tsc_entry = NULL;
 	for (uint32_t i = 0; i < cpuid->nent; i++) {
 		entry = &cpuid->entries[i];
@@ -200,6 +214,7 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 			    CPUID_1_EBX_CPU_COUNT_MASK);
 			entry->ebx |= apic_id << CPUID_1_EBX_APICID_SHIFT;
 			entry->ebx |= cpu_count << CPUID_1_EBX_CPU_COUNT_SHIFT;
+			entry->ecx |= CPUID_1_ECX_HYPERVISOR;
 			if (!get_config_bool_default("x86.x2apic", false))
 				entry->ecx &= ~CPUID_1_ECX_X2APIC;
 			break;
@@ -211,9 +226,39 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 		case CPUID_EXTENDED_TOPOLOGY_V2:
 			entry->edx = apic_id;
 			break;
+		case CPUID_KVM_SIGNATURE:
+			kvm_signature = entry;
+			break;
+		case CPUID_KVM_FEATURES:
+			kvm_features = entry;
+			break;
 		default:
 			break;
 		}
+	}
+
+	if (kvm_signature == NULL && cpuid->nent < maxent) {
+		kvm_signature = &cpuid->entries[cpuid->nent++];
+		memset(kvm_signature, 0, sizeof(*kvm_signature));
+		kvm_signature->function = CPUID_KVM_SIGNATURE;
+	}
+	if (kvm_signature != NULL) {
+		kvm_signature->eax = CPUID_KVM_FEATURES;
+		kvm_signature->ebx = KVM_SIGNATURE_EBX;
+		kvm_signature->ecx = KVM_SIGNATURE_ECX;
+		kvm_signature->edx = KVM_SIGNATURE_EDX;
+	}
+
+	if (kvm_features == NULL && cpuid->nent < maxent) {
+		kvm_features = &cpuid->entries[cpuid->nent++];
+		memset(kvm_features, 0, sizeof(*kvm_features));
+		kvm_features->function = CPUID_KVM_FEATURES;
+	}
+	if (kvm_features != NULL) {
+		kvm_features->eax |=
+		    KVM_FEATURE_BIT(KVM_FEATURE_NOP_IO_DELAY) |
+		    KVM_FEATURE_BIT(KVM_FEATURE_CLOCKSOURCE2) |
+		    KVM_FEATURE_BIT(KVM_FEATURE_CLOCKSOURCE_STABLE_BIT);
 	}
 
 	if (tsc_khz == 0)
