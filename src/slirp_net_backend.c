@@ -526,7 +526,7 @@ _slirp_init(struct net_backend *be, const char *devname __unused, nvlist_t *nvl,
 		.vnetmask.s_addr = htonl(0xffffff00),
 		.vdhcp_start.s_addr = htonl(0x0a00020f), /* 10.0.2.15 */
 		.vhost.s_addr = htonl(0x0a000202),	 /* 10.0.2.2 */
-		.vnameserver.s_addr = htonl(0x8080808),	 /* 8.8.8.8 */
+		.vnameserver.s_addr = htonl(0x0a000203), /* 10.0.2.3 */
 		.enable_emu = false,
 	};
 	const char *hostfwd;
