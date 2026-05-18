@@ -1477,6 +1477,7 @@ atapi_read(struct ahci_port *p, int slot, uint8_t *cfis, uint32_t done)
 	if (len == 0) {
 		cfis[4] = (cfis[4] & ~7) | ATA_I_CMD | ATA_I_IN;
 		ahci_write_fis_d2h(p, slot, cfis, ATA_S_READY | ATA_S_DSC);
+		return;
 	}
 	lba *= 2048;
 	len *= 2048;
@@ -2315,7 +2316,6 @@ pci_ahci_port_read(struct pci_ahci_softc *sc, uint64_t offset)
 	case AHCI_P_FBU:
 	case AHCI_P_IS:
 	case AHCI_P_IE:
-	case AHCI_P_CMD:
 	case AHCI_P_TFD:
 	case AHCI_P_SIG:
 	case AHCI_P_SSTS:
@@ -2330,6 +2330,9 @@ pci_ahci_port_read(struct pci_ahci_softc *sc, uint64_t offset)
 		value = *p;
 		break;
 	}
+	case AHCI_P_CMD:
+		value = sc->port[port].cmd;
+		break;
 	default:
 		value = 0;
 		break;
