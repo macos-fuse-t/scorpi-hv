@@ -1170,6 +1170,19 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 		data->processed = 1;
 	}
 
+	err = USB_ERR_NORMAL_COMPLETION;
+	if (remaining != 0) {
+		err = USB_ERR_SHORT_XFER;
+	} else {
+		for (i = 0; i < iovcnt; i++) {
+			data = &xfer->data[data_idx[i]];
+			if (data->blen != 0) {
+				err = USB_ERR_SHORT_XFER;
+				break;
+			}
+		}
+	}
+
 	return (err);
 }
 

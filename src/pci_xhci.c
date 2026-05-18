@@ -1611,7 +1611,7 @@ pci_xhci_dump_trb(struct xhci_trb *trb)
 
 static int
 pci_xhci_xfer_complete(struct pci_xhci_softc *sc, struct usb_data_xfer *xfer,
-    uint32_t slot, uint32_t epid, int *do_intr)
+    uint32_t slot, uint32_t epid, int xfer_err, int *do_intr)
 {
 	struct pci_xhci_dev_emu *dev;
 	struct pci_xhci_dev_ep *devep;
@@ -1634,7 +1634,7 @@ pci_xhci_xfer_complete(struct pci_xhci_softc *sc, struct usb_data_xfer *xfer,
 
 	ep_ctx = &dev_ctx->ctx_ep[epid];
 
-	err = XHCI_TRB_ERROR_SUCCESS;
+	err = xfer_err;
 	*do_intr = 0;
 	edtla = 0;
 
@@ -1774,7 +1774,7 @@ pci_xhci_try_usb_xfer(struct pci_xhci_softc *sc, struct pci_xhci_dev_emu *dev,
 			}
 		} else {
 			err = pci_xhci_xfer_complete(sc, xfer, slot, epid,
-			    &do_intr);
+			    USB_TO_XHCI_ERR(err), &do_intr);
 			if (err == XHCI_TRB_ERROR_SUCCESS && do_intr) {
 				pci_xhci_assert_interrupt(sc);
 			}
@@ -1949,7 +1949,7 @@ retry:
 		    err == XHCI_TRB_ERROR_STALL ||
 		    err == XHCI_TRB_ERROR_SHORT_PKT) {
 			err = pci_xhci_xfer_complete(sc, xfer, slot, epid,
-			    &do_intr);
+			    err, &do_intr);
 			if (err != XHCI_TRB_ERROR_SUCCESS)
 				do_retry = 0;
 		}
