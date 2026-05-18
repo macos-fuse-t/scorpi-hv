@@ -11,6 +11,7 @@
 #include <err.h>
 #include <errno.h>
 #include <getopt.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,16 +24,117 @@
 #include "arch/x86/rtc.h"
 #include "bhyverun.h"
 #include "bootrom.h"
+#include "cnc.h"
 #include "config.h"
 #include "debug.h"
+#include "mem.h"
 #include "pci_irq.h"
 #include "qemu_fwcfg.h"
 #include "smbiostbl.h"
+#include "vmm.h"
 #include <support/pci_reg.h>
 
 #ifdef __linux__
 const char *getprogname(void);
 #endif
+
+#define ACPI_GED_MMIO_BASE    0xF0001000ULL
+#define ACPI_GED_MMIO_SIZE    0x1000
+#define ACPI_GED_INTR	      10
+#define ACPI_GED_PWR_DOWN_EVT 0x2
+
+struct acpi_ged_softc {
+	struct vmctx *ctx;
+	pthread_mutex_t mtx;
+	uint32_t selector;
+};
+
+static void
+acpi_ged_raise_event(struct acpi_ged_softc *sc, uint32_t event)
+{
+	pthread_mutex_lock(&sc->mtx);
+	sc->selector |= event;
+	pthread_mutex_unlock(&sc->mtx);
+
+	vm_ioapic_pulse_irq(sc->ctx, ACPI_GED_INTR);
+}
+
+static int
+acpi_ged_mem_handler(struct vcpu *vcpu __unused, int dir, uint64_t addr,
+    int size, uint64_t *val, void *arg1, long arg2)
+{
+	struct acpi_ged_softc *sc = arg1;
+	uint64_t offset;
+
+	offset = addr - arg2;
+	if (offset != 0 || size != 4)
+		return (-1);
+
+	if (dir == MEM_F_WRITE)
+		return (0);
+
+	pthread_mutex_lock(&sc->mtx);
+	*val = sc->selector;
+	sc->selector = 0;
+	pthread_mutex_unlock(&sc->mtx);
+
+	return (0);
+}
+
+static void
+acpi_ged_power_button(cnc_conn_t conn, int req_id, int argc __unused,
+    char *argv[] __unused, void *param)
+{
+	struct acpi_ged_softc *sc = param;
+
+	acpi_ged_raise_event(sc, ACPI_GED_PWR_DOWN_EVT);
+	cnc_send_response(conn, req_id, "{\"accepted\":true}");
+}
+
+static void
+x86_cnc_reboot(cnc_conn_t conn, int req_id, int argc __unused,
+    char *argv[] __unused, void *param)
+{
+	struct acpi_ged_softc *sc = param;
+	int error;
+
+	error = vm_suspend(sc->ctx, VM_SUSPEND_RESET);
+	cnc_send_response(conn, req_id,
+	    error == 0 ? "{\"accepted\":true}" : "{\"accepted\":false}");
+}
+
+static int
+init_acpi_ged(struct vmctx *ctx)
+{
+	struct acpi_ged_softc *sc;
+	struct mem_range mr;
+	int error;
+
+	sc = calloc(1, sizeof(*sc));
+	if (sc == NULL)
+		return (ENOMEM);
+
+	sc->ctx = ctx;
+	pthread_mutex_init(&sc->mtx, NULL);
+
+	memset(&mr, 0, sizeof(mr));
+	mr.name = "acpi-ged";
+	mr.base = ACPI_GED_MMIO_BASE;
+	mr.size = ACPI_GED_MMIO_SIZE;
+	mr.flags = MEM_F_RW;
+	mr.handler = acpi_ged_mem_handler;
+	mr.arg1 = sc;
+	mr.arg2 = mr.base;
+	error = register_mem(&mr);
+	if (error != 0)
+		return (error);
+
+	cnc_register_command("power_button", acpi_ged_power_button, sc);
+	cnc_register_command("shutdown", acpi_ged_power_button, sc);
+	cnc_register_command("reboot", x86_cnc_reboot, sc);
+	cnc_register_command("reset", x86_cnc_reboot, sc);
+	return (0);
+}
 
 void
 bhyve_init_config(void)
@@ -260,6 +362,12 @@ bhyve_init_platform(struct vmctx *ctx, struct vcpu *bsp __unused)
 	error = qemu_fwcfg_init(ctx, 0, 0);
 	if (error != 0) {
 		EPRINTLN("qemu fwcfg initialization error");
+		return (error);
+	}
+
+	error = init_acpi_ged(ctx);
+	if (error != 0) {
+		EPRINTLN("ACPI GED initialization error");
 		return (error);
 	}
 
