@@ -1605,9 +1605,20 @@ pci_emul_ecfg_handler(struct vcpu *vcpu __unused, int dir, uint64_t addr,
 	slot = (addr >> 15) & 0x1f;
 	bus = (addr >> 20) & 0xff;
 	in = (dir == MEM_F_READ);
-	if (in)
-		*val = ~0UL;
-	pci_cfgrw(in, bus, slot, func, coff, bytes, (uint32_t *)val);
+	if (in) {
+		uint32_t cfgval = 0xffffffff;
+
+		pci_cfgrw(in, bus, slot, func, coff, bytes, &cfgval);
+		*val = cfgval;
+		if (bytes == 1)
+			*val &= 0xff;
+		else if (bytes == 2)
+			*val &= 0xffff;
+	} else {
+		uint32_t cfgval = (uint32_t)*val;
+
+		pci_cfgrw(in, bus, slot, func, coff, bytes, &cfgval);
+	}
 	return (0);
 }
 
