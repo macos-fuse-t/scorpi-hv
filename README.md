@@ -110,8 +110,8 @@ Or launch it with the YAML config:
    ```
 3. Launch the TPM emulator `swtpm` and expose a Unix socket for Scorpi:
    ```sh
-   mkdir -p /tmp/scorpi-tpm
-   swtpm socket --tpm2 --flags startup-clear --tpmstate dir=/tmp/scorpi-tpm/state --server type=unixio,path=/tmp/scorpi-tpm/swtpm.sock
+   mkdir -p /tmp/scorpi-tpm/state
+   swtpm socket --tpm2 --flags not-need-init,startup-clear --tpmstate dir=/tmp/scorpi-tpm/state --server type=unixio,path=/tmp/scorpi-tpm/swtpm.sock
    ```
 4. Example YAML configuration and launch:
    ```sh

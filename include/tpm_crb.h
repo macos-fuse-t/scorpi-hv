@@ -7,7 +7,9 @@
 
 #pragma once
 
-#define TPM_CRB_ADDRESS 0x20000
+#include <tpm_platform.h>
+
+#define TPM_CRB_ADDRESS TPM_MMIO_ADDRESS
 #define TPM_CRB_REGS_SIZE 0x1000
 #define TPM_CRB_MMIO_SIZE TPM_CRB_REGS_SIZE
 

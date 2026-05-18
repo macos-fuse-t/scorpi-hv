@@ -8,6 +8,7 @@
 #include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/uio.h>
+#include <support/endian.h>
 
 #include <assert.h>
 #include <err.h>
@@ -86,6 +87,18 @@
 #define	HV_FEATURE_FREQUENCY_MSRS	(1U << 8)
 #define	HV_FEATURE_STIMER_DIRECT	(1U << 19)
 #define	HV_ENLIGHTENMENT_RELAXED_TIMING	(1U << 5)
+#define	HV_STATUS_SUCCESS		0
+#define	HV_STATUS_INVALID_HYPERCALL_CODE	2
+#define	HV_STATUS_INVALID_ALIGNMENT	4
+#define	HV_STATUS_INSUFFICIENT_MEMORY	11
+#define	HVCALL_POST_MESSAGE		0x005c
+#define	HVCALL_SIGNAL_EVENT		0x005d
+#define	HVCALL_POST_DEBUG_DATA		0x0069
+#define	HVCALL_RETRIEVE_DEBUG_DATA	0x006a
+#define	HVCALL_RESET_DEBUG_SESSION	0x006b
+#define	HV_EXT_CALL_QUERY_CAPABILITIES	0x8001
+#define	HV_EXT_CALL_MAX		(HV_EXT_CALL_QUERY_CAPABILITIES + 64)
+#define	HV_HYPERCALL_FAST		(1U << 16)
 
 struct kvm_hv_caps {
 	bool synic;
@@ -135,6 +148,8 @@ struct vcpu {
 	pthread_t tid;
 	bool hv_synic;
 };
+
+static bool kvm_trace_exits(void);
 
 static int
 kvm_ioctl(int fd, unsigned long req, void *arg)
@@ -1341,17 +1356,80 @@ kvm_handle_mmio(struct vcpu *vcpu)
 	return (0);
 }
 
+static const char *
+kvm_hyperv_hcall_name(uint16_t code)
+{
+	switch (code) {
+	case HVCALL_POST_MESSAGE:
+		return ("POST_MESSAGE");
+	case HVCALL_SIGNAL_EVENT:
+		return ("SIGNAL_EVENT");
+	case HVCALL_POST_DEBUG_DATA:
+		return ("POST_DEBUG_DATA");
+	case HVCALL_RETRIEVE_DEBUG_DATA:
+		return ("RETRIEVE_DEBUG_DATA");
+	case HVCALL_RESET_DEBUG_SESSION:
+		return ("RESET_DEBUG_SESSION");
+	default:
+		if (code >= HV_EXT_CALL_QUERY_CAPABILITIES &&
+		    code <= HV_EXT_CALL_MAX)
+			return ("EXTENDED");
+		return ("UNKNOWN");
+	}
+}
+
+static uint64_t
+kvm_handle_hyperv_ext_hcall(struct vcpu *vcpu, uint16_t code,
+    uint64_t outgpa)
+{
+	uint64_t *caps;
+
+	if (code != HV_EXT_CALL_QUERY_CAPABILITIES)
+		return (HV_STATUS_INVALID_HYPERCALL_CODE);
+	if ((outgpa & (sizeof(*caps) - 1)) != 0)
+		return (HV_STATUS_INVALID_ALIGNMENT);
+
+	caps = vm_map_gpa(vcpu->ctx, outgpa, sizeof(*caps));
+	if (caps == NULL)
+		return (HV_STATUS_INSUFFICIENT_MEMORY);
+
+	/*
+	 * HvExtCallQueryCapabilities returns the set of extended hypercalls
+	 * supported beyond the query itself.  Scorpi currently supports none.
+	 */
+	*caps = htole64(0);
+	return (HV_STATUS_SUCCESS);
+}
+
 static int
 kvm_handle_hyperv(struct vcpu *vcpu)
 {
 	struct kvm_hyperv_exit *hv;
+	uint16_t code;
 
 	hv = &vcpu->run->hyperv;
 	switch (hv->type) {
 	case KVM_EXIT_HYPERV_SYNIC:
 		return (0);
+	case KVM_EXIT_HYPERV_HCALL:
+		code = hv->u.hcall.input & 0xffff;
+		if (kvm_trace_exits()) {
+			PRINTLN("vcpu %d Hyper-V hcall %s(%#x) fast=%u in=%#llx out=%#llx",
+			    vcpu_id(vcpu), kvm_hyperv_hcall_name(code), code,
+			    (hv->u.hcall.input & HV_HYPERCALL_FAST) != 0,
+			    (unsigned long long)hv->u.hcall.params[0],
+			    (unsigned long long)hv->u.hcall.params[1]);
+		}
+		if (code >= HV_EXT_CALL_QUERY_CAPABILITIES &&
+		    code <= HV_EXT_CALL_MAX) {
+			hv->u.hcall.result = kvm_handle_hyperv_ext_hcall(vcpu,
+			    code, hv->u.hcall.params[1]);
+		} else
+			hv->u.hcall.result = HV_STATUS_INVALID_HYPERCALL_CODE;
+		return (0);
 	default:
 		warnx("unexpected KVM Hyper-V exit type %u", hv->type);
+		errno = EOPNOTSUPP;
 		return (-1);
 	}
 }

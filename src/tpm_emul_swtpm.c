@@ -13,6 +13,8 @@
 
 #include <err.h>
 #include <errno.h>
+#include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -29,6 +31,15 @@ struct tpm_resp_hdr {
 	uint32_t len;
 	uint32_t errcode;
 } __attribute__((packed));
+
+static bool
+tpm_swtpm_trace(void)
+{
+	const char *env;
+
+	env = getenv("SCORPI_TPM_TRACE");
+	return (env != NULL && env[0] != '\0' && strcmp(env, "0") != 0);
+}
 
 static int
 tpm_swtpm_read_full(int fd, void *buf, size_t len)
@@ -152,6 +163,7 @@ tpm_swtpm_execute_cmd(void *sc, void *cmd, uint32_t cmd_size, void *rsp,
 {
 	struct tpm_resp_hdr hdr;
 	struct tpm_swtpm *tpm;
+	uint32_t ordinal;
 	uint32_t rsp_len;
 	int error;
 
@@ -159,6 +171,11 @@ tpm_swtpm_execute_cmd(void *sc, void *cmd, uint32_t cmd_size, void *rsp,
 		warnx("%s: response buffer is too small", __func__);
 		return (EINVAL);
 	}
+
+	ordinal = 0;
+	if (cmd_size >= 10)
+		memcpy(&ordinal, (uint8_t *)cmd + 6, sizeof(ordinal));
+	ordinal = be32toh(ordinal);
 
 	tpm = sc;
 
@@ -191,6 +208,11 @@ tpm_swtpm_execute_cmd(void *sc, void *cmd, uint32_t cmd_size, void *rsp,
 	if (error != 0) {
 		warnc(error, "%s: response body read failed", __func__);
 		return (error);
+	}
+
+	if (tpm_swtpm_trace()) {
+		fprintf(stderr, "swtpm cmd %#x len=%u rsp_len=%u rc=%#x\n",
+		    ordinal, cmd_size, rsp_len, be32toh(hdr.errcode));
 	}
 
 	return (0);
