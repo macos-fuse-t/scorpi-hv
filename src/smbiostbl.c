@@ -49,9 +49,6 @@
 
 extern uuid_t vm_uuid;
 
-#define MB		 (1024 * 1024)
-#define GB		 (1024ULL * 1024 * 1024)
-
 #define FIRMWARE_VERSION "14.0"
 /* The SMBIOS specification defines the date format to be mm/dd/yyyy */
 #define FIRMWARE_RELEASE_DATE	"10/17/2021"
