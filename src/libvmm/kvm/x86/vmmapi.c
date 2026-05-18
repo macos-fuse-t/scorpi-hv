@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <linux/kvm.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -152,7 +153,11 @@ struct vcpu {
 	pthread_t tid;
 	enum x2apic_state x2apic_state;
 	bool hv_synic;
+	bool tid_valid;
 };
+
+static pthread_once_t kvm_signal_once = PTHREAD_ONCE_INIT;
+static __thread struct kvm_run *kvm_current_run;
 
 static bool kvm_trace_exits(void);
 
@@ -166,6 +171,35 @@ kvm_ioctl(int fd, unsigned long req, void *arg)
 	} while (ret == -1 && errno == EINTR);
 
 	return (ret);
+}
+
+static void
+kvm_kick_handler(int signo __unused)
+{
+	if (kvm_current_run != NULL)
+		kvm_current_run->immediate_exit = 1;
+}
+
+static void
+kvm_init_kick_signal(void)
+{
+	struct sigaction sa;
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = kvm_kick_handler;
+	sigemptyset(&sa.sa_mask);
+	if (sigaction(SIGUSR1, &sa, NULL) != 0)
+		err(1, "sigaction(SIGUSR1)");
+}
+
+static void
+kvm_kick_vcpu(struct vcpu *vcpu)
+{
+	pthread_once(&kvm_signal_once, kvm_init_kick_signal);
+	if (vcpu->run != NULL && vcpu->run != MAP_FAILED)
+		vcpu->run->immediate_exit = 1;
+	if (vcpu->tid_valid)
+		(void)pthread_kill(vcpu->tid, SIGUSR1);
 }
 
 static int
@@ -848,8 +882,11 @@ vm_vcpu_init(struct vcpu *vcpu)
 {
 	int error;
 
-	if (vcpu->fd >= 0)
+	if (vcpu->fd >= 0) {
+		vcpu->tid = pthread_self();
+		vcpu->tid_valid = true;
 		return (0);
+	}
 
 	vcpu->fd = kvm_ioctl(vcpu->ctx->vm_fd, KVM_CREATE_VCPU,
 	    (void *)(uintptr_t)vcpu->vcpuid);
@@ -865,6 +902,7 @@ vm_vcpu_init(struct vcpu *vcpu)
 		return (-1);
 	}
 	vcpu->tid = pthread_self();
+	vcpu->tid_valid = true;
 	kvm_init_hv(vcpu);
 	error = kvm_set_cpuid(vcpu);
 	if (error != 0) {
@@ -891,6 +929,7 @@ vm_vcpu_deinit(struct vcpu *vcpu)
 	if (vcpu->fd >= 0)
 		close(vcpu->fd);
 	vcpu->fd = -1;
+	vcpu->tid_valid = false;
 }
 
 void
@@ -1342,7 +1381,8 @@ vcpu_reset(struct vcpu *vcpu)
 	regs.rflags = 0x2;
 	if ((error = vm_put_regs(vcpu, &regs)) != 0)
 		return (error);
-	return (kvm_set_mp_state(vcpu, KVM_MP_STATE_RUNNABLE));
+	return (kvm_set_mp_state(vcpu, vcpu->vcpuid == 0 ?
+	    KVM_MP_STATE_RUNNABLE : KVM_MP_STATE_UNINITIALIZED));
 }
 
 static int
@@ -1478,6 +1518,39 @@ kvm_handle_hyperv(struct vcpu *vcpu)
 	}
 }
 
+static void
+kvm_set_suspended_exit(struct vm_exit *vme, enum vm_suspend_how how)
+{
+	vme->exitcode = VM_EXITCODE_SUSPENDED;
+	vme->u.suspended.how = how;
+}
+
+static int
+kvm_handle_system_event(struct vcpu *vcpu, struct kvm_run *run,
+    struct vm_exit *vme)
+{
+	switch (run->system_event.type) {
+	case KVM_SYSTEM_EVENT_SHUTDOWN:
+		if (vm_suspend(vcpu->ctx, VM_SUSPEND_POWEROFF) != 0)
+			return (-1);
+		kvm_set_suspended_exit(vme, VM_SUSPEND_POWEROFF);
+		return (0);
+	case KVM_SYSTEM_EVENT_RESET:
+		if (vm_suspend(vcpu->ctx, VM_SUSPEND_RESET) != 0)
+			return (-1);
+		kvm_set_suspended_exit(vme, VM_SUSPEND_RESET);
+		return (0);
+	case KVM_SYSTEM_EVENT_CRASH:
+		kvm_set_suspended_exit(vme, VM_SUSPEND_HALT);
+		return (0);
+	default:
+		warnx("unexpected KVM system event %u",
+		    run->system_event.type);
+		errno = ENOTSUP;
+		return (-1);
+	}
+}
+
 static const char *
 kvm_exit_name(uint32_t reason)
 {
@@ -1498,6 +1571,8 @@ kvm_exit_name(uint32_t reason)
 		return ("INTERNAL_ERROR");
 	case KVM_EXIT_HYPERV:
 		return ("HYPERV");
+	case KVM_EXIT_SYSTEM_EVENT:
+		return ("SYSTEM_EVENT");
 	default:
 		return ("OTHER");
 	}
@@ -1588,24 +1663,36 @@ int
 vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 {
 	struct vm_exit *vme;
+	int ret;
 
 	vme = vmrun->vm_exit;
 	for (;;) {
 		if (vcpu->ctx->suspend_reason != VM_SUSPEND_NONE) {
-			vme->exitcode = VM_EXITCODE_SUSPENDED;
-			vme->u.suspended.how = vcpu->ctx->suspend_reason;
+			kvm_set_suspended_exit(vme, vcpu->ctx->suspend_reason);
+			return (0);
+		}
+		vcpu->run->immediate_exit = 0;
+		if (vcpu->ctx->suspend_reason != VM_SUSPEND_NONE) {
+			kvm_set_suspended_exit(vme, vcpu->ctx->suspend_reason);
 			return (0);
 		}
 
-		if (kvm_ioctl(vcpu->fd, KVM_RUN, NULL) < 0) {
+		kvm_current_run = vcpu->run;
+		ret = ioctl(vcpu->fd, KVM_RUN, NULL);
+		kvm_current_run = NULL;
+		if (ret < 0) {
+			if (vcpu->ctx->suspend_reason != VM_SUSPEND_NONE) {
+				kvm_set_suspended_exit(vme,
+				    vcpu->ctx->suspend_reason);
+				return (0);
+			}
 			if (errno == EINTR || errno == EAGAIN)
 				continue;
 			return (-1);
 		}
 
 		if (vcpu->ctx->suspend_reason != VM_SUSPEND_NONE) {
-			vme->exitcode = VM_EXITCODE_SUSPENDED;
-			vme->u.suspended.how = vcpu->ctx->suspend_reason;
+			kvm_set_suspended_exit(vme, vcpu->ctx->suspend_reason);
 			return (0);
 		}
 
@@ -1616,8 +1703,8 @@ vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 			if (kvm_handle_io(vcpu) != 0)
 				return (-1);
 			if (vcpu->ctx->suspend_reason != VM_SUSPEND_NONE) {
-				vme->exitcode = VM_EXITCODE_SUSPENDED;
-				vme->u.suspended.how = vcpu->ctx->suspend_reason;
+				kvm_set_suspended_exit(vme,
+				    vcpu->ctx->suspend_reason);
 				return (0);
 			}
 			break;
@@ -1625,8 +1712,8 @@ vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 			if (kvm_handle_mmio(vcpu) != 0)
 				return (-1);
 			if (vcpu->ctx->suspend_reason != VM_SUSPEND_NONE) {
-				vme->exitcode = VM_EXITCODE_SUSPENDED;
-				vme->u.suspended.how = vcpu->ctx->suspend_reason;
+				kvm_set_suspended_exit(vme,
+				    vcpu->ctx->suspend_reason);
 				return (0);
 			}
 			break;
@@ -1634,13 +1721,16 @@ vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 			if (kvm_handle_hyperv(vcpu) != 0)
 				return (-1);
 			break;
+		case KVM_EXIT_SYSTEM_EVENT:
+			return (kvm_handle_system_event(vcpu, vcpu->run, vme));
 		case KVM_EXIT_HLT:
 			vme->exitcode = VM_EXITCODE_HLT;
 			vme->rip = vcpu->run->hw.hardware_exit_reason;
 			return (0);
 		case KVM_EXIT_SHUTDOWN:
-			vme->exitcode = VM_EXITCODE_SUSPENDED;
-			vme->u.suspended.how = VM_SUSPEND_RESET;
+			if (vm_suspend(vcpu->ctx, VM_SUSPEND_RESET) != 0)
+				return (-1);
+			kvm_set_suspended_exit(vme, VM_SUSPEND_RESET);
 			return (0);
 		case KVM_EXIT_INTERNAL_ERROR:
 		case KVM_EXIT_FAIL_ENTRY:
@@ -2010,6 +2100,7 @@ vm_suspend_cpu(struct vcpu *vcpu)
 {
 	SCORPI_CPU_CLR_ATOMIC(vcpu->vcpuid, &vcpu->ctx->active_cpus);
 	SCORPI_CPU_SET_ATOMIC(vcpu->vcpuid, &vcpu->ctx->suspended_cpus);
+	kvm_kick_vcpu(vcpu);
 	return (0);
 }
 

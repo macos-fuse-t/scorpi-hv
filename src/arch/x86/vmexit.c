@@ -10,6 +10,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -22,6 +23,66 @@
 #include "debug.h"
 #include "mem.h"
 #include "vmexit.h"
+
+static pthread_mutex_t reset_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t reset_cond = PTHREAD_COND_INITIALIZER;
+static cpuset_t reset_cpus;
+static int reset_expected;
+
+static int
+vmexit_reset_vcpu_count(void)
+{
+	return (bootrom_boot() ? guest_ncpus : 1);
+}
+
+static int
+vmexit_reset_seen_count(void)
+{
+	int count;
+
+	count = 0;
+	for (int i = 0; i < reset_expected; i++) {
+		if (SCORPI_CPU_ISSET(i, &reset_cpus))
+			count++;
+	}
+	return (count);
+}
+
+static bool
+vmexit_reset_barrier(struct vcpu *vcpu)
+{
+	int vcpuid;
+
+	vcpuid = vcpu_id(vcpu);
+
+	pthread_mutex_lock(&reset_mtx);
+	if (SCORPI_CPU_EMPTY(&reset_cpus))
+		reset_expected = vmexit_reset_vcpu_count();
+	SCORPI_CPU_SET(vcpuid, &reset_cpus);
+	pthread_cond_broadcast(&reset_cond);
+
+	if (vcpuid == 0) {
+		while (vmexit_reset_seen_count() < reset_expected)
+			pthread_cond_wait(&reset_cond, &reset_mtx);
+		pthread_mutex_unlock(&reset_mtx);
+		return (true);
+	}
+
+	while (SCORPI_CPU_ISSET(vcpuid, &reset_cpus))
+		pthread_cond_wait(&reset_cond, &reset_mtx);
+	pthread_mutex_unlock(&reset_mtx);
+	return (false);
+}
+
+static void
+vmexit_reset_release(void)
+{
+	pthread_mutex_lock(&reset_mtx);
+	SCORPI_CPU_ZERO(&reset_cpus);
+	reset_expected = 0;
+	pthread_cond_broadcast(&reset_cond);
+	pthread_mutex_unlock(&reset_mtx);
+}
 
 static uint64_t
 vmexit_reg(struct vcpu *vcpu, int reg)
@@ -185,17 +246,23 @@ vmexit_suspend(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 	vme = vmrun->vm_exit;
 	switch (vme->u.suspended.how) {
 	case VM_SUSPEND_RESET:
-		if (vcpu_id(vcpu) == 0) {
-			if (bhyve_reset_devices(ctx) != 0)
-				return (VMEXIT_ABORT);
-			if (vcpu_reset(vcpu) != 0)
-				return (VMEXIT_ABORT);
-			vm_suspend(ctx, VM_SUSPEND_NONE);
-			vm_activate_cpu(vcpu);
+		if (!vmexit_reset_barrier(vcpu))
 			return (VMEXIT_CONTINUE);
+		if (bhyve_reset_devices(ctx) != 0)
+			return (VMEXIT_ABORT);
+		for (int i = 0; i < vmexit_reset_vcpu_count(); i++) {
+			if (vcpu_reset(fbsdrun_vcpu(i)) != 0)
+				return (VMEXIT_ABORT);
 		}
-		return (VMEXIT_QUIT);
+		vm_suspend(ctx, VM_SUSPEND_NONE);
+		if (bootrom_boot())
+			vm_resume_all_cpus(ctx);
+		else
+			vm_activate_cpu(vcpu);
+		vmexit_reset_release();
+		return (VMEXIT_CONTINUE);
 	case VM_SUSPEND_POWEROFF:
+		fbsdrun_deletecpu(vcpu_id(vcpu));
 		vm_destroy(ctx);
 		exit(0);
 	case VM_SUSPEND_HALT:
