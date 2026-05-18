@@ -28,6 +28,8 @@ enum scorpi_x64_profile {
 	SCORPI_X64_PROFILE_WINDOWS_INBOX = 2,
 };
 
+#define	SCORPI_X64_APIC_FLAG_X2APIC	(1U << 0)
+
 enum scorpi_x64_hwinfo_entry_type {
 	SCORPI_X64_ENTRY_RAM_RANGE = 1,
 	SCORPI_X64_ENTRY_RESERVED_RANGE = 2,

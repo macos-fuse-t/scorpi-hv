@@ -81,11 +81,13 @@
 #define	HV_FEATURE_TIME_REF_COUNT	(1U << 1)
 #define	HV_FEATURE_SYNIC		(1U << 2)
 #define	HV_FEATURE_SYNTIMER		(1U << 3)
+#define	HV_FEATURE_APIC_ACCESS		(1U << 4)
 #define	HV_FEATURE_HYPERCALL		(1U << 5)
 #define	HV_FEATURE_VP_INDEX		(1U << 6)
 #define	HV_FEATURE_REFERENCE_TSC		(1U << 9)
 #define	HV_FEATURE_FREQUENCY_MSRS	(1U << 8)
 #define	HV_FEATURE_STIMER_DIRECT	(1U << 19)
+#define	HV_ENLIGHTENMENT_APIC_ACCESS	(1U << 3)
 #define	HV_ENLIGHTENMENT_RELAXED_TIMING	(1U << 5)
 #define	HV_STATUS_SUCCESS		0
 #define	HV_STATUS_INVALID_HYPERCALL_CODE	2
@@ -101,6 +103,7 @@
 #define	HV_HYPERCALL_FAST		(1U << 16)
 
 struct kvm_hv_caps {
+	bool apic_access;
 	bool synic;
 	bool syntimer;
 	bool stimer_direct;
@@ -137,6 +140,7 @@ struct vmctx {
 	cpuset_t active_cpus;
 	cpuset_t suspended_cpus;
 	struct vcpu *vcpus[CPU_SETSIZE];
+	bool x2apic_api;
 };
 
 struct vcpu {
@@ -146,6 +150,7 @@ struct vcpu {
 	struct kvm_run *run;
 	size_t run_len;
 	pthread_t tid;
+	enum x2apic_state x2apic_state;
 	bool hv_synic;
 };
 
@@ -230,6 +235,32 @@ kvm_enable_vcpu_cap(struct vcpu *vcpu, uint32_t cap_id)
 	return (kvm_ioctl(vcpu->fd, KVM_ENABLE_CAP, &cap) < 0 ? errno : 0);
 }
 
+static int
+kvm_enable_x2apic_api(struct vmctx *ctx)
+{
+	struct kvm_enable_cap cap;
+	int supported;
+
+	if (!get_config_bool_default("x86.x2apic", true))
+		return (0);
+
+	supported = kvm_check_extension(ctx, KVM_CAP_X2APIC_API);
+	if (supported <= 0)
+		return (ENOTSUP);
+
+	memset(&cap, 0, sizeof(cap));
+	cap.cap = KVM_CAP_X2APIC_API;
+	cap.args[0] = KVM_X2APIC_API_USE_32BIT_IDS;
+	if ((supported & KVM_X2APIC_API_DISABLE_BROADCAST_QUIRK) != 0)
+		cap.args[0] |= KVM_X2APIC_API_DISABLE_BROADCAST_QUIRK;
+
+	if (kvm_ioctl(ctx->vm_fd, KVM_ENABLE_CAP, &cap) < 0)
+		return (errno);
+
+	ctx->x2apic_api = true;
+	return (0);
+}
+
 static void
 kvm_init_hv(struct vcpu *vcpu)
 {
@@ -267,6 +298,8 @@ kvm_hv_caps(struct vcpu *vcpu, const struct kvm_cpuid2 *cpuid)
 		if (entry->function != HV_CPUID_FEATURES)
 			continue;
 
+		caps.apic_access =
+		    ((entry->eax & HV_FEATURE_APIC_ACCESS) != 0);
 		caps.synic = vcpu->hv_synic &&
 		    ((entry->eax & HV_FEATURE_SYNIC) != 0);
 		caps.syntimer = caps.synic &&
@@ -413,8 +446,8 @@ kvm_filter_hv_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid)
 		entry = &cpuid->entries[i];
 		if (entry->function == HV_CPUID_FEATURES) {
 			features = HV_FEATURE_TIME_REF_COUNT |
-			    HV_FEATURE_HYPERCALL | HV_FEATURE_VP_INDEX |
-			    HV_FEATURE_REFERENCE_TSC;
+			    HV_FEATURE_APIC_ACCESS | HV_FEATURE_HYPERCALL |
+			    HV_FEATURE_VP_INDEX | HV_FEATURE_REFERENCE_TSC;
 			if (caps.synic)
 				features |= HV_FEATURE_SYNIC;
 			if (caps.syntimer)
@@ -428,9 +461,13 @@ kvm_filter_hv_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid)
 			entry->edx &= x86_features;
 		} else if (entry->function == HV_CPUID_ENLIGHTENMENTS ||
 		    entry->function == HV_CPUID_NESTED_FEATURES) {
-			if (entry->function == HV_CPUID_ENLIGHTENMENTS)
-				entry->eax &= HV_ENLIGHTENMENT_RELAXED_TIMING;
-			else
+			if (entry->function == HV_CPUID_ENLIGHTENMENTS) {
+				entry->eax &= HV_ENLIGHTENMENT_RELAXED_TIMING |
+				    HV_ENLIGHTENMENT_APIC_ACCESS;
+				if (!caps.apic_access)
+					entry->eax &=
+					    ~HV_ENLIGHTENMENT_APIC_ACCESS;
+			} else
 				entry->eax = 0;
 			entry->ebx = 0;
 			entry->ecx = 0;
@@ -568,7 +605,8 @@ kvm_fix_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid, uint32_t maxent)
 				entry->ecx |= CPUID_1_ECX_HYPERVISOR;
 			else
 				entry->ecx &= ~CPUID_1_ECX_HYPERVISOR;
-			if (!get_config_bool_default("x86.x2apic", false))
+			if (!get_config_bool_default("x86.x2apic", true) ||
+			    !vcpu->ctx->x2apic_api)
 				entry->ecx &= ~CPUID_1_ECX_X2APIC;
 			break;
 		case CPUID_TSC_FREQ:
@@ -716,6 +754,12 @@ vm_openf(const char *name, int flags __unused)
 	    NULL);
 	if (ctx->run_mmap_size <= 0)
 		goto fail;
+
+	error = kvm_enable_x2apic_api(ctx);
+	if (error != 0) {
+		errno = error;
+		goto fail;
+	}
 
 	if (kvm_ioctl(ctx->vm_fd, KVM_SET_TSS_ADDR,
 		(void *)(uintptr_t)KVM_TSS_ADDR) < 0) {
@@ -1757,16 +1801,22 @@ vm_readwrite_kernemu_device(struct vcpu *vcpu __unused, vm_paddr_t gpa __unused,
 }
 
 int
-vm_get_x2apic_state(struct vcpu *vcpu __unused, enum x2apic_state *s)
+vm_get_x2apic_state(struct vcpu *vcpu, enum x2apic_state *s)
 {
-	*s = X2APIC_DISABLED;
+	*s = vcpu->x2apic_state;
 	return (0);
 }
 
 int
-vm_set_x2apic_state(struct vcpu *vcpu __unused, enum x2apic_state s)
+vm_set_x2apic_state(struct vcpu *vcpu, enum x2apic_state s)
 {
-	return (s == X2APIC_DISABLED ? 0 : EOPNOTSUPP);
+	if (s >= X2APIC_STATE_LAST)
+		return (EINVAL);
+	if (s == X2APIC_ENABLED && !vcpu->ctx->x2apic_api)
+		return (EOPNOTSUPP);
+
+	vcpu->x2apic_state = s;
+	return (0);
 }
 
 int

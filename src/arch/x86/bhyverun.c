@@ -47,7 +47,7 @@ bhyve_init_config(void)
 	set_config_bool("x86.vmexit_on_hlt", false);
 	set_config_bool("x86.vmexit_on_pause", false);
 	set_config_bool("x86.hypervisor", true);
-	set_config_bool("x86.x2apic", false);
+	set_config_bool("x86.x2apic", true);
 }
 
 void
@@ -108,7 +108,7 @@ bhyve_init_vcpu(struct vcpu *vcpu)
 		vm_set_capability(vcpu, VM_CAP_PAUSE_EXIT, 1);
 	}
 
-	x2apic_state = get_config_bool_default("x86.x2apic", false) ?
+	x2apic_state = get_config_bool_default("x86.x2apic", true) ?
 	    X2APIC_ENABLED : X2APIC_DISABLED;
 	error = vm_set_x2apic_state(vcpu, x2apic_state);
 	if (error != 0)

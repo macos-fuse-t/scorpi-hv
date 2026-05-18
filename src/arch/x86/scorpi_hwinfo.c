@@ -266,6 +266,8 @@ scorpi_hwinfo_add_apic(struct scorpi_hwinfo_builder *b, struct vmctx *ctx)
 	apic.io_apic_id = htole32(SCORPI_HWINFO_IOAPIC_ID);
 	apic.gsi_base = htole32(SCORPI_HWINFO_IOAPIC_GSI_BASE);
 	apic.gsi_count = htole32(scorpi_hwinfo_gsi_count(ctx));
+	if (get_config_bool_default("x86.x2apic", true))
+		apic.flags = htole32(SCORPI_X64_APIC_FLAG_X2APIC);
 
 	return (scorpi_hwinfo_append(b, &apic, sizeof(apic)));
 }
