@@ -31,7 +31,7 @@ endif
 
 libslirp_proj = subproject(
     'libslirp',
-    default_options: ['default_library=static'])
+    default_options: ['default_library=static', 'c_args=-D_GNU_SOURCE'])
 slirp_dep = libslirp_proj.get_variable('libslirp_libdep')
 
 libwebsockets_build_dir = meson.current_build_dir() / 'libwebsockets-build'
