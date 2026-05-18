@@ -104,6 +104,7 @@ struct kvm_memslot {
 	size_t len;
 	void *host;
 	int slot;
+	bool owned;
 };
 
 struct vmctx {
@@ -739,8 +740,10 @@ vm_close(struct vmctx *ctx)
 		if (ctx->vcpus[i] != NULL)
 			vm_vcpu_close(ctx->vcpus[i]);
 	}
-	for (int i = 0; i < ctx->nmemslots; i++)
-		free(ctx->memslots[i].host);
+	for (int i = 0; i < ctx->nmemslots; i++) {
+		if (ctx->memslots[i].owned)
+			free(ctx->memslots[i].host);
+	}
 	if (ctx->vm_fd >= 0)
 		close(ctx->vm_fd);
 	if (ctx->sys_fd >= 0)
@@ -903,7 +906,7 @@ vm_get_memflags(struct vmctx *ctx)
 
 static int
 vm_add_memslot(struct vmctx *ctx, vm_paddr_t gpa, size_t len, void *host,
-    uint64_t prot)
+    uint64_t prot, bool owned)
 {
 	struct kvm_userspace_memory_region region;
 	struct kvm_memslot *slot;
@@ -916,6 +919,7 @@ vm_add_memslot(struct vmctx *ctx, vm_paddr_t gpa, size_t len, void *host,
 	slot->gpa = gpa;
 	slot->len = len;
 	slot->host = host;
+	slot->owned = owned;
 
 	memset(&region, 0, sizeof(region));
 	region.slot = slot->slot;
@@ -957,7 +961,7 @@ vm_setup_memory_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 		owned = true;
 	}
 
-	error = vm_add_memslot(ctx, gpa, len, host, prot);
+	error = vm_add_memslot(ctx, gpa, len, host, prot, owned);
 	if (error != 0) {
 		if (owned)
 			free(host);
