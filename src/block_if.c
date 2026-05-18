@@ -297,6 +297,25 @@ blockif_flush_bc(struct blockif_ctxt *bc)
 }
 
 static int
+blockif_image_candelete(nvlist_t *nvl, const struct scorpi_image_info *info)
+{
+	int candelete;
+
+	if (info == NULL)
+		return (0);
+
+	candelete = info->can_discard;
+	if (info->format == SCORPI_IMAGE_FORMAT_SCO)
+		candelete = get_config_bool_node_default(nvl, "discard", false);
+	else
+		candelete = get_config_bool_node_default(nvl, "discard",
+		    candelete);
+	if (get_config_bool_node_default(nvl, "nodelete", false))
+		candelete = 0;
+	return (candelete);
+}
+
+static int
 blockif_read_iov(struct blockif_ctxt *bc, struct blockif_req *br)
 {
 	off_t offset;
@@ -667,7 +686,7 @@ blockif_open(nvlist_t *nvl, const char *ident)
 	if (image_info == NULL)
 		goto err;
 	size = (off_t)image_info->virtual_size;
-	candelete = image_info->can_discard;
+	candelete = blockif_image_candelete(nvl, image_info);
 	if (ssopt == 0) {
 		sectsz = (int)image_info->logical_sector_size;
 		psectsz = image_info->physical_sector_size;
