@@ -44,6 +44,7 @@
 
 #define	RTC_NVRAM_SIZE	128
 #define	RTC_STATUSA_DV	0x20
+#define	RTC_STATUSA_UIP	0x80
 #define	RTC_STATUSB_24HR	0x02
 #define	RTC_STATUSB_BINARY	0x04
 #define	RTC_STATUSD_VRT	0x80
@@ -175,8 +176,15 @@ x86_rtc_read(int offset, uint8_t *retval)
 		}
 		return (0);
 	case RTC_STATUSA:
-		*retval = rtc.nvram[RTC_STATUSA] & ~0x80;
+	{
+		struct timespec now;
+		uint8_t uip;
+
+		clock_gettime(CLOCK_REALTIME, &now);
+		uip = now.tv_nsec >= 990000000 ? RTC_STATUSA_UIP : 0;
+		*retval = (rtc.nvram[RTC_STATUSA] & ~RTC_STATUSA_UIP) | uip;
 		return (0);
+	}
 	case RTC_INTR:
 		*retval = rtc.nvram[RTC_INTR];
 		rtc.nvram[RTC_INTR] = 0;
