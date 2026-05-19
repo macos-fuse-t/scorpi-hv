@@ -1130,12 +1130,10 @@ ata_identify_init(struct ahci_port *p, int atapi)
 		ata_ident->pioblind = 0x0078;
 		ata_ident->pioiordy = 0x0078;
 		ata_ident->support3 = 0;
-		ata_ident->queue = 31;
 		ata_ident->satacapabilities = (ATA_SATA_GEN1 | ATA_SATA_GEN2 |
-		    ATA_SATA_GEN3 | ATA_SUPPORT_NCQ);
+		    ATA_SATA_GEN3);
 		ata_ident->satacapabilities2 =
-		    (ATA_SUPPORT_RCVSND_FPDMA_QUEUED |
-			(p->ssts & ATA_SS_SPD_MASK) >> 3);
+		    ((p->ssts & ATA_SS_SPD_MASK) >> 3);
 		ata_ident->version_major = 0x3f0;
 		ata_ident->version_minor = 0x28;
 		ata_ident->support.command1 = (ATA_SUPPORT_POWERMGT |
@@ -2478,7 +2476,7 @@ pci_ahci_init(struct pci_devinst *pi, nvlist_t *nvl)
 	char node_name[sizeof("XX")];
 	struct blockif_ctxt *bctxt;
 	struct pci_ahci_softc *sc;
-	int atapi, ret, slots, p;
+	int atapi, last_port, ret, slots, p;
 	MD5_CTX mdctx;
 	u_char digest[16];
 	const char *path, *type, *value;
@@ -2497,6 +2495,7 @@ pci_ahci_init(struct pci_devinst *pi, nvlist_t *nvl)
 	sc->ports = 0;
 	sc->pi = 0;
 	slots = 32;
+	last_port = 0;
 
 	ports_nvl = find_relative_config_node(nvl, "port");
 	for (p = 0; ports_nvl != NULL && p < MAX_PORTS; p++) {
@@ -2593,16 +2592,17 @@ pci_ahci_init(struct pci_devinst *pi, nvlist_t *nvl)
 		pci_ahci_ioreq_init(&sc->port[p]);
 
 		sc->pi |= (1 << p);
+		last_port = p + 1;
 		if (sc->port[p].ioqsz < slots)
 			slots = sc->port[p].ioqsz;
 	}
-	sc->ports = p;
+	sc->ports = last_port;
 
 	/* Intel ICH8 AHCI */
 	--slots;
 	if (sc->ports < DEF_PORTS)
 		sc->ports = DEF_PORTS;
-	sc->cap = AHCI_CAP_64BIT | AHCI_CAP_SNCQ | AHCI_CAP_SSNTF |
+	sc->cap = AHCI_CAP_64BIT | AHCI_CAP_SSNTF |
 	    AHCI_CAP_SMPS | AHCI_CAP_SSS | AHCI_CAP_SALP | AHCI_CAP_SAL |
 	    AHCI_CAP_SCLO | (0x3 << AHCI_CAP_ISS_SHIFT) | AHCI_CAP_PMD |
 	    AHCI_CAP_SSC | AHCI_CAP_PSC | (slots << AHCI_CAP_NCS_SHIFT) |
