@@ -644,19 +644,28 @@ pci_vgpu_transfer_to_host_2d(struct pci_vgpu_softc *sc,
 	size_t len;
 	struct vgpu_scanout *scanout;
 	int h;
-	size_t src_off, dst_off, lw;
+	uint32_t x, y, width, height, req_width, req_height;
+	size_t src_stride_width;
+	size_t backing_size, req_offset, src_end, src_off, src_stride;
+	size_t dst_end, dst_off, dst_stride, len_to_copy;
 
 	res = (struct virtio_gpu_transfer_to_host_2d *)req;
-	if (res->r.x != 0 || res->r.y != 0 || res->r.width != sc->resx ||
-	    res->r.height != sc->resy) {
-		DPRINTF(("transfer_to_host_2d %d %d %d %d", le32toh(res->r.x),
-		    le32toh(res->r.y), le32toh(res->r.width),
-		    le32toh(res->r.height)));
+	x = le32toh(res->r.x);
+	y = le32toh(res->r.y);
+	width = le32toh(res->r.width);
+	height = le32toh(res->r.height);
+	req_width = width;
+	req_height = height;
+	if (x != 0 || y != 0 || width != sc->resx || height != sc->resy) {
+		DPRINTF(("transfer_to_host_2d %d %d %d %d", x, y, width,
+		    height));
 	}
 
 	pci_vgpu_prepare_response(req, &hdr, VIRTIO_GPU_RESP_OK_NODATA);
 
-	len = MIN(rsp_len, sizeof(hdr));
+	if (rsp_len < sizeof(hdr))
+		return (0);
+	len = sizeof(hdr);
 	memcpy(rsp, &hdr, len);
 
 	scanout = pci_vgpu_find_resource(sc, le32toh(res->resource_id));
@@ -664,24 +673,100 @@ pci_vgpu_transfer_to_host_2d(struct pci_vgpu_softc *sc,
 		EPRINTLN("pci_vgpu: scanout %d not found",
 		    le32toh(res->resource_id));
 		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
 		return (len);
 	}
 
-	lw = scanout->stride;
-	if (le32toh(res->r.x) != 0 || le32toh(res->r.width) != scanout->width) {
-		for (h = 0; h < le32toh(res->r.height); h++) {
-			src_off = le64toh(res->offset) + lw * h;
-			dst_off = lw * (le32toh(res->r.y) + h) +
-			    le32toh(res->r.x) * 4;
-			iov_copy(scanout->base_ptr + dst_off,
-			    le32toh(res->r.width) * 4, scanout->backing_iov,
+	if (scanout->backing_iov == NULL || scanout->iov_cnt <= 0 ||
+	    scanout->base_ptr == NULL) {
+		WPRINTF(("vgpu: transfer without backing resource=%d",
+		    le32toh(res->resource_id)));
+		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
+		return (len);
+	}
+
+	if (width == 0 || height == 0)
+		return (len);
+
+	if (x >= scanout->width || y >= scanout->height)
+		return (len);
+
+	if (width > scanout->width - x || height > scanout->height - y) {
+		width = MIN(width, scanout->width - x);
+		height = MIN(height, scanout->height - y);
+		WPRINTF(("vgpu: clipped transfer outside scanout resource=%d "
+		    "rect=%ux%u+%u+%u clipped=%ux%u scanout=%ux%u",
+		    le32toh(res->resource_id), req_width, req_height, x, y,
+		    width, height, scanout->width, scanout->height));
+	}
+
+	if (width == 0 || height == 0)
+		return (len);
+
+	if ((size_t)x + req_width > SIZE_MAX / 4 ||
+	    (size_t)scanout->width > SIZE_MAX / 4) {
+		WPRINTF(("vgpu: transfer stride overflow resource=%d "
+		    "rect=%ux%u+%u+%u scanout=%ux%u",
+		    le32toh(res->resource_id), req_width, req_height, x, y,
+		    scanout->width, scanout->height));
+		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
+		return (len);
+	}
+
+	dst_stride = scanout->stride;
+	src_stride_width = MAX((size_t)scanout->width, (size_t)x + req_width);
+	src_stride = src_stride_width * 4;
+	len_to_copy = width * 4;
+	dst_end = dst_stride * (y + height - 1) + x * 4 + len_to_copy;
+	if (dst_end > scanout->size) {
+		WPRINTF(("vgpu: transfer destination overflow resource=%d "
+		    "end=%zu size=%zu", le32toh(res->resource_id), dst_end,
+		    scanout->size));
+		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
+		return (len);
+	}
+
+	backing_size = count_iov(scanout->backing_iov, scanout->iov_cnt);
+	req_offset = le64toh(res->offset);
+	if (req_offset > backing_size) {
+		WPRINTF(("vgpu: transfer source offset overflow resource=%d "
+		    "offset=%zu backing=%zu", le32toh(res->resource_id),
+		    req_offset, backing_size));
+		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
+		return (len);
+	}
+	src_end = req_offset + src_stride * (height - 1) + len_to_copy;
+	if (src_end > backing_size && src_stride_width != scanout->width) {
+		src_stride_width = scanout->width;
+		src_stride = src_stride_width * 4;
+		src_end = req_offset + src_stride * (height - 1) + len_to_copy;
+	}
+	if (src_end > backing_size) {
+		WPRINTF(("vgpu: transfer source overflow resource=%d "
+		    "end=%zu backing=%zu", le32toh(res->resource_id), src_end,
+		    backing_size));
+		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
+		return (len);
+	}
+
+	if (x != 0 || len_to_copy != src_stride || dst_stride != src_stride) {
+		for (h = 0; h < height; h++) {
+			src_off = req_offset + src_stride * h;
+			dst_off = dst_stride * (y + h) + x * 4;
+			iov_copy(scanout->base_ptr + dst_off, len_to_copy,
+			    scanout->backing_iov,
 			    scanout->iov_cnt, src_off);
 		}
 	} else {
-		src_off = le64toh(res->offset);
-		dst_off = le32toh(res->r.y) * lw;
-		iov_copy(scanout->base_ptr + dst_off,
-		    le32toh(res->r.height) * lw, scanout->backing_iov,
+		src_off = req_offset;
+		dst_off = y * dst_stride;
+		iov_copy(scanout->base_ptr + dst_off, height * dst_stride,
+		    scanout->backing_iov,
 		    scanout->iov_cnt, src_off);
 	}
 	return (len);
