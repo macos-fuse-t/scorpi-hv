@@ -118,10 +118,12 @@ enum {
 
 struct kvm_memslot {
 	uint64_t gpa;
+	uint64_t prot;
 	size_t len;
 	void *host;
 	int slot;
 	bool owned;
+	bool active;
 };
 
 struct vmctx {
@@ -1003,11 +1005,33 @@ vm_get_memflags(struct vmctx *ctx)
 }
 
 static int
+vm_set_memslot(struct vmctx *ctx, const struct kvm_memslot *slot, bool active)
+{
+	struct kvm_userspace_memory_region region;
+
+	memset(&region, 0, sizeof(region));
+	region.slot = slot->slot;
+	if (active) {
+		region.guest_phys_addr = slot->gpa;
+		region.memory_size = slot->len;
+		region.userspace_addr = (uintptr_t)slot->host;
+#ifdef KVM_MEM_READONLY
+		if ((slot->prot & PROT_WRITE) == 0)
+			region.flags |= KVM_MEM_READONLY;
+#endif
+	}
+
+	if (kvm_ioctl(ctx->vm_fd, KVM_SET_USER_MEMORY_REGION, &region) < 0)
+		return (errno);
+	return (0);
+}
+
+static int
 vm_add_memslot(struct vmctx *ctx, vm_paddr_t gpa, size_t len, void *host,
     uint64_t prot, bool owned)
 {
-	struct kvm_userspace_memory_region region;
 	struct kvm_memslot *slot;
+	int error;
 
 	if (ctx->nmemslots >= VM_MAX_MEMSLOTS)
 		return (E2BIG);
@@ -1015,25 +1039,41 @@ vm_add_memslot(struct vmctx *ctx, vm_paddr_t gpa, size_t len, void *host,
 	slot = &ctx->memslots[ctx->nmemslots];
 	slot->slot = ctx->nmemslots;
 	slot->gpa = gpa;
+	slot->prot = prot;
 	slot->len = len;
 	slot->host = host;
 	slot->owned = owned;
+	slot->active = false;
 
-	memset(&region, 0, sizeof(region));
-	region.slot = slot->slot;
-	region.guest_phys_addr = gpa;
-	region.memory_size = len;
-	region.userspace_addr = (uintptr_t)host;
-#ifdef KVM_MEM_READONLY
-	if ((prot & PROT_WRITE) == 0)
-		region.flags |= KVM_MEM_READONLY;
-#endif
+	error = vm_set_memslot(ctx, slot, true);
+	if (error != 0)
+		return (error);
 
-	if (kvm_ioctl(ctx->vm_fd, KVM_SET_USER_MEMORY_REGION, &region) < 0)
-		return (errno);
-
+	slot->active = true;
 	ctx->nmemslots++;
 	return (0);
+}
+
+int
+vm_set_memory_segment_visible(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
+    bool visible)
+{
+	struct kvm_memslot *slot;
+	int error;
+
+	for (int i = 0; i < ctx->nmemslots; i++) {
+		slot = &ctx->memslots[i];
+		if (slot->gpa == gpa && slot->len == len) {
+			if (slot->active == visible)
+				return (0);
+			error = vm_set_memslot(ctx, slot, visible);
+			if (error != 0)
+				return (error);
+			slot->active = visible;
+			return (0);
+		}
+	}
+	return (ENOENT);
 }
 
 int

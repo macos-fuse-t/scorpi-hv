@@ -686,6 +686,13 @@ vm_setup_memory_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 }
 
 int
+vm_set_memory_segment_visible(struct vmctx *ctx __unused,
+    vm_paddr_t gpa __unused, size_t len __unused, bool visible __unused)
+{
+	return (0);
+}
+
+int
 vm_get_memseg(struct vmctx *ctx, int segid, size_t *lenp, char *namebuf,
     size_t bufsize)
 {

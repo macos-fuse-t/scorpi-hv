@@ -312,6 +312,8 @@ int vm_setup_bootrom_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len, uint
 int vm_vcpu_init(struct vcpu *vcpu);
 void vm_vcpu_deinit(struct vcpu *vcpu);
 int vm_setup_memory_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len, uint64_t prot, uintptr_t *addr);
+int vm_set_memory_segment_visible(struct vmctx *ctx, vm_paddr_t gpa,
+    size_t len, bool visible);
 
 int vm_get_spi_interrupt_range(uint32_t *spi_intid_base, uint32_t *spi_intid_count);
 

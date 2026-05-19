@@ -316,13 +316,38 @@ vm_mem_allocated(struct vmctx *ctx, uint64_t gpa)
 }
 
 static int
+vm_set_mem_range(struct vmctx *ctx, const struct kvm_mem_range *seg,
+    bool active)
+{
+	struct kvm_userspace_memory_region region;
+
+	if (ctx->vm_fd < 0)
+		return (0);
+
+	memset(&region, 0, sizeof(region));
+	region.slot = (uint32_t)seg->slot;
+	if (active) {
+		region.guest_phys_addr = seg->gpa;
+		region.memory_size = seg->len;
+		region.userspace_addr = (uintptr_t)seg->object;
+#ifdef KVM_MEM_READONLY
+		if ((seg->prot & PROT_WRITE) == 0)
+			region.flags |= KVM_MEM_READONLY;
+#endif
+	}
+	if (ioctl(ctx->vm_fd, KVM_SET_USER_MEMORY_REGION, &region) < 0)
+		return (errno);
+	return (0);
+}
+
+static int
 vm_setup_memory_segment_internal(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
     uint64_t prot, uintptr_t *addr)
 {
-	struct kvm_userspace_memory_region region;
 	struct kvm_mem_range *seg;
 	void *object;
 	bool owned;
+	int error;
 
 	if ((gpa & PAGE_MASK) || (len & PAGE_MASK) || len == 0)
 		return (EINVAL);
@@ -349,32 +374,45 @@ vm_setup_memory_segment_internal(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 
 	seg = &ctx->mem_ranges[ctx->num_mem_ranges];
 	seg->gpa = gpa;
+	seg->prot = prot;
 	seg->len = len;
 	seg->object = object;
 	seg->slot = ctx->num_mem_ranges;
 	seg->owned = owned;
+	seg->active = false;
 
-	if (ctx->vm_fd >= 0) {
-		memset(&region, 0, sizeof(region));
-		region.slot = (uint32_t)seg->slot;
-		region.guest_phys_addr = gpa;
-		region.memory_size = len;
-		region.userspace_addr = (uintptr_t)object;
-#ifdef KVM_MEM_READONLY
-		if ((prot & PROT_WRITE) == 0)
-			region.flags |= KVM_MEM_READONLY;
-#endif
-		if (ioctl(ctx->vm_fd, KVM_SET_USER_MEMORY_REGION,
-		    &region) < 0) {
-			int error = errno;
-			if (owned)
-				free(object);
-			return (error);
-		}
+	error = vm_set_mem_range(ctx, seg, true);
+	if (error != 0) {
+		if (owned)
+			free(object);
+		return (error);
 	}
+	seg->active = true;
 
 	ctx->num_mem_ranges++;
 	return (0);
+}
+
+int
+vm_set_memory_segment_visible(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
+    bool visible)
+{
+	struct kvm_mem_range *seg;
+	int error;
+
+	for (int i = 0; i < ctx->num_mem_ranges; i++) {
+		seg = &ctx->mem_ranges[i];
+		if (seg->gpa == gpa && seg->len == len) {
+			if (seg->active == visible)
+				return (0);
+			error = vm_set_mem_range(ctx, seg, visible);
+			if (error != 0)
+				return (error);
+			seg->active = visible;
+			return (0);
+		}
+	}
+	return (ENOENT);
 }
 
 int

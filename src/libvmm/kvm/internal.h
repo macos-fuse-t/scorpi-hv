@@ -24,10 +24,12 @@ enum {
 
 struct kvm_mem_range {
 	uint64_t gpa;
+	uint64_t prot;
 	size_t len;
 	void *object;
 	int slot;
 	bool owned;
+	bool active;
 };
 
 struct vmctx {
