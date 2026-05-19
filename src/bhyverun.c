@@ -832,7 +832,15 @@ bhyve_run_configured_vm(void)
 		return (1);
 	}
 
-	uuid_generate(vm_uuid);
+	value = get_config_value("uuid");
+	if (value != NULL) {
+		if (uuid_parse(value, vm_uuid) != 0) {
+			warnx("invalid UUID '%s'", value);
+			return (EX_USAGE);
+		}
+	} else {
+		uuid_generate(vm_uuid);
+	}
 
 	calc_topology();
 	build_vcpumaps();
