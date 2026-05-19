@@ -17,7 +17,11 @@ if [ ! -f "$srcdir/CMakeLists.txt" ]; then
 		exit 1
 	fi
 
-	meson subprojects download --sourcedir "$project_root" libwebsockets
+	if ! meson subprojects download --sourcedir "$project_root" libwebsockets; then
+		if [ ! -f "$srcdir/CMakeLists.txt" ]; then
+			exit 1
+		fi
+	fi
 fi
 
 if [ ! -f "$srcdir/CMakeLists.txt" ]; then
