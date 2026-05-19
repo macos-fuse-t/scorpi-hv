@@ -154,7 +154,8 @@ static struct virtio_consts vgpu_vi_consts = {
 	.vc_cfgread = pci_vgpu_cfgread,
 	.vc_cfgwrite = pci_vgpu_cfgwrite,
 	.vc_apply_features = pci_vgpu_neg_features,
-	.vc_hv_caps = VGPU_S_HOSTCAPS | VIRTIO_F_VERSION_1,
+	.vc_hv_caps = VGPU_S_HOSTCAPS | VIRTIO_F_VERSION_1 |
+	    (1ULL << VIRTIO_GPU_F_EDID),
 #ifdef BHYVE_SNAPSHOT
 	.vc_pause = pci_vgpu_pause,
 	.vc_resume = pci_vgpu_resume,
@@ -623,28 +624,29 @@ pci_vgpu_transfer_to_host_2d(struct pci_vgpu_softc *sc,
 	return (len);
 }
 
-static int pci_vgpu_generate_edid(struct pci_vgpu_softc *sc, uint16_t width,
-    uint16_t height, struct edid *edid);
+static size_t pci_vgpu_default_response(struct pci_vgpu_softc *sc,
+    struct virtio_gpu_ctrl_hdr *req, uint8_t *rsp, size_t rsp_len,
+    uint32_t code);
+static int pci_vgpu_generate_edid(uint16_t width, uint16_t height,
+    uint8_t *edid);
 
-__unused static size_t
+static size_t
 pci_vgpu_get_edid(struct pci_vgpu_softc *sc, struct virtio_gpu_ctrl_hdr *req,
     uint8_t *rsp, size_t rsp_len)
 {
-	// struct virtio_gpu_cmd_get_edid *cmd = (struct virtio_gpu_cmd_get_edid
-	// *)req;
+	struct virtio_gpu_cmd_get_edid *cmd;
 	struct virtio_gpu_resp_edid edid;
-	// struct vgpu_scanout *scanout;
 	size_t len, size;
+
+	cmd = (struct virtio_gpu_cmd_get_edid *)req;
+	if (le32toh(cmd->scanout) >= sc->vsc_config.num_scanouts) {
+		return (pci_vgpu_default_response(sc, req, rsp, rsp_len,
+		    VIRTIO_GPU_RESP_ERR_INVALID_SCANOUT_ID));
+	}
 
 	bzero(&edid, sizeof(edid));
 	pci_vgpu_prepare_response(req, &edid.hdr, VIRTIO_GPU_RESP_OK_EDID);
-	/*scanout = pci_vgpu_find_resource(sc, le32toh(cmd->scanout));
-	if (!scanout) {
-	    EPRINTLN("pci_vgpu_get_edid: scanout %d not found",
-	le32toh(cmd->scanout)); exit(-1); return (0);
-	}*/
-
-	size = pci_vgpu_generate_edid(sc, 1024, 768, (struct edid *)&edid.edid);
+	size = pci_vgpu_generate_edid(sc->resx, sc->resy, edid.edid);
 	edid.size = htole32(size);
 
 	len = MIN(rsp_len, sizeof(edid));
@@ -703,8 +705,7 @@ pci_vgpu_process_cmd(struct pci_vgpu_softc *sc, struct virtio_gpu_ctrl_hdr *req,
 		len = pci_vgpu_resource_dettach_backing(sc, req, rsp, rsp_len);
 		break;
 	case VIRTIO_GPU_CMD_GET_EDID:
-		len = pci_vgpu_default_response(sc, req, rsp, rsp_len,
-		    VIRTIO_GPU_RESP_ERR_UNSPEC);
+		len = pci_vgpu_get_edid(sc, req, rsp, rsp_len);
 		break;
 	case VIRTIO_GPU_CMD_GET_CAPSET_INFO:
 	case VIRTIO_GPU_CMD_GET_CAPSET:
@@ -868,28 +869,218 @@ pci_vgpu_ping_cursor(void *vsc, struct vqueue_info *vq)
 	pthread_mutex_unlock(&sc->vsc_mtx);
 }
 
-static int
-pci_vgpu_generate_edid(struct pci_vgpu_softc *sc, uint16_t width,
-    uint16_t height, struct edid *edid)
+static void
+pci_vgpu_edid_mfg_id(uint8_t mfg_id[2], const char name[3])
 {
-	uint8_t width_cm = width / 10;
-	uint8_t height_cm = height / 10;
+	uint16_t id;
 
-	memset(edid, 0, sizeof(struct edid)); // Clear EDID struct
+	id = ((name[0] - '@') & 0x1f) << 10;
+	id |= ((name[1] - '@') & 0x1f) << 5;
+	id |= (name[2] - '@') & 0x1f;
+
+	mfg_id[0] = id >> 8;
+	mfg_id[1] = id & 0xff;
+}
+
+struct vgpu_edid_mode {
+	uint16_t width;
+	uint16_t height;
+	uint16_t pixel_clock;
+	uint16_t hblank;
+	uint16_t vblank;
+	uint16_t hsync_offset;
+	uint16_t hsync_width;
+	uint16_t vsync_offset;
+	uint16_t vsync_width;
+	uint8_t misc;
+};
+
+static const struct vgpu_edid_mode vgpu_edid_modes[] = {
+	{ 640, 480, 2518, 160, 45, 16, 96, 10, 2, DRM_EDID_PT_SEPARATE_SYNC },
+	{ 800, 600, 4000, 256, 28, 40, 128, 1, 4,
+	    DRM_EDID_PT_SEPARATE_SYNC | DRM_EDID_PT_HSYNC_POSITIVE |
+		DRM_EDID_PT_VSYNC_POSITIVE },
+	{ 1024, 768, 6500, 320, 38, 24, 136, 3, 6,
+	    DRM_EDID_PT_SEPARATE_SYNC },
+	{ 1280, 720, 7425, 370, 30, 110, 40, 5, 5,
+	    DRM_EDID_PT_SEPARATE_SYNC | DRM_EDID_PT_HSYNC_POSITIVE |
+		DRM_EDID_PT_VSYNC_POSITIVE },
+	{ 1280, 1024, 10800, 408, 42, 48, 112, 1, 3,
+	    DRM_EDID_PT_SEPARATE_SYNC | DRM_EDID_PT_HSYNC_POSITIVE |
+		DRM_EDID_PT_VSYNC_POSITIVE },
+	{ 1366, 768, 8550, 426, 30, 70, 143, 3, 3,
+	    DRM_EDID_PT_SEPARATE_SYNC | DRM_EDID_PT_HSYNC_POSITIVE |
+		DRM_EDID_PT_VSYNC_POSITIVE },
+	{ 1600, 900, 10800, 160, 26, 48, 32, 3, 5,
+	    DRM_EDID_PT_SEPARATE_SYNC | DRM_EDID_PT_HSYNC_POSITIVE |
+		DRM_EDID_PT_VSYNC_POSITIVE },
+	{ 1920, 1080, 14850, 280, 45, 88, 44, 4, 5,
+	    DRM_EDID_PT_SEPARATE_SYNC | DRM_EDID_PT_HSYNC_POSITIVE |
+		DRM_EDID_PT_VSYNC_POSITIVE },
+	{ 2560, 1440, 24150, 160, 41, 48, 32, 3, 5,
+	    DRM_EDID_PT_SEPARATE_SYNC | DRM_EDID_PT_HSYNC_POSITIVE |
+		DRM_EDID_PT_VSYNC_POSITIVE },
+	{ 2880, 1800, 33000, 160, 43, 48, 32, 3, 5,
+	    DRM_EDID_PT_SEPARATE_SYNC | DRM_EDID_PT_HSYNC_POSITIVE |
+		DRM_EDID_PT_VSYNC_POSITIVE },
+	{ 3840, 2160, 53325, 160, 55, 48, 32, 3, 5,
+	    DRM_EDID_PT_SEPARATE_SYNC | DRM_EDID_PT_HSYNC_POSITIVE |
+		DRM_EDID_PT_VSYNC_POSITIVE },
+};
+
+static const struct vgpu_edid_mode *
+pci_vgpu_edid_find_mode(uint16_t width, uint16_t height)
+{
+	for (size_t i = 0; i < nitems(vgpu_edid_modes); i++) {
+		if (vgpu_edid_modes[i].width == width &&
+		    vgpu_edid_modes[i].height == height)
+			return (&vgpu_edid_modes[i]);
+	}
+
+	return (NULL);
+}
+
+static void
+pci_vgpu_edid_detailed_timing(struct detailed_timing *dt,
+    const struct vgpu_edid_mode *mode, uint16_t width_mm, uint16_t height_mm)
+{
+	struct detailed_pixel_timing *pd;
+	uint16_t hblank, vblank;
+	uint16_t hsync_offset, hsync_width;
+	uint16_t vsync_offset, vsync_width;
+
+	bzero(dt, sizeof(*dt));
+	hblank = mode->hblank;
+	vblank = mode->vblank;
+	hsync_offset = mode->hsync_offset;
+	hsync_width = mode->hsync_width;
+	vsync_offset = mode->vsync_offset;
+	vsync_width = mode->vsync_width;
+
+	dt->pixel_clock = htole16(mode->pixel_clock);
+	pd = &dt->data.pixel_data;
+
+	pd->hactive_lo = mode->width & 0xff;
+	pd->hblank_lo = hblank & 0xff;
+	pd->hactive_hblank_hi = ((mode->width >> 8) & 0xf) << 4 |
+	    ((hblank >> 8) & 0xf);
+	pd->vactive_lo = mode->height & 0xff;
+	pd->vblank_lo = vblank & 0xff;
+	pd->vactive_vblank_hi = ((mode->height >> 8) & 0xf) << 4 |
+	    ((vblank >> 8) & 0xf);
+	pd->hsync_offset_lo = hsync_offset & 0xff;
+	pd->hsync_pulse_width_lo = hsync_width & 0xff;
+	pd->vsync_offset_pulse_width_lo = ((vsync_offset & 0xf) << 4) |
+	    (vsync_width & 0xf);
+	pd->hsync_vsync_offset_pulse_width_hi =
+	    ((hsync_offset >> 8) & 0x3) << 6 |
+	    ((hsync_width >> 8) & 0x3) << 4 |
+	    ((vsync_offset >> 4) & 0x3) << 2 |
+	    ((vsync_width >> 4) & 0x3);
+	pd->width_mm_lo = width_mm & 0xff;
+	pd->height_mm_lo = height_mm & 0xff;
+	pd->width_height_mm_hi = ((width_mm >> 8) & 0xf) << 4 |
+	    ((height_mm >> 8) & 0xf);
+	pd->misc = mode->misc;
+}
+
+static void
+pci_vgpu_edid_standard_timing(struct std_timing *timing, uint16_t width,
+    uint8_t aspect)
+{
+	timing->hsize = (width / 8) - 31;
+	timing->vfreq_aspect = (aspect << EDID_TIMING_ASPECT_SHIFT);
+}
+
+static void
+pci_vgpu_edid_checksum(uint8_t *block)
+{
+	uint8_t sum;
+
+	block[127] = 0;
+	sum = 0;
+	for (size_t i = 0; i < 127; i++)
+		sum += block[i];
+	block[127] = (256 - sum) % 256;
+}
+
+static void
+pci_vgpu_generate_cea_edid(uint8_t *ext, uint16_t width_mm,
+    uint16_t height_mm)
+{
+	struct detailed_timing *dt;
+
+	bzero(ext, EDID_LENGTH);
+	ext[0] = CEA_EXT;
+	ext[1] = 0x03;
+	ext[2] = 10;
+	ext[3] = 0;
+	ext[4] = 93;  /* 3840x2160 */
+	ext[5] = 98;  /* 4096x2160 */
+	ext[6] = 114; /* 3840x2160 */
+	ext[7] = 121; /* 5120x2160 */
+	ext[8] = 16;  /* 1920x1080 */
+
+	dt = (struct detailed_timing *)(ext + ext[2]);
+	pci_vgpu_edid_detailed_timing(&dt[0], pci_vgpu_edid_find_mode(3840,
+		2160), width_mm, height_mm);
+	pci_vgpu_edid_detailed_timing(&dt[1], pci_vgpu_edid_find_mode(2880,
+		1800), width_mm, height_mm);
+	pci_vgpu_edid_detailed_timing(&dt[2], pci_vgpu_edid_find_mode(2560,
+		1440), width_mm, height_mm);
+	pci_vgpu_edid_detailed_timing(&dt[3], pci_vgpu_edid_find_mode(1920,
+		1080), width_mm, height_mm);
+
+	pci_vgpu_edid_checksum(ext);
+}
+
+static int
+pci_vgpu_generate_edid(uint16_t width, uint16_t height, uint8_t *edid_buf)
+{
+	struct edid *edid;
+	const struct vgpu_edid_mode *preferred;
+	uint16_t width_mm, height_mm;
+	struct vgpu_edid_mode fallback;
+
+	edid = (struct edid *)edid_buf;
+	width_mm = 340;
+	height_mm = MAX((uint32_t)width_mm * height / width, 190);
+	preferred = pci_vgpu_edid_find_mode(width, height);
+	if (preferred == NULL) {
+		fallback = (struct vgpu_edid_mode) {
+			.width = width,
+			.height = height,
+			.pixel_clock = MIN(((uint32_t)width + 160) *
+			    ((uint32_t)height + 45) * 60 / 10000, UINT16_MAX),
+			.hblank = 160,
+			.vblank = 45,
+			.hsync_offset = 48,
+			.hsync_width = 32,
+			.vsync_offset = 3,
+			.vsync_width = 5,
+			.misc = DRM_EDID_PT_SEPARATE_SYNC |
+			    DRM_EDID_PT_HSYNC_POSITIVE |
+			    DRM_EDID_PT_VSYNC_POSITIVE,
+		};
+		preferred = &fallback;
+	}
+
+	memset(edid_buf, 0, EDID_LENGTH * 2);
 	*edid = (struct edid) { .header = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 				    0xFF, 0x00 },
-		.mfg_id = { 'S', 'C' },
-		.prod_code = { 0x01, 0x00 }, //  product code
-		.serial = { 0, 0, 0, 0 },    //  4-byte serial number
+		.prod_code = { 0x04, 0x00 }, //  product code
+		.serial = { 4, width & 0xff, height & 0xff,
+			(width ^ height) & 0xff },
 		.mfg_week = 0x01,	     // Week 1
 		.mfg_year = 0x23,	     // Year 2025 (0x23 = 2025 - 1990)
 		.version = 0x01,	     // EDID version 1
-		.revision = 0x03,	     // EDID revision 3
+		.revision = 0x04,	     // EDID revision 4
 		.input = 0x80,		     // Digital display
-		.width_cm = width_cm,	     // Physical width in cm
-		.height_cm = height_cm,	     // Physical height in cm
+		.width_cm = width_mm / 10,
+		.height_cm = height_mm / 10,
 		.gamma = 120,	  // Gamma (2.2, computed as (gamma - 1) * 100)
-		.features = 0x02, // Default color, preferred timing mode
+		.features = DRM_EDID_FEATURE_PREFERRED_TIMING |
+		    DRM_EDID_FEATURE_STANDARD_COLOR,
 		.red_green_lo = 0x20,
 		.black_white_lo = 0x20,
 		.red_x = 0xA4,
@@ -900,16 +1091,41 @@ pci_vgpu_generate_edid(struct pci_vgpu_softc *sc, uint16_t width,
 		.blue_y = 0x9A,
 		.white_x = 0xC8,
 		.white_y = 0x32,
-		.extensions = 0x00, // No extensions
+		.established_timings = {
+			.t1 = 0x21, /* 640x480@60, 800x600@60 */
+			.t2 = 0x08, /* 1024x768@60 */
+		},
+		.extensions = 0x01,
 		.checksum = 0x00 };
 
-	uint8_t sum = 0;
-	for (size_t i = 0; i < 127; i++) {
-		sum += ((uint8_t *)edid)[i];
+	pci_vgpu_edid_mfg_id(edid->mfg_id, "SCR");
+	for (size_t i = 0; i < nitems(edid->standard_timings); i++) {
+		edid->standard_timings[i].hsize = 0x01;
+		edid->standard_timings[i].vfreq_aspect = 0x01;
 	}
-	edid->checksum = (256 - sum) % 256;
 
-	return (sizeof(*edid));
+	pci_vgpu_edid_standard_timing(&edid->standard_timings[0], 1280, 3);
+	pci_vgpu_edid_standard_timing(&edid->standard_timings[1], 1280, 2);
+	pci_vgpu_edid_standard_timing(&edid->standard_timings[2], 1360, 3);
+	pci_vgpu_edid_standard_timing(&edid->standard_timings[3], 1440, 0);
+	pci_vgpu_edid_standard_timing(&edid->standard_timings[4], 1600, 3);
+	pci_vgpu_edid_standard_timing(&edid->standard_timings[5], 1680, 0);
+	pci_vgpu_edid_standard_timing(&edid->standard_timings[6], 1920, 3);
+	pci_vgpu_edid_standard_timing(&edid->standard_timings[7], 2048, 3);
+
+	pci_vgpu_edid_detailed_timing(&edid->detailed_timings[0], preferred,
+	    width_mm, height_mm);
+	pci_vgpu_edid_detailed_timing(&edid->detailed_timings[1],
+	    pci_vgpu_edid_find_mode(2560, 1440), width_mm, height_mm);
+	pci_vgpu_edid_detailed_timing(&edid->detailed_timings[2],
+	    pci_vgpu_edid_find_mode(2880, 1800), width_mm, height_mm);
+	pci_vgpu_edid_detailed_timing(&edid->detailed_timings[3],
+	    pci_vgpu_edid_find_mode(3840, 2160), width_mm, height_mm);
+
+	pci_vgpu_edid_checksum(edid_buf);
+	pci_vgpu_generate_cea_edid(edid_buf + EDID_LENGTH, width_mm, height_mm);
+
+	return (EDID_LENGTH * 2);
 }
 
 static void
