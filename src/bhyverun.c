@@ -531,6 +531,7 @@ vm_loop(struct vmctx *ctx, struct vcpu *vcpu)
 		}
 	}
 	EPRINTLN("vm_run error %d, errno %d", error, errno);
+	exit(4);
 }
 
 static bool
