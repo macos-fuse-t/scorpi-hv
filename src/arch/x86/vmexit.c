@@ -84,6 +84,29 @@ vmexit_reset_release(void)
 	pthread_mutex_unlock(&reset_mtx);
 }
 
+static int
+vmexit_reset_vm(struct vmctx *ctx, struct vcpu *vcpu)
+{
+	if (!vmexit_reset_barrier(vcpu))
+		return (VMEXIT_CONTINUE);
+	bootrom_reset();
+	if (bhyve_reset_devices(ctx) != 0)
+		return (VMEXIT_ABORT);
+	if (vm_reinit(ctx) != 0)
+		return (VMEXIT_ABORT);
+	for (int i = 0; i < vmexit_reset_vcpu_count(); i++) {
+		if (vcpu_reset(fbsdrun_vcpu(i)) != 0)
+			return (VMEXIT_ABORT);
+	}
+	vm_suspend(ctx, VM_SUSPEND_NONE);
+	if (bootrom_boot())
+		vm_resume_all_cpus(ctx);
+	else
+		vm_activate_cpu(vcpu);
+	vmexit_reset_release();
+	return (VMEXIT_CONTINUE);
+}
+
 static uint64_t
 vmexit_reg(struct vcpu *vcpu, int reg)
 {
@@ -246,21 +269,7 @@ vmexit_suspend(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 	vme = vmrun->vm_exit;
 	switch (vme->u.suspended.how) {
 	case VM_SUSPEND_RESET:
-		if (!vmexit_reset_barrier(vcpu))
-			return (VMEXIT_CONTINUE);
-		if (bhyve_reset_devices(ctx) != 0)
-			return (VMEXIT_ABORT);
-		for (int i = 0; i < vmexit_reset_vcpu_count(); i++) {
-			if (vcpu_reset(fbsdrun_vcpu(i)) != 0)
-				return (VMEXIT_ABORT);
-		}
-		vm_suspend(ctx, VM_SUSPEND_NONE);
-		if (bootrom_boot())
-			vm_resume_all_cpus(ctx);
-		else
-			vm_activate_cpu(vcpu);
-		vmexit_reset_release();
-		return (VMEXIT_CONTINUE);
+		return (vmexit_reset_vm(ctx, vcpu));
 	case VM_SUSPEND_POWEROFF:
 		fbsdrun_deletecpu(vcpu_id(vcpu));
 		vm_destroy(ctx);
