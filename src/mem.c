@@ -286,6 +286,22 @@ write_mem(struct vcpu *vcpu, uint64_t gpa, uint64_t wval, int size)
 	return (access_memory(vcpu, gpa, rw_mem_cb, &rma));
 }
 
+bool
+mem_range_registered(uint64_t gpa)
+{
+	struct mmio_rb_range *entry;
+	int error, perror;
+
+	pthread_rwlock_rdlock(&mmio_rwlock);
+	error = mmio_rb_lookup(&mmio_rb_root, gpa, &entry);
+	if (error != 0)
+		error = mmio_rb_lookup(&mmio_rb_fallback, gpa, &entry);
+	perror = pthread_rwlock_unlock(&mmio_rwlock);
+	assert(perror == 0);
+
+	return (error == 0);
+}
+
 static int
 register_mem_int(struct mmio_rb_tree *rbt, struct mem_range *memp)
 {

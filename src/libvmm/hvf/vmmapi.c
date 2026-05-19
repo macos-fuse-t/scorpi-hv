@@ -64,6 +64,8 @@
 #include "internal.h"
 #include "vmmapi.h"
 
+bool mem_range_registered(uint64_t gpa);
+
 #if defined(VMM_DEBUG)
 #define DPRINTLN PRINTLN
 #else
@@ -557,14 +559,32 @@ vm_mem_allocated(struct vmctx *ctx, uint64_t gpa)
 }
 
 static int
+vm_map_range(struct mem_range *seg, bool visible)
+{
+	hv_memory_flags_t hvProt;
+	hv_return_t ret;
+
+	if (!visible)
+		return (hv_vm_unmap(seg->gpa, seg->len) == HV_SUCCESS ? 0 :
+		    EINVAL);
+
+	hvProt = (seg->prot & PROT_READ) ? HV_MEMORY_READ : 0;
+	hvProt |= (seg->prot & PROT_WRITE) ? HV_MEMORY_WRITE : 0;
+	hvProt |= (seg->prot & PROT_EXEC) ? HV_MEMORY_EXEC : 0;
+
+	ret = hv_vm_map(seg->object, seg->gpa, seg->len, hvProt);
+	return (ret == HV_SUCCESS ? 0 : EINVAL);
+}
+
+static int
 vm_malloc(struct vmctx *ctx, uint64_t gpa, size_t len, uint64_t prot,
     uintptr_t *addr)
 {
 	int available, allocated;
 	struct mem_range *seg;
 	void *object;
+	bool owned;
 	uint64_t g;
-	hv_memory_flags_t hvProt;
 
 	if ((gpa & PAGE_MASK) || (len & PAGE_MASK) || len == 0)
 		return (EINVAL);
@@ -601,28 +621,30 @@ vm_malloc(struct vmctx *ctx, uint64_t gpa, size_t len, uint64_t prot,
 
 	if (prot & PROT_DONT_ALLOCATE) {
 		object = (void *)*addr;
+		owned = false;
 	} else {
 		if (posix_memalign(&object, PAGE_SIZE, len)) {
 			EPRINTLN("posix_memalign() failed");
 			return (ENOMEM);
 		}
 		*addr = (uintptr_t)object;
-	}
-
-	hvProt = (prot & PROT_READ) ? HV_MEMORY_READ : 0;
-	hvProt |= (prot & PROT_WRITE) ? HV_MEMORY_WRITE : 0;
-	hvProt |= (prot & PROT_EXEC) ? HV_MEMORY_EXEC : 0;
-
-	if (hv_vm_map(object, gpa, len, hvProt)) {
-		EPRINTLN("hv_vm_map() failed");
-		if (!(prot & PROT_DONT_ALLOCATE))
-			free(object);
-		return (ENOMEM);
+		owned = true;
 	}
 
 	seg->gpa = gpa;
 	seg->len = len;
 	seg->object = object;
+	seg->prot = prot;
+	seg->active = false;
+	seg->owned = owned;
+
+	if (vm_map_range(seg, true) != 0) {
+		EPRINTLN("hv_vm_map() failed");
+		if (owned)
+			free(object);
+		return (ENOMEM);
+	}
+	seg->active = true;
 
 	ctx->num_mem_ranges++;
 
@@ -686,10 +708,26 @@ vm_setup_memory_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 }
 
 int
-vm_set_memory_segment_visible(struct vmctx *ctx __unused,
-    vm_paddr_t gpa __unused, size_t len __unused, bool visible __unused)
+vm_set_memory_segment_visible(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
+    bool visible)
 {
-	return (0);
+	struct mem_range *seg;
+	int error;
+
+	for (int i = 0; i < ctx->num_mem_ranges; i++) {
+		seg = &ctx->mem_ranges[i];
+		if (seg->gpa == gpa && seg->len == len) {
+			if (seg->active == visible)
+				return (0);
+			error = vm_map_range(seg, visible);
+			if (error != 0)
+				return (error);
+			seg->active = visible;
+			return (0);
+		}
+	}
+
+	return (ENOENT);
 }
 
 int
@@ -1666,6 +1704,8 @@ vmexit_handle_exception(struct vcpu *vcpu, struct vm_exit *vme)
 	switch (ec) {
 	case EXCP_DATA_ABORT_L:
 		if (!vm_mem_allocated(vcpu->ctx,
+			vcpu->vcpu_exit->exception.physical_address) ||
+		    mem_range_registered(
 			vcpu->vcpu_exit->exception.physical_address)) {
 			if (arm64_gen_inst_emul_data(vcpu, esr_iss, vme) != 0)
 				vme->exitcode = VM_EXITCODE_BOGUS;
@@ -1686,7 +1726,6 @@ vmexit_handle_exception(struct vcpu *vcpu, struct vm_exit *vme)
 		} else {
 			esr = syndrome;
 		}
-		abort();
 		ret = vm_inject_exception(vcpu, esr,
 		    vcpu->vcpu_exit->exception.virtual_address);
 		break;

@@ -6,7 +6,21 @@
 
 #include <string.h>
 
+#include "bootrom.h"
 #include "bootrom_arch.h"
+
+size_t
+bootrom_arch_alloc_size(size_t rom_size, size_t bootrom_size)
+{
+	(void)rom_size;
+	return (bootrom_size);
+}
+
+int
+bootrom_arch_alloc_flags(void)
+{
+	return (BOOTROM_ALLOC_TOP);
+}
 
 void
 bootrom_copyrom(char *dst, size_t dst_len, const void *src, size_t src_len)

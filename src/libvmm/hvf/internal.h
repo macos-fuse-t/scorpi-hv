@@ -42,6 +42,9 @@ struct mem_range {
 	uint64_t gpa;
 	size_t len;
 	void *object;
+	uint64_t prot;
+	bool active;
+	bool owned;
 };
 
 #define MAX_VCPUS		64

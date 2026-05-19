@@ -216,6 +216,7 @@ endif
 backend_src = files()
 if hypervisor_backend == 'hvf'
     backend_src += files(
+        'src/libvmm/common/vmm_instruction_emul.c',
         'src/libvmm/hvf/vmmapi.c',
         'src/libvmm/hvf/vmm.c',
         'src/libvmm/hvf/vgic.c',

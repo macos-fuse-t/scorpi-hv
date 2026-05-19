@@ -31,6 +31,7 @@
 #define	_MEM_H_
 
 #include <support/linker_set.h>
+#include <stdbool.h>
 
 struct vcpu;
 struct vie;
@@ -58,6 +59,7 @@ int     emulate_mem(struct vcpu *vcpu, uint64_t paddr, struct vie *vie,
 		    struct vm_guest_paging *paging);
 
 int	read_mem(struct vcpu *vpu, uint64_t gpa, uint64_t *rval, int size);
+bool	mem_range_registered(uint64_t gpa);
 int	register_mem(struct mem_range *memp);
 int	register_mem_fallback(struct mem_range *memp);
 int	unregister_mem(struct mem_range *memp);

@@ -47,10 +47,10 @@
 #include <mach/mach.h>
 #endif
 
+__attribute__((weak)) int raw_stdio;
+
 #ifdef __linux__
 extern char *program_invocation_short_name;
-__weak int raw_stdio;
-
 const char *
 getprogname(void)
 {

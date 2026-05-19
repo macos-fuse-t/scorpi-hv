@@ -92,6 +92,7 @@ typedef enum write_state {
 	CFI_STATE_WRITE_PROG_LEN,
 	CFI_STATE_WRITE_ERASE_CONFIRM,
 	CFI_STATE_WRITE_CONFIRM,
+	CFI_STATE_WRITE_LOCK_CONFIRM,
 } write_state;
 
 static struct bootrom_var_state {
@@ -232,7 +233,21 @@ bootrom_var_mem_write(struct vcpu *vcpu __unused, uint64_t offset, uint64_t val,
 			assert(size == 4);
 			memcpy(var.mmap + offset, &val, size);
 			var.prog_len--;
+			if (var.prog_len == 0) {
+				var.write_state = CFI_STATE_WRITE_IDLE;
+				var.read_state = CFI_STATE_READ_STATUS;
+			}
 		}
+		handled = true;
+		break;
+	case CFI_STATE_WRITE_LOCK_CONFIRM:
+		if (cmd != CFI_INTEL_LB && cmd != CFI_INTEL_UB)
+			EPRINTLN(
+			    "unexpected cmd %x in state CFI_STATE_WRITE_LOCK_CONFIRM",
+			    cmd);
+		var.status = CFI_DUAL_STATUS(CFI_INTEL_STATUS_WSMS);
+		var.write_state = CFI_STATE_WRITE_IDLE;
+		var.read_state = CFI_STATE_READ_STATUS;
 		handled = true;
 		break;
 	default:
@@ -254,7 +269,7 @@ bootrom_var_mem_write(struct vcpu *vcpu __unused, uint64_t offset, uint64_t val,
 		break;
 	case CFI_BCS_CLEAR_STATUS:
 		bootrom_var_trap_reads();
-		var.status = 0;
+		var.status = CFI_DUAL_STATUS(CFI_INTEL_STATUS_WSMS);
 		break;
 	case CFI_BCS_WRITE_BYTE:
 	case CFI_BCS_PROGRAM:
@@ -275,6 +290,12 @@ bootrom_var_mem_write(struct vcpu *vcpu __unused, uint64_t offset, uint64_t val,
 		bootrom_var_trap_reads();
 		var.status = CFI_DUAL_STATUS(CFI_INTEL_STATUS_WSMS);
 		var.write_state = CFI_STATE_WRITE_PROG_LEN;
+		var.read_state = CFI_STATE_READ_STATUS;
+		break;
+	case CFI_INTEL_LBS:
+		bootrom_var_trap_reads();
+		var.status = CFI_DUAL_STATUS(CFI_INTEL_STATUS_WSMS);
+		var.write_state = CFI_STATE_WRITE_LOCK_CONFIRM;
 		var.read_state = CFI_STATE_READ_STATUS;
 		break;
 	case CFI_BCS_READ_ARRAY:
@@ -464,13 +485,14 @@ bootrom_loadrom(struct vmctx *ctx)
 		    total_size);
 		goto done;
 	}
-	alloc_size = (rom_size + PAGE_MASK) & ~PAGE_MASK;
+	alloc_size = bootrom_arch_alloc_size(rom_size, BOOTROM_SIZE);
+	alloc_size = (alloc_size + PAGE_MASK) & ~PAGE_MASK;
 	if (alloc_size == 0)
 		alloc_size = PAGE_SIZE;
 
 	/* Map the bootrom into the guest address space */
 	if (bootrom_alloc(ctx, alloc_size, PROT_READ | PROT_EXEC,
-		BOOTROM_ALLOC_TOP, &ptr, &alloc_gpa) != 0) {
+		bootrom_arch_alloc_flags(), &ptr, &alloc_gpa) != 0) {
 		goto done;
 	}
 	rom_gpa = alloc_gpa;
