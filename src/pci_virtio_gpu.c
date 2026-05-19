@@ -70,7 +70,7 @@ static int vgpu_debug = 0;
 	PRINTLN params
 #define WPRINTF(params)	       PRINTLN params
 
-#define VQ_MAX_DESC	       32
+#define VQ_MAX_DESC	       512
 
 #define VGPU_MAXQ	       3
 #define VGPU_RINGSZ	       1024
@@ -259,8 +259,9 @@ pci_vgpu_get_display_info(struct pci_vgpu_softc *sc,
 
 	DPRINTF(("get_display_info %d %d", sc->resx, sc->resy));
 
-	assert(rsp_len == sizeof(di));
-	len = MIN(rsp_len, sizeof(di));
+	if (rsp_len < sizeof(di))
+		return (0);
+	len = sizeof(di);
 	memcpy(rsp, &di, len);
 	return (len);
 }
@@ -346,8 +347,9 @@ pci_vgpu_create_resource_2d(struct pci_vgpu_softc *sc,
 
 	pci_vgpu_prepare_response(req, &hdr, VIRTIO_GPU_RESP_OK_NODATA);
 
-	assert(rsp_len == sizeof(hdr));
-	len = MIN(rsp_len, sizeof(hdr));
+	if (rsp_len < sizeof(hdr))
+		return (0);
+	len = sizeof(hdr);
 	memcpy(rsp, &hdr, len);
 
 	DPRINTF(("create_resource_2d %d, w %d h %d", le32toh(res->resource_id),
@@ -356,6 +358,7 @@ pci_vgpu_create_resource_2d(struct pci_vgpu_softc *sc,
 	if (scanout) {
 		// already exists
 		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
 		return len;
 	}
 
@@ -364,6 +367,7 @@ pci_vgpu_create_resource_2d(struct pci_vgpu_softc *sc,
 		le32toh(res->width), le32toh(res->height), sc_size,
 		le32toh(res->format)) != 0) {
 		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY);
+		memcpy(rsp, &hdr, len);
 	}
 	return (len);
 }
@@ -382,8 +386,9 @@ pci_vgpu_resource_unref(struct pci_vgpu_softc *sc,
 	DPRINTF(("resource_unref %d", le32toh(res->resource_id)));
 	pci_vgpu_prepare_response(req, &hdr, VIRTIO_GPU_RESP_OK_NODATA);
 
-	assert(rsp_len == sizeof(hdr));
-	len = MIN(rsp_len, sizeof(hdr));
+	if (rsp_len < sizeof(hdr))
+		return (0);
+	len = sizeof(hdr);
 	memcpy(rsp, &hdr, len);
 
 	scanout = pci_vgpu_find_resource(sc, le32toh(res->resource_id));
@@ -391,6 +396,7 @@ pci_vgpu_resource_unref(struct pci_vgpu_softc *sc,
 		EPRINTLN("pci_vgpu: scanout %d not found",
 		    le32toh(res->resource_id));
 		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
 		return (len);
 	}
 
@@ -398,6 +404,7 @@ pci_vgpu_resource_unref(struct pci_vgpu_softc *sc,
 	munmap(scanout->base_ptr, scanout->size);
 	shm_unlink(scanout->shm_name);
 	close(scanout->shm_fd);
+	free(scanout->backing_iov);
 	free(scanout);
 
 	return (len);
@@ -410,47 +417,86 @@ pci_vgpu_render(void *arg)
 
 static size_t
 pci_vgpu_resource_attach_backing(struct pci_vgpu_softc *sc,
-    struct virtio_gpu_ctrl_hdr *req, uint8_t *rsp, size_t rsp_len)
+    struct virtio_gpu_ctrl_hdr *req, size_t req_len, uint8_t *rsp,
+    size_t rsp_len)
 {
 	struct virtio_gpu_resource_attach_backing *res;
 	struct virtio_gpu_ctrl_hdr hdr;
 	struct virtio_gpu_mem_entry *mem;
-	size_t len;
-	int i;
+	size_t len, min_req_len;
+	uint32_t i, nr_entries;
 	struct vgpu_scanout *scanout;
 
 	res = (struct virtio_gpu_resource_attach_backing *)req;
-	DPRINTF(("resource_attach_backing: %d, res %d", res->nr_entries,
+	nr_entries = le32toh(res->nr_entries);
+	DPRINTF(("resource_attach_backing: %d, res %d", nr_entries,
 	    le32toh(res->resource_id)));
 
 	pci_vgpu_prepare_response(req, &hdr, VIRTIO_GPU_RESP_OK_NODATA);
 
-	assert(rsp_len == sizeof(hdr));
-	len = MIN(rsp_len, sizeof(hdr));
+	if (rsp_len < sizeof(hdr))
+		return (0);
+	len = sizeof(hdr);
 	memcpy(rsp, &hdr, len);
 
-	if (!res->nr_entries)
+	if (!nr_entries)
 		return len;
+
+	if ((size_t)nr_entries > (SIZE_MAX - sizeof(*res)) / sizeof(*mem)) {
+		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
+		return len;
+	}
+	min_req_len = sizeof(*res) + nr_entries * sizeof(*mem);
+	if (req_len < min_req_len) {
+		WPRINTF(("vgpu: short attach backing resource=%d len=%zu "
+		    "required=%zu entries=%u", le32toh(res->resource_id),
+		    req_len, min_req_len, nr_entries));
+		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
+		return len;
+	}
 
 	scanout = pci_vgpu_find_resource(sc, le32toh(res->resource_id));
 	if (!scanout) {
 		EPRINTLN("pci_vgpu: scanout %d not found",
 		    le32toh(res->resource_id));
+		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
 		return len;
 	}
 
-	scanout->backing_iov = calloc(le32toh(res->nr_entries),
-	    sizeof(struct iovec));
-	scanout->iov_cnt = le32toh(res->nr_entries);
+	free(scanout->backing_iov);
+	scanout->backing_iov = calloc(nr_entries, sizeof(struct iovec));
+	if (scanout->backing_iov == NULL) {
+		scanout->iov_cnt = 0;
+		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY);
+		memcpy(rsp, &hdr, len);
+		return len;
+	}
+	scanout->iov_cnt = nr_entries;
 
 	// map guest pages into host contiguos memorry
 	mem = (struct virtio_gpu_mem_entry *)(res + 1);
-	for (i = 0; i < res->nr_entries; i++) {
+	for (i = 0; i < nr_entries; i++) {
 		scanout->backing_iov[i].iov_base = vm_map_gpa(
-		    sc->vsc_vs.vs_pi->pi_vmctx, mem[i].addr, mem[i].length);
-		scanout->backing_iov[i].iov_len = mem[i].length;
+		    sc->vsc_vs.vs_pi->pi_vmctx, le64toh(mem[i].addr),
+		    le32toh(mem[i].length));
+		scanout->backing_iov[i].iov_len = le32toh(mem[i].length);
 
-		assert(scanout->backing_iov[i].iov_base);
+		if (scanout->backing_iov[i].iov_base == NULL) {
+			WPRINTF(("vgpu: failed to map backing resource=%d "
+			    "entry=%u addr=%llx len=%u",
+			    le32toh(res->resource_id), i,
+			    (unsigned long long)le64toh(mem[i].addr),
+			    le32toh(mem[i].length)));
+			free(scanout->backing_iov);
+			scanout->backing_iov = NULL;
+			scanout->iov_cnt = 0;
+			hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+			memcpy(rsp, &hdr, len);
+			return len;
+		}
 	}
 	bzero((void *)scanout->base_ptr, scanout->size);
 
@@ -470,27 +516,39 @@ pci_vgpu_set_scanout(struct pci_vgpu_softc *sc, struct virtio_gpu_ctrl_hdr *req,
 
 	pci_vgpu_prepare_response(req, &hdr, VIRTIO_GPU_RESP_OK_NODATA);
 
-	assert(rsp_len == sizeof(hdr));
-	len = MIN(rsp_len, sizeof(hdr));
+	if (rsp_len < sizeof(hdr))
+		return (0);
+	len = sizeof(hdr);
 	memcpy(rsp, &hdr, len);
 
 	if (le32toh(res->resource_id)) {
+		uint32_t width, height;
+
+		width = le32toh(res->r.width);
+		height = le32toh(res->r.height);
 		scanout = pci_vgpu_find_resource(sc, le32toh(res->resource_id));
 		if (!scanout) {
 			EPRINTLN("pci_vgpu: scanout %d not found",
 			    le32toh(res->resource_id));
-			hdr.type = htole32(
-			    VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+			hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+			memcpy(rsp, &hdr, len);
 			return (len);
 		}
-		scanout->width = le32toh(res->r.width);
-		scanout->height = le32toh(res->r.height);
+		if (width > scanout->width || height > scanout->height) {
+			WPRINTF(("vgpu: invalid set_scanout resource=%d "
+			    "rect=%ux%u resource=%ux%u",
+			    le32toh(res->resource_id), width, height,
+			    scanout->width, scanout->height));
+			hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+			memcpy(rsp, &hdr, len);
+			return (len);
+		}
 
-		console_set_scanout(true, scanout->width, scanout->height,
+		console_set_scanout(true, width, height,
 		    scanout->stride, scanout->format, scanout->shm_name,
 		    scanout->size, false);
 		DPRINTF(("active scanout: %d: %dx%d, %d", scanout->resource_id,
-		    scanout->width, scanout->height, scanout->iov_cnt));
+		    width, height, scanout->iov_cnt));
 	} else {
 		console_set_scanout(false, 0, 0, 0, 0, NULL, 0, false);
 		DPRINTF(("active scanout disabled"));
@@ -512,8 +570,9 @@ pci_vgpu_resource_dettach_backing(struct pci_vgpu_softc *sc,
 
 	pci_vgpu_prepare_response(req, &hdr, VIRTIO_GPU_RESP_OK_NODATA);
 
-	assert(rsp_len == sizeof(hdr));
-	len = MIN(rsp_len, sizeof(hdr));
+	if (rsp_len < sizeof(hdr))
+		return (0);
+	len = sizeof(hdr);
 	memcpy(rsp, &hdr, len);
 
 	scanout = pci_vgpu_find_resource(sc, le32toh(res->resource_id));
@@ -521,11 +580,13 @@ pci_vgpu_resource_dettach_backing(struct pci_vgpu_softc *sc,
 		EPRINTLN("pci_vgpu: scanout %d not found",
 		    le32toh(res->resource_id));
 		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
 		return (len);
 	}
 
 	scanout->iov_cnt = 0;
 	free(scanout->backing_iov);
+	scanout->backing_iov = NULL;
 
 	return (len);
 }
@@ -542,15 +603,17 @@ pci_vgpu_flush(struct pci_vgpu_softc *sc, struct virtio_gpu_ctrl_hdr *req,
 
 	res = (struct virtio_gpu_resource_flush *)req;
 
-	assert(rsp_len == sizeof(hdr));
 	pci_vgpu_prepare_response(req, &hdr, VIRTIO_GPU_RESP_OK_NODATA);
-	len = MIN(rsp_len, sizeof(hdr));
+	if (rsp_len < sizeof(hdr))
+		return (0);
+	len = sizeof(hdr);
 
 	scanout = pci_vgpu_find_resource(sc, le32toh(res->resource_id));
 	if (!scanout) {
 		EPRINTLN("pci_vgpu: scanout %d not found",
 		    le32toh(res->resource_id));
 		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
 		return (len);
 	}
 	msync(scanout->base_ptr, scanout->size, MS_SYNC);
@@ -664,7 +727,9 @@ pci_vgpu_default_response(struct pci_vgpu_softc *sc,
 
 	pci_vgpu_prepare_response(req, &hdr, code);
 
-	len = MIN(rsp_len, sizeof(hdr));
+	if (rsp_len < sizeof(hdr))
+		return (0);
+	len = sizeof(hdr);
 	memcpy(rsp, &hdr, len);
 
 	return (len);
@@ -672,7 +737,7 @@ pci_vgpu_default_response(struct pci_vgpu_softc *sc,
 
 static size_t
 pci_vgpu_process_cmd(struct pci_vgpu_softc *sc, struct virtio_gpu_ctrl_hdr *req,
-    uint8_t *rsp, size_t rsp_len)
+    size_t req_len, uint8_t *rsp, size_t rsp_len)
 {
 	size_t len = 0;
 
@@ -699,7 +764,8 @@ pci_vgpu_process_cmd(struct pci_vgpu_softc *sc, struct virtio_gpu_ctrl_hdr *req,
 		len = pci_vgpu_transfer_to_host_2d(sc, req, rsp, rsp_len);
 		break;
 	case VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING:
-		len = pci_vgpu_resource_attach_backing(sc, req, rsp, rsp_len);
+		len = pci_vgpu_resource_attach_backing(sc, req, req_len, rsp,
+		    rsp_len);
 		break;
 	case VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING:
 		len = pci_vgpu_resource_dettach_backing(sc, req, rsp, rsp_len);
@@ -728,7 +794,10 @@ pci_vgpu_ping_ctrl(void *vsc, struct vqueue_info *vq)
 	struct vi_req req;
 	struct iovec iov[VQ_MAX_DESC];
 	size_t rsp_len;
+	size_t rsp_buf_len;
+	ssize_t cmd_len;
 	struct virtio_gpu_ctrl_hdr *cmd;
+	uint8_t *rsp_buf;
 
 	// DPRINTF(("vgpu: pci_vgpu_ping_ctrl"));
 	pthread_mutex_lock(&sc->vsc_mtx);
@@ -736,19 +805,56 @@ pci_vgpu_ping_ctrl(void *vsc, struct vqueue_info *vq)
 
 	while (vq_has_descs(vq)) {
 		int n = vq_getchain(vq, iov, VQ_MAX_DESC, &req);
-		assert(req.writable == 1);
-		assert(n < VQ_MAX_DESC);
-		assert(n == req.readable + req.writable);
-		assert(req.writable <= 1);
 
+		rsp_len = 0;
+		rsp_buf_len = 0;
 		cmd = NULL;
-		if (iov_to_buf(iov, req.readable, (void **)&cmd) > 0) {
-			rsp_len = pci_vgpu_process_cmd(sc, cmd,
-			    iov[req.readable].iov_base,
-			    iov[req.readable].iov_len);
+		rsp_buf = NULL;
+		if (n <= 0 || n > VQ_MAX_DESC ||
+		    n != req.readable + req.writable || req.readable == 0) {
+			WPRINTF(("vgpu: invalid ctrl chain n=%d readable=%d "
+			    "writable=%d", n, req.readable, req.writable));
+			vq_relchain(vq, req.idx, 0);
+			continue;
+		}
+
+		if (req.writable == 0) {
+			WPRINTF(("vgpu: ctrl command without response descriptor, "
+			    "readable=%d", req.readable));
+			vq_relchain(vq, req.idx, 0);
+			continue;
+		}
+
+		rsp_buf_len = count_iov(&iov[req.readable], req.writable);
+		if (rsp_buf_len == 0) {
+			WPRINTF(("vgpu: ctrl command with empty response "
+			    "descriptors, readable=%d writable=%d",
+			    req.readable, req.writable));
+			vq_relchain(vq, req.idx, 0);
+			continue;
+		}
+		rsp_buf = calloc(1, rsp_buf_len);
+		if (rsp_buf == NULL) {
+			WPRINTF(("vgpu: failed to allocate response buffer "
+			    "len=%zu", rsp_buf_len));
+			vq_relchain(vq, req.idx, 0);
+			continue;
+		}
+
+		cmd_len = iov_to_buf(iov, req.readable, (void **)&cmd);
+		if (cmd_len > 0) {
+			rsp_len = pci_vgpu_process_cmd(sc, cmd, (size_t)cmd_len,
+			    rsp_buf, rsp_buf_len);
+			if (rsp_len > rsp_buf_len) {
+				WPRINTF(("vgpu: response too large len=%zu "
+				    "available=%zu", rsp_len, rsp_buf_len));
+				rsp_len = rsp_buf_len;
+			}
+			buf_to_iov(rsp_buf, rsp_len, &iov[req.readable],
+			    req.writable, 0);
 			free(cmd);
 		}
-		assert(rsp_len > 0);
+		free(rsp_buf);
 		vq_relchain(vq, req.idx, rsp_len);
 	}
 	// vq_kick_enable(vq);
