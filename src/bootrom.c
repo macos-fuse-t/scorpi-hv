@@ -56,6 +56,7 @@
 #define BOOTROM_SIZE 0x4000000
 
 #define _PROT_ALL    (PROT_READ | PROT_WRITE | PROT_EXEC)
+#define CFI_DUAL_STATUS(status) (((status) << 16) | (status))
 
 static int debug = 0;
 #define DPRINTF(params) \
@@ -87,6 +88,7 @@ typedef enum read_state {
 
 typedef enum write_state {
 	CFI_STATE_WRITE_IDLE,
+	CFI_STATE_WRITE_BYTE,
 	CFI_STATE_WRITE_PROG_LEN,
 	CFI_STATE_WRITE_ERASE_CONFIRM,
 	CFI_STATE_WRITE_CONFIRM,
@@ -94,13 +96,66 @@ typedef enum write_state {
 
 static struct bootrom_var_state {
 	uint8_t *mmap;
+	struct vmctx *ctx;
 	uint64_t gpa;
 	off_t size;
 	uint32_t status;
 	read_state read_state;
 	write_state write_state;
+	size_t block_size;
 	size_t prog_len;
-} var = { NULL, 0, 0, 0x80, CFI_STATE_READ_ARRAY, CFI_STATE_WRITE_IDLE, 0 };
+	bool memslot_visible;
+} var = { NULL, NULL, 0, 0, CFI_DUAL_STATUS(CFI_INTEL_STATUS_WSMS),
+			CFI_STATE_READ_ARRAY, CFI_STATE_WRITE_IDLE,
+			BOOTROM_VAR_BLOCK_SIZE, 0, false };
+
+static int
+bootrom_var_set_memslot_visible(bool visible)
+{
+	int error;
+
+	if (var.ctx == NULL || var.size == 0 || var.memslot_visible == visible)
+		return (0);
+
+	error = vm_set_memory_segment_visible(var.ctx, var.gpa, var.size,
+	    visible);
+	if (error != 0)
+		return (error);
+	var.memslot_visible = visible;
+	return (0);
+}
+
+static void
+bootrom_var_trap_reads(void)
+{
+	int error;
+
+	error = bootrom_var_set_memslot_visible(false);
+	if (error != 0)
+		EPRINTLN("bootrom vars: failed to trap reads: %s",
+		    strerror(error));
+}
+
+static void
+bootrom_var_fast_reads(void)
+{
+	int error;
+
+	error = bootrom_var_set_memslot_visible(true);
+	if (error != 0)
+		EPRINTLN("bootrom vars: failed to restore fast reads: %s",
+		    strerror(error));
+}
+
+void
+bootrom_reset(void)
+{
+	var.status = CFI_DUAL_STATUS(CFI_INTEL_STATUS_WSMS);
+	var.read_state = CFI_STATE_READ_ARRAY;
+	var.write_state = CFI_STATE_WRITE_IDLE;
+	var.prog_len = 0;
+	bootrom_var_fast_reads();
+}
 
 static uint64_t
 bootrom_var_mem_read(struct vcpu *vcpu __unused, uint64_t offset, int size)
@@ -129,6 +184,15 @@ bootrom_var_mem_write(struct vcpu *vcpu __unused, uint64_t offset, uint64_t val,
 	bool handled = false;
 
 	switch (var.write_state) {
+	case CFI_STATE_WRITE_BYTE:
+		DPRINTF(("write byte: offset %llx, len %d, value %llx", offset,
+		    size, val));
+		memcpy(var.mmap + offset, &val, size);
+		var.status = CFI_DUAL_STATUS(CFI_INTEL_STATUS_WSMS);
+		var.write_state = CFI_STATE_WRITE_IDLE;
+		var.read_state = CFI_STATE_READ_STATUS;
+		handled = true;
+		break;
 	case CFI_STATE_WRITE_PROG_LEN:
 		var.prog_len = (val & 0xFFFF) + 1;
 		DPRINTF(("write prog len: %zx", var.prog_len));
@@ -143,7 +207,9 @@ bootrom_var_mem_write(struct vcpu *vcpu __unused, uint64_t offset, uint64_t val,
 			    cmd);
 
 		DPRINTF(("erase confirm %llx", offset));
-		memset(var.mmap + offset, 0xff, 0x10000);
+		memset(var.mmap + offset, 0xff, MIN(var.block_size,
+		    (size_t)(var.size - offset)));
+		var.status = CFI_DUAL_STATUS(CFI_INTEL_STATUS_WSMS);
 		var.write_state = CFI_STATE_WRITE_IDLE;
 		var.read_state = CFI_STATE_READ_STATUS;
 		handled = true;
@@ -179,27 +245,35 @@ bootrom_var_mem_write(struct vcpu *vcpu __unused, uint64_t offset, uint64_t val,
 	DPRINTF(("bootrom_var_mem_write: %x", cmd));
 	switch (cmd) {
 	case CFI_BCS_READ_STATUS:
+		bootrom_var_trap_reads();
 		var.read_state = CFI_STATE_READ_STATUS;
 		break;
 	case CFI_INTEL_READ_ID:
+		bootrom_var_trap_reads();
 		var.read_state = CFI_STATE_READ_ID;
 		break;
 	case CFI_BCS_CLEAR_STATUS:
-		var.status = 0x80;
+		bootrom_var_trap_reads();
+		var.status = 0;
 		break;
 	case CFI_BCS_WRITE_BYTE:
-		memcpy(var.mmap + offset, &val, size);
+	case CFI_BCS_PROGRAM:
+		bootrom_var_trap_reads();
+		var.write_state = CFI_STATE_WRITE_BYTE;
+		var.read_state = CFI_STATE_READ_STATUS;
 		break;
 	case CFI_BCS_BLOCK_ERASE:
+		bootrom_var_trap_reads();
 		DPRINTF(("block erase %llx", offset));
-		var.status = 0x800080;
+		var.status = CFI_DUAL_STATUS(CFI_INTEL_STATUS_WSMS);
 		var.write_state = CFI_STATE_WRITE_ERASE_CONFIRM;
 		var.read_state = CFI_STATE_READ_STATUS;
 		break;
 	case CFI_BCS_CONFIRM:
 		break;
 	case CFI_BCS_BUF_PROG_SETUP:
-		var.status = 0x800080;
+		bootrom_var_trap_reads();
+		var.status = CFI_DUAL_STATUS(CFI_INTEL_STATUS_WSMS);
 		var.write_state = CFI_STATE_WRITE_PROG_LEN;
 		var.read_state = CFI_STATE_READ_STATUS;
 		break;
@@ -207,6 +281,7 @@ bootrom_var_mem_write(struct vcpu *vcpu __unused, uint64_t offset, uint64_t val,
 	case CFI_BCS_READ_ARRAY2:
 		DPRINTF(("read array"));
 		var.read_state = CFI_STATE_READ_ARRAY;
+		bootrom_var_fast_reads();
 		break;
 	default:
 		EPRINTLN("bootrom_var_mem_write: unexpected write cmd %x", cmd);
@@ -418,9 +493,16 @@ bootrom_loadrom(struct vmctx *ctx)
 			goto done;
 		var.size = var_size;
 		var.gpa = (gpa_alloctop - var_size) + 1;
+		var.ctx = ctx;
 		DPRINTF(("bootrom vars: gpa %llx (%llx, size %llx)", var.gpa,
 		    gpa_alloctop, var_size));
 		gpa_alloctop = var.gpa - 1;
+		uintptr_t var_addr = (uintptr_t)var.mmap;
+		rv = vm_setup_memory_segment(ctx, var.gpa, var.size,
+		    PROT_READ | PROT_DONT_ALLOCATE, &var_addr);
+		if (rv != 0)
+			goto done;
+		var.memslot_visible = true;
 		rv = register_mem(&(struct mem_range) {
 		    .name = "bootrom variable",
 		    .flags = MEM_F_RW,
