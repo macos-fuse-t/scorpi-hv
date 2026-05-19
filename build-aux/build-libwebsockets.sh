@@ -8,6 +8,23 @@ cfgoutput=$4
 host_system=$5
 macos_min_version=$6
 
+if [ ! -f "$srcdir/CMakeLists.txt" ]; then
+	subprojects_dir=$(dirname "$srcdir")
+	project_root=$(dirname "$subprojects_dir")
+
+	if [ ! -f "$project_root/subprojects/libwebsockets.wrap" ]; then
+		echo "libwebsockets source is missing and no Meson wrap was found at $project_root/subprojects/libwebsockets.wrap" >&2
+		exit 1
+	fi
+
+	meson subprojects download --sourcedir "$project_root" libwebsockets
+fi
+
+if [ ! -f "$srcdir/CMakeLists.txt" ]; then
+	echo "libwebsockets source directory is missing: $srcdir" >&2
+	exit 1
+fi
+
 mkdir -p "$builddir"
 
 cflags=-D_GNU_SOURCE

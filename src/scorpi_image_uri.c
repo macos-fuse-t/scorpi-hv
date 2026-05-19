@@ -13,6 +13,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "compat.h"
 #include "scorpi_image_uri.h"
 
 static bool
