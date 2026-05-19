@@ -39,6 +39,8 @@
 
 struct vmctx;
 
+#define	BOOTROM_VAR_BLOCK_SIZE	0x40000
+
 void init_bootrom(struct vmctx *ctx);
 enum {
 	BOOTROM_ALLOC_TOP = 0x80,
@@ -48,6 +50,7 @@ int bootrom_alloc(struct vmctx *ctx, size_t len, int prot, int flags,
     char **region_out, uint64_t *gpa_out);
 bool bootrom_boot(void);
 int bootrom_loadrom(struct vmctx *ctx);
+void bootrom_reset(void);
 char *bootrom_romptr();
 uint64_t bootrom_rombase();
 uint64_t bootrom_romsize();

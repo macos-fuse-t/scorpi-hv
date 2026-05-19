@@ -41,6 +41,7 @@ enum scorpi_x64_hwinfo_entry_type {
 	SCORPI_X64_ENTRY_FRAMEBUFFER = 8,
 	SCORPI_X64_ENTRY_TPM = 9,
 	SCORPI_X64_ENTRY_RESET = 10,
+	SCORPI_X64_ENTRY_FLASH = 11,
 };
 
 enum scorpi_x64_range_type {
@@ -171,6 +172,14 @@ struct SCORPI_X64_PACKED scorpi_x64_hwinfo_reset {
 	uint32_t shutdown_offset;
 	uint32_t reset_value;
 	uint32_t shutdown_value;
+	uint32_t flags;
+};
+
+struct SCORPI_X64_PACKED scorpi_x64_hwinfo_flash {
+	struct scorpi_x64_hwinfo_entry entry;
+	uint64_t base;
+	uint64_t size;
+	uint32_t block_size;
 	uint32_t flags;
 };
 

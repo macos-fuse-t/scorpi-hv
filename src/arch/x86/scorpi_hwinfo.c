@@ -188,6 +188,25 @@ scorpi_hwinfo_add_resv(struct scorpi_hwinfo_builder *b, uint64_t base,
 }
 
 static int
+scorpi_hwinfo_add_flash(struct scorpi_hwinfo_builder *b, uint64_t base,
+    uint64_t size)
+{
+	struct scorpi_x64_hwinfo_flash flash;
+
+	if (size == 0)
+		return (0);
+
+	memset(&flash, 0, sizeof(flash));
+	flash.entry = scorpi_hwinfo_entry(SCORPI_X64_ENTRY_FLASH,
+	    sizeof(flash));
+	flash.base = htole64(base);
+	flash.size = htole64(size);
+	flash.block_size = htole32(BOOTROM_VAR_BLOCK_SIZE);
+
+	return (scorpi_hwinfo_append(b, &flash, sizeof(flash)));
+}
+
+static int
 scorpi_hwinfo_add_ram(struct scorpi_hwinfo_builder *b, uint64_t base, uint64_t end,
     const struct scorpi_hwinfo_resv *resv, size_t nresv)
 {
@@ -539,7 +558,7 @@ scorpi_hwinfo_build(struct vmctx *ctx, void **data, uint32_t *size)
 		    bootrom_rombase(), bootrom_romsize()));
 	}
 	if (bootrom_vars(&vars_base, &vars_size) == 0) {
-		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_resv(&b, vars_base,
+		SCORPI_HWINFO_ADD(scorpi_hwinfo_add_flash(&b, vars_base,
 		    vars_size));
 	}
 	for (size_t i = 0; i < nitems(resv); i++) {
