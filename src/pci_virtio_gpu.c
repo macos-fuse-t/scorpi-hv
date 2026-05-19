@@ -80,8 +80,8 @@ static int vgpu_debug = 0;
 
 #define VGPU_S_HOSTCAPS	       (VIRTIO_RING_F_INDIRECT_DESC)
 
-#define COLS_MAX	       3840
-#define ROWS_MAX	       2160
+#define COLS_MAX	       7680
+#define ROWS_MAX	       4320
 
 #define COLS_DEFAULT	       1024
 #define ROWS_DEFAULT	       768
@@ -181,7 +181,7 @@ pci_vgpu_cfgwrite(void *vsc, int offset, int size, uint32_t value)
 	case 4:
 		// events clear
 		DPRINTF(("vgpu: clear events"));
-		sc->vsc_config.events_read = 0;
+		sc->vsc_config.events_read &= ~value;
 		break;
 	default:
 		/* silently ignore writes */
@@ -1138,15 +1138,13 @@ resize_event(int x, int y, void *arg)
 
 	sc = arg;
 	DPRINTF(("resize_event %d %d", x, y));
-	if (!sc->fb_enabled && x >= COLS_MIN && x <= COLS_MAX &&
-	    y >= ROWS_MIN && y <= ROWS_MAX) {
+	if (x >= COLS_MIN && x <= COLS_MAX && y >= ROWS_MIN &&
+	    y <= ROWS_MAX) {
 		sc->resx = x;
 		sc->resy = y;
-		sc->vsc_config.events_read = 1;
-		sc->vsc_vs.vs_isr |= 2;
-		if (sc->vsc_vs.vs_queues[VGPU_CTRL].vq_enabled)
-			vq_interrupt(&sc->vsc_vs,
-			    &sc->vsc_vs.vs_queues[VGPU_CTRL]);
+		sc->vsc_config.events_read |= VIRTIO_GPU_EVENT_DISPLAY;
+		vi_interrupt(&sc->vsc_vs, VIRTIO_PCI_ISR_CONFIG,
+		    sc->vsc_vs.vs_msix_cfg_idx);
 	}
 	pthread_mutex_unlock(&sc->vsc_mtx);
 }
