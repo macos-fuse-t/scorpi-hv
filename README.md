@@ -13,14 +13,11 @@ Scorpi is a modern, lightweight, general-purpose hypervisor designed to be an al
 
 ## Platform Support
 
-Currently, Scorpi runs on Mac ARM64 using Apple's Hypervisor Framework. The plan is to expand support to:
-
-- **Linux x86 and ARM** using **KVM**
-- **Additional architectures**, including **RISC-V**
+Currently, Scorpi runs on Linux/KVM X86/ARM64 and on Mac ARM64 using Apple's Hypervisor Framework.
 
 ## Available Bootloaders
 
-1. **U-Boot** - Fast and compact but lacks some advanced features such as ACPI and graphics. Best used for headless VMs that require fast start.\
+1. **U-Boot** (ARM only) - Fast and compact but lacks some advanced features such as ACPI and graphics. Best used for headless VMs that require fast start.\
    [Source Code](https://github.com/macos-fuse-t/u-boot)
 
 2. **EDK2 UEFI** - Full-featured bootloader that provides ACPI support, frame buffer, and a variety of boot device drivers.\
@@ -49,7 +46,7 @@ Or launch it with the YAML config:
 
 ## Running Linux VMs
 
-1. Download an ISO that supports ARM<sub>64</sub> architecture.
+1. Download an ISO that supports machine's architecture.
 2. Create an empty disk with:
    ```sh
    mkfile -n [size] [img_file]
@@ -99,11 +96,11 @@ Or launch it with the YAML config:
    EOF
    ./builddir/scorpi-hv -f ./linux-vm.yaml
    ```
-   To use a graphical viewer, refer to the following reference project: [ScorpiViewer](https://github.com/macos-fuse-t/ScorpiViewer)
+   To use a graphical viewer (macOS), refer to the following reference project: [ScorpiViewer](https://github.com/macos-fuse-t/ScorpiViewer)
 
-## Running a Windows VM
+## Running a Windows VM on macOS
 
-1. Download a Windows ARM<sub>64</sub> ISO
+1. Download a Windows ARM64 ISO
 2. Create an empty disk with:
    ```sh
    mkfile -n [size] [img_file]
@@ -119,8 +116,8 @@ Or launch it with the YAML config:
    name: vm1
    cpu: 2
    memory: 4G
-   bootrom: ./firmware/SCORPI_EFI.fd
-   bootvars: ./firmware/SCORPI_VARS.fd
+   bootrom: ./firmware/SCORPI_EFI_ARM.fd
+   bootvars: ./firmware/SCORPI_VARS_ARM.fd
 
    devices:
      pci:
@@ -166,7 +163,6 @@ Or launch it with the YAML config:
 ## Future Roadmap
 
 - Implement and add missing features (file sharing, copy/paste support)
-- Implement Linux support on top of KVM.
 - Add Windows DirectX 12 display driver.
 - Extend support to RISC-V and other platforms.
 
