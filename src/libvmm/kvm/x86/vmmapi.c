@@ -102,6 +102,21 @@
 #define	HV_EXT_CALL_QUERY_CAPABILITIES	0x8001
 #define	HV_EXT_CALL_MAX		(HV_EXT_CALL_QUERY_CAPABILITIES + 64)
 #define	HV_HYPERCALL_FAST		(1U << 16)
+#define	HV_X64_MSR_GUEST_OS_ID		0x40000000
+#define	HV_X64_MSR_HYPERCALL		0x40000001
+#define	HV_X64_MSR_REFERENCE_TSC	0x40000021
+#define	HV_X64_MSR_APIC_ASSIST_PAGE	0x40000073
+#define	HV_X64_MSR_PAGE_ENABLE		1
+#define	HV_X64_MSR_SCONTROL		0x40000080
+#define	HV_X64_MSR_SVERSION		0x40000081
+#define	HV_X64_MSR_SIEFP		0x40000082
+#define	HV_X64_MSR_SIMP			0x40000083
+#define	HV_X64_MSR_SINT0		0x40000090
+#define	HV_X64_MSR_STIMER0_CONFIG	0x400000b0
+#define	HV_SYNIC_SINT_COUNT		16
+#define	HV_SYNIC_STIMER_COUNT		4
+#define	HV_SYNIC_SINT_MASKED		(1ULL << 16)
+#define	HV_SYNIC_VERSION_1		1
 
 struct kvm_hv_caps {
 	bool apic_access;
@@ -155,6 +170,7 @@ struct vcpu {
 	pthread_t tid;
 	enum x2apic_state x2apic_state;
 	bool hv_synic;
+	bool hv_syntimer;
 	bool tid_valid;
 };
 
@@ -305,10 +321,10 @@ kvm_init_hv(struct vcpu *vcpu)
 	if (!kvm_hyperv_enabled())
 		return;
 
-	if (kvm_check_extension(vcpu->ctx, KVM_CAP_HYPERV_SYNIC2) > 0)
-		cap_id = KVM_CAP_HYPERV_SYNIC2;
-	else if (kvm_check_extension(vcpu->ctx, KVM_CAP_HYPERV_SYNIC) > 0)
+	if (kvm_check_extension(vcpu->ctx, KVM_CAP_HYPERV_SYNIC) > 0)
 		cap_id = KVM_CAP_HYPERV_SYNIC;
+	else if (kvm_check_extension(vcpu->ctx, KVM_CAP_HYPERV_SYNIC2) > 0)
+		cap_id = KVM_CAP_HYPERV_SYNIC2;
 	else
 		return;
 
@@ -477,6 +493,7 @@ kvm_filter_hv_cpuid(struct vcpu *vcpu, struct kvm_cpuid2 *cpuid)
 	uint32_t x86_features;
 
 	caps = kvm_hv_caps(vcpu, cpuid);
+	vcpu->hv_syntimer = caps.syntimer;
 
 	for (uint32_t i = 0; i < cpuid->nent; i++) {
 		entry = &cpuid->entries[i];
@@ -1392,6 +1409,133 @@ kvm_set_real_seg(struct kvm_segment *seg, uint16_t selector, uint64_t base,
 	seg->s = 1;
 }
 
+static int
+kvm_set_msr(struct vcpu *vcpu, uint32_t index, uint64_t data)
+{
+	union {
+		struct kvm_msrs msrs;
+		char buf[sizeof(struct kvm_msrs) +
+		    sizeof(struct kvm_msr_entry)];
+	} u;
+	int ret;
+
+	memset(&u, 0, sizeof(u));
+	u.msrs.nmsrs = 1;
+	u.msrs.entries[0].index = index;
+	u.msrs.entries[0].data = data;
+
+	ret = kvm_ioctl(vcpu->fd, KVM_SET_MSRS, &u.msrs);
+	if (ret < 0)
+		return (errno);
+	if (ret != 1)
+		return (ENXIO);
+
+	return (0);
+}
+
+static int
+kvm_get_msr(struct vcpu *vcpu, uint32_t index, uint64_t *data)
+{
+	union {
+		struct kvm_msrs msrs;
+		char buf[sizeof(struct kvm_msrs) +
+		    sizeof(struct kvm_msr_entry)];
+	} u;
+	int ret;
+
+	memset(&u, 0, sizeof(u));
+	u.msrs.nmsrs = 1;
+	u.msrs.entries[0].index = index;
+
+	ret = kvm_ioctl(vcpu->fd, KVM_GET_MSRS, &u.msrs);
+	if (ret < 0)
+		return (errno);
+	if (ret != 1)
+		return (ENXIO);
+
+	*data = u.msrs.entries[0].data;
+	return (0);
+}
+
+static void
+kvm_clear_hv_page(struct vcpu *vcpu, uint64_t msr)
+{
+	void *page;
+	vm_paddr_t gpa;
+
+	if ((msr & HV_X64_MSR_PAGE_ENABLE) == 0)
+		return;
+
+	gpa = msr & ~(vm_paddr_t)PAGE_MASK;
+	page = vm_map_gpa(vcpu->ctx, gpa, PAGE_SIZE);
+	if (page != NULL)
+		memset(page, 0, PAGE_SIZE);
+}
+
+static int
+kvm_reset_hv_msrs(struct vcpu *vcpu)
+{
+	int error;
+	uint64_t msr;
+
+	if (!kvm_hyperv_enabled())
+		return (0);
+
+	if (vcpu->vcpuid == 0) {
+		if ((error = kvm_set_msr(vcpu, HV_X64_MSR_GUEST_OS_ID,
+		    0)) != 0)
+			return (error);
+		if ((error = kvm_set_msr(vcpu, HV_X64_MSR_HYPERCALL,
+		    0)) != 0)
+			return (error);
+		if ((error = kvm_set_msr(vcpu, HV_X64_MSR_REFERENCE_TSC,
+		    0)) != 0)
+			return (error);
+	}
+
+	if (kvm_get_msr(vcpu, HV_X64_MSR_APIC_ASSIST_PAGE, &msr) == 0)
+		kvm_clear_hv_page(vcpu, msr);
+	if ((error = kvm_set_msr(vcpu, HV_X64_MSR_APIC_ASSIST_PAGE, 0)) != 0)
+		return (error);
+
+	if (!vcpu->hv_synic)
+		return (0);
+
+	if (kvm_get_msr(vcpu, HV_X64_MSR_SIEFP, &msr) == 0)
+		kvm_clear_hv_page(vcpu, msr);
+	if (kvm_get_msr(vcpu, HV_X64_MSR_SIMP, &msr) == 0)
+		kvm_clear_hv_page(vcpu, msr);
+
+	if ((error = kvm_set_msr(vcpu, HV_X64_MSR_SVERSION,
+	    HV_SYNIC_VERSION_1)) != 0)
+		return (error);
+	if ((error = kvm_set_msr(vcpu, HV_X64_MSR_SCONTROL, 0)) != 0)
+		return (error);
+	if ((error = kvm_set_msr(vcpu, HV_X64_MSR_SIEFP, 0)) != 0)
+		return (error);
+	if ((error = kvm_set_msr(vcpu, HV_X64_MSR_SIMP, 0)) != 0)
+		return (error);
+	for (uint32_t i = 0; i < HV_SYNIC_SINT_COUNT; i++) {
+		if ((error = kvm_set_msr(vcpu, HV_X64_MSR_SINT0 + i,
+		    HV_SYNIC_SINT_MASKED)) != 0)
+			return (error);
+	}
+
+	if (!vcpu->hv_syntimer)
+		return (0);
+
+	for (uint32_t i = 0; i < HV_SYNIC_STIMER_COUNT; i++) {
+		if ((error = kvm_set_msr(vcpu, HV_X64_MSR_STIMER0_CONFIG +
+		    i * 2, 0)) != 0)
+			return (error);
+		if ((error = kvm_set_msr(vcpu, HV_X64_MSR_STIMER0_CONFIG +
+		    i * 2 + 1, 0)) != 0)
+			return (error);
+	}
+
+	return (0);
+}
+
 int
 vcpu_reset(struct vcpu *vcpu)
 {
@@ -1420,6 +1564,8 @@ vcpu_reset(struct vcpu *vcpu)
 	regs.rip = 0xfff0;
 	regs.rflags = 0x2;
 	if ((error = vm_put_regs(vcpu, &regs)) != 0)
+		return (error);
+	if ((error = kvm_reset_hv_msrs(vcpu)) != 0)
 		return (error);
 	return (kvm_set_mp_state(vcpu, vcpu->vcpuid == 0 ?
 	    KVM_MP_STATE_RUNNABLE : KVM_MP_STATE_UNINITIALIZED));
