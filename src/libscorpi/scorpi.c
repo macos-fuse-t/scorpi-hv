@@ -39,6 +39,7 @@
 #include <yaml.h>
 
 #include "scorpi_internal.h"
+#include "support/md5.h"
 
 enum scorpi_bus_kind {
 	SCORPI_BUS_PCI = 0,
@@ -2396,6 +2397,25 @@ scorpi_yaml_scalar_equals(const yaml_node_t *node, const char *value)
 	    memcmp(node->data.scalar.value, value, length) == 0);
 }
 
+static void
+scorpi_yaml_uuid_from_content(const char *yaml, char uuid[37])
+{
+	MD5_CTX mdctx;
+	unsigned char digest[MD5_DIGEST_LENGTH];
+
+	MD5Init(&mdctx);
+	MD5Update(&mdctx, yaml, (unsigned int)strlen(yaml));
+	MD5Final(digest, &mdctx);
+	digest[6] = (digest[6] & 0x0f) | 0x40;
+	digest[8] = (digest[8] & 0x3f) | 0x80;
+	snprintf(uuid, 37,
+	    "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-"
+	    "%02x%02x%02x%02x%02x%02x",
+	    digest[0], digest[1], digest[2], digest[3], digest[4], digest[5],
+	    digest[6], digest[7], digest[8], digest[9], digest[10],
+	    digest[11], digest[12], digest[13], digest[14], digest[15]);
+}
+
 static yaml_node_t *
 scorpi_yaml_mapping_lookup(yaml_document_t *document, yaml_node_t *mapping,
     const char *key)
@@ -2745,6 +2765,14 @@ scorpi_load_vm_from_yaml(const char *yaml, scorpi_vm_t *out_vm)
 			goto out_destroy_vm;
 		}
 		error = scorpi_yaml_load_root_mapping(vm, &document, root);
+		if (error != SCORPI_OK)
+			goto out_destroy_vm;
+	}
+	if (scorpi_vm_find_prop(vm, "uuid") == NULL) {
+		char uuid[37];
+
+		scorpi_yaml_uuid_from_content(yaml, uuid);
+		error = scorpi_vm_set_prop_string(vm, "uuid", uuid);
 		if (error != SCORPI_OK)
 			goto out_destroy_vm;
 	}
