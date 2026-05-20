@@ -176,6 +176,7 @@ struct vcpu {
 
 static pthread_once_t kvm_signal_once = PTHREAD_ONCE_INIT;
 static __thread struct kvm_run *kvm_current_run;
+static bool kvm_hyperv_warned;
 
 static bool kvm_trace_exits(void);
 
@@ -256,6 +257,13 @@ kvm_hyperv_enabled(void)
 }
 
 static bool
+kvm_hyperv_synic_enabled(void)
+{
+	return (kvm_hyperv_enabled() &&
+	    get_config_bool_default("x86.hyperv.synic", false));
+}
+
+static bool
 kvm_cfg_u32(const char *path, uint32_t *val)
 {
 	const char *cfg;
@@ -318,8 +326,14 @@ kvm_init_hv(struct vcpu *vcpu)
 {
 	int cap_id;
 
-	if (!kvm_hyperv_enabled())
+	if (!kvm_hyperv_synic_enabled())
 		return;
+
+	if (!kvm_hyperv_warned) {
+		warnx("x86.hyperv.synic is experimental: Hyper-V "
+		    "VMBus/PostMessage is not supported");
+		kvm_hyperv_warned = true;
+	}
 
 	if (kvm_check_extension(vcpu->ctx, KVM_CAP_HYPERV_SYNIC) > 0)
 		cap_id = KVM_CAP_HYPERV_SYNIC;
