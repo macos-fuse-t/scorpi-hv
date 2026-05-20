@@ -778,6 +778,7 @@ struct vmctx *
 vm_openf(const char *name, int flags __unused)
 {
 	struct vmctx *ctx;
+	struct kvm_pit_config pit;
 	int api, error;
 
 	ctx = calloc(1, sizeof(*ctx));
@@ -826,6 +827,10 @@ vm_openf(const char *name, int flags __unused)
 	}
 
 	if (kvm_ioctl(ctx->vm_fd, KVM_CREATE_IRQCHIP, NULL) < 0)
+		goto fail;
+	memset(&pit, 0, sizeof(pit));
+	pit.flags = KVM_PIT_SPEAKER_DUMMY;
+	if (kvm_ioctl(ctx->vm_fd, KVM_CREATE_PIT2, &pit) < 0)
 		goto fail;
 	error = kvm_set_irq_routing(ctx);
 	if (error != 0) {
@@ -1793,6 +1798,7 @@ kvm_trace_exit(struct vcpu *vcpu)
 	uint32_t reason;
 	uint64_t elapsed_ns;
 	uint64_t max_count;
+	uint64_t rip;
 	uint32_t max_reason;
 
 	if (!kvm_trace_exits())
@@ -1831,12 +1837,15 @@ kvm_trace_exit(struct vcpu *vcpu)
 		}
 	}
 
-	PRINTLN("vcpu %d exits: total=%llu top=%s(%u)=%llu io=%llu last_port=%#x mmio=%llu last_addr=%#llx",
+	rip = 0;
+	(void)vm_get_register(vcpu, VM_REG_GUEST_RIP, &rip);
+
+	PRINTLN("vcpu %d exits: total=%llu top=%s(%u)=%llu io=%llu last_port=%#x mmio=%llu last_addr=%#llx rip=%#llx",
 	    vcpu_id(vcpu), (unsigned long long)trace.total,
 	    kvm_exit_name(max_reason), max_reason, (unsigned long long)max_count,
 	    (unsigned long long)trace.io_count, trace.io_port,
 	    (unsigned long long)trace.mmio_count,
-	    (unsigned long long)trace.mmio_addr);
+	    (unsigned long long)trace.mmio_addr, (unsigned long long)rip);
 
 	memset(trace.reason, 0, sizeof(trace.reason));
 	trace.total = 0;
