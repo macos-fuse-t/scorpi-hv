@@ -28,8 +28,7 @@ Currently, Scorpi runs on Linux/KVM X86/ARM64 and on Mac ARM64 using Apple's Hyp
 Build and run scorpi-hv and samples with
 
 ```sh
-meson setup builddir
-meson compile -C builddir
+./build.sh
 ```
 
 Run a FreeBSD VM:
