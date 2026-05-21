@@ -300,17 +300,32 @@ pci_vgpu_create_scanout(struct pci_vgpu_softc *sc, uint32_t resource_id,
 	snprintf(scanout->shm_name, sizeof(scanout->shm_name), "/%s-%08x", uuid,
 	    scanout->resource_id);
 
-	scanout->shm_fd = shm_open(scanout->shm_name, O_CREAT | O_RDWR,
+	/*
+	 * Darwin returns EINVAL if ftruncate() is repeated on an existing
+	 * POSIX shm object. A crash can leave the object behind, so always
+	 * start scanouts with a fresh name instance.
+	 */
+	if (shm_unlink(scanout->shm_name) == -1 && errno != ENOENT) {
+		EPRINTLN("shm_unlink stale %s: %s", scanout->shm_name,
+		    strerror(errno));
+		free(scanout);
+		return (-1);
+	}
+
+	scanout->shm_fd = shm_open(scanout->shm_name,
+	    O_CREAT | O_EXCL | O_RDWR,
 	    S_IRUSR | S_IWUSR);
 	if (scanout->shm_fd == -1) {
-		EPRINTLN("shm_open %s", scanout->shm_name);
+		EPRINTLN("shm_open %s: %s", scanout->shm_name,
+		    strerror(errno));
 		free(scanout);
 		return (-1);
 	}
 
 	// Resize the shared memory
 	if (ftruncate(scanout->shm_fd, sc_size) == -1) {
-		EPRINTLN("ftruncate %s, size %u", scanout->shm_name, sc_size);
+		EPRINTLN("ftruncate %s, size %u: %s", scanout->shm_name,
+		    sc_size, strerror(errno));
 		close(scanout->shm_fd);
 		shm_unlink(scanout->shm_name);
 		free(scanout);
@@ -320,7 +335,8 @@ pci_vgpu_create_scanout(struct pci_vgpu_softc *sc, uint32_t resource_id,
 	scanout->base_ptr = mmap(NULL, sc_size, PROT_READ | PROT_WRITE,
 	    MAP_SHARED, scanout->shm_fd, 0);
 	if (scanout->base_ptr == MAP_FAILED) {
-		EPRINTLN("mmap");
+		EPRINTLN("mmap %s, size %u: %s", scanout->shm_name,
+		    sc_size, strerror(errno));
 		close(scanout->shm_fd);
 		shm_unlink(scanout->shm_name);
 		free(scanout);
@@ -1442,6 +1458,7 @@ pci_vgpu_init(struct pci_devinst *pi, nvlist_t *nvl)
 		err = pci_emul_alloc_bar(pi, LEGACY_FRAMEBUFFER_BAR,
 		    PCIBAR_MEM32, FB_SIZE);
 		assert(err == 0);
+		pci_emul_set_bar_direct_mapped(pi, LEGACY_FRAMEBUFFER_BAR, 1);
 	}
 
 	console_set_hdpi(sc->hdpi);
@@ -1455,46 +1472,54 @@ static void
 pci_vgpu_baraddr(struct pci_devinst *pi, int baridx, int enabled,
     uint64_t address)
 {
-	static int once = 0;
 	struct pci_vgpu_softc *sc;
 	int prot;
 	uint32_t resource_id;
 	struct vgpu_scanout *scanout;
 	int stride;
+	bool created;
 
 	if (baridx != LEGACY_FRAMEBUFFER_BAR)
 		return;
 
 	sc = pi->pi_arg;
-	if (!enabled) {
-		// console_set_scanout(false, 0, 0, 0, NULL, false);
-	} else {
-		stride = roundup2(sc->resx * 4, 32);
-		if (once) {
-			return;
-		}
-		once++;
+	if (!enabled)
+		return;
 
-		// create a default scanout
-		resource_id = 0xFFFFFFFF;
+	stride = roundup2(sc->resx * 4, 32);
+
+	// create a default scanout
+	resource_id = 0xFFFFFFFF;
+	scanout = pci_vgpu_find_resource(sc, resource_id);
+	created = false;
+	if (scanout == NULL) {
 		if (!pci_vgpu_create_scanout(sc, resource_id, sc->resx,
 			sc->resy, FB_SIZE, VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM)) {
 			scanout = pci_vgpu_find_resource(sc, resource_id);
-
-			prot = PROT_READ | PROT_WRITE | PROT_DONT_ALLOCATE;
-			if (vm_setup_memory_segment(pi->pi_vmctx, address,
-				FB_SIZE, prot,
-				(uintptr_t *)&scanout->base_ptr)) {
-				EPRINTLN(
-				    "pci_fbuf: vm_setup_memory_segment() failed");
-			}
-
-			console_set_scanout(true, sc->resx, sc->resy, stride,
-			    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, scanout->shm_name,
-			    FB_SIZE, true);
-			memset((void *)scanout->base_ptr, 0, FB_SIZE);
+			created = true;
 		}
 	}
+
+	if (scanout == NULL) {
+		EPRINTLN("pci_vgpu: failed to create legacy framebuffer scanout");
+		assert(0);
+		return;
+	}
+
+	prot = PROT_READ | PROT_WRITE | PROT_DONT_ALLOCATE;
+	if (vm_setup_memory_segment(pi->pi_vmctx, address, FB_SIZE, prot,
+		(uintptr_t *)&scanout->base_ptr) != 0) {
+		EPRINTLN("pci_vgpu: failed to direct-map legacy framebuffer "
+		    "BAR at 0x%llx size 0x%lx", address, FB_SIZE);
+		assert(0);
+		return;
+	}
+
+	console_set_scanout(true, sc->resx, sc->resy, stride,
+	    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, scanout->shm_name,
+	    FB_SIZE, true);
+	if (created)
+		memset((void *)scanout->base_ptr, 0, FB_SIZE);
 }
 
 static uint64_t

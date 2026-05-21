@@ -148,7 +148,9 @@ struct pcibar {
 	uint64_t		size;
 	uint64_t		addr;
 	uint8_t			lobits;
+	uint8_t			flags;
 };
+#define PCIBAR_F_DIRECT_MAPPED	0x01
 
 #define PI_NAMESZ	40
 
@@ -283,6 +285,8 @@ uint32_t pci_config_read_reg(const struct pcisel *host_sel, nvlist_t *nvl,
 	    uint32_t reg, uint8_t size, uint32_t def);
 int	pci_emul_alloc_bar(struct pci_devinst *pdi, int idx,
 	    enum pcibar_type type, uint64_t size);
+void	pci_emul_set_bar_direct_mapped(struct pci_devinst *pdi, int idx,
+	    int enabled);
 int 	pci_emul_alloc_rom(struct pci_devinst *const pdi, const uint64_t size,
     	    void **const addr);
 int 	pci_emul_add_boot_device(struct pci_devinst *const pi,

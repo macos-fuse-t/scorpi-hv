@@ -617,6 +617,9 @@ modify_bar_registration(struct pci_devinst *pi, int idx, int registration)
 
 	pe = pi->pi_d;
 	type = pi->pi_bar[idx].type;
+	if ((pi->pi_bar[idx].flags & PCIBAR_F_DIRECT_MAPPED) != 0)
+		goto done;
+
 	switch (type) {
 	case PCIBAR_IO: {
 #ifdef __amd64__
@@ -678,6 +681,7 @@ modify_bar_registration(struct pci_devinst *pi, int idx, int registration)
 	}
 	assert(error == 0);
 
+done:
 	if (pe->pe_baraddr != NULL)
 		(*pe->pe_baraddr)(pi, idx, registration, pi->pi_bar[idx].addr);
 }
@@ -857,6 +861,17 @@ pci_emul_alloc_bar(struct pci_devinst *pdi, int idx, enum pcibar_type type,
 	pci_set_cfgdata16(pdi, PCIR_COMMAND, cmd | enbit);
 
 	return (0);
+}
+
+void
+pci_emul_set_bar_direct_mapped(struct pci_devinst *pdi, int idx, int enabled)
+{
+	assert(idx >= 0 && idx <= PCI_BARMAX);
+
+	if (enabled)
+		pdi->pi_bar[idx].flags |= PCIBAR_F_DIRECT_MAPPED;
+	else
+		pdi->pi_bar[idx].flags &= ~PCIBAR_F_DIRECT_MAPPED;
 }
 
 static int
