@@ -33,7 +33,6 @@
 // #include <machine/vmm_snapshot.h>
 #include <sys/param.h>
 #include <assert.h>
-#include <ctype.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +50,7 @@
 #include "iov.h"
 #include "net_backends.h"
 #include "net_backends_priv.h"
+#include "net_utils.h"
 #include "usb_emul.h"
 
 static int unet_debug = 0;
@@ -68,7 +68,8 @@ static int unet_debug = 0;
 		(uint8_t)((val1) >> 24), (uint8_t)(val2), (uint8_t)((val2) >> 8),		\
 		(uint8_t)((val2) >> 16), (uint8_t)((val2) >> 24)}
 
-#define DEFAULT_MAC_ADDR "00CD563B4270"
+#define DEFAULT_MAC_ADDR "00:CD:56:3B:42:70"
+#define UNET_MAC_STRING_LEN 13
 #define UNET_MTU_SIZE	 1514
 #define UNET_NTB_MAX_SIZE 65536
 #define UNET_NTB_MAX_FRAMES 32
@@ -319,6 +320,7 @@ struct unet_softc {
 	struct usb_hci *hci;
 
 	uint8_t mac_addr[6];
+	char mac_string[UNET_MAC_STRING_LEN];
 
 	uint16_t ntb_format;
 	uint16_t max_dgram;
@@ -357,34 +359,11 @@ unet_ntb_format_supported(uint16_t format)
 	return (format == UCDC_NCM_FORMAT_NTB16);
 }
 
-static bool
-is_valid_mac_string(const char *mac_str)
+static void
+unet_format_mac_string(const uint8_t *mac, char *out, size_t out_len)
 {
-	int i;
-	if (strlen(mac_str) != 12) {
-		return (false);
-	}
-	for (i = 0; i < 12; i++) {
-		if (!isxdigit(mac_str[i])) {
-			return (false);
-		}
-	}
-	return (true);
-}
-
-static int
-parse_mac_address(const char *mac_str, uint8_t *mac)
-{
-	int i;
-	if (!is_valid_mac_string(mac_str)) {
-		return (-1);
-	}
-
-	for (i = 0; i < 6; i++) {
-		char hex_byte[3] = { mac_str[i * 2], mac_str[i * 2 + 1], '\0' };
-		mac[i] = (uint8_t)strtol(hex_byte, NULL, 16);
-	}
-	return (0);
+	snprintf(out, out_len, "%02X%02X%02X%02X%02X%02X", mac[0], mac[1],
+	    mac[2], mac[3], mac[4], mac[5]);
 }
 
 static void *
@@ -418,15 +397,19 @@ unet_init(struct usb_hci *hci, nvlist_t *nvl)
 
 	mac = get_config_value_node(nvl, "mac");
 	if (mac != NULL) {
-		if (parse_mac_address(mac, sc->mac_addr) != 0) {
+		if (net_parsemac(mac, sc->mac_addr) != 0) {
 			EPRINTLN("invalid mac address");
 			free(sc);
 			return (NULL);
 		}
-		unet_desc_strings[UMSTR_MAC] = mac;
 	} else {
-		parse_mac_address(DEFAULT_MAC_ADDR, sc->mac_addr);
+		if (net_parsemac(DEFAULT_MAC_ADDR, sc->mac_addr) != 0) {
+			free(sc);
+			return (NULL);
+		}
 	}
+	unet_format_mac_string(sc->mac_addr, sc->mac_string,
+	    sizeof(sc->mac_string));
 
 	return (sc);
 }
@@ -555,10 +538,12 @@ unet_request(void *scarg, struct usb_data_xfer *xfer)
 		case UDESC_STRING:
 			DPRINTF(("unet: (->UDESC_STRING %x)", value & 0xFF));
 			str = NULL;
-			if ((value & 0xFF) < UMSTR_MAX)
-				str = unet_desc_strings[value & 0xFF];
-			else
+			if ((value & 0xFF) >= UMSTR_MAX)
 				goto done;
+			if ((value & 0xFF) == UMSTR_MAC)
+				str = sc->mac_string;
+			else
+				str = unet_desc_strings[value & 0xFF];
 
 			if ((value & 0xFF) == UMSTR_LANG) {
 				udata[0] = 4;
