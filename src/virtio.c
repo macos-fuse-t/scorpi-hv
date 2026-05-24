@@ -137,6 +137,9 @@ vi_reset_dev(struct virtio_softc *vs)
 		vq->vq_msix_idx = VIRTIO_MSI_NO_VECTOR;
 		if (vq->vq_maxqsize != 0)
 			vq->vq_qsize = vq->vq_maxqsize;
+		vq->vq_desc = NULL;
+		vq->vq_avail = NULL;
+		vq->vq_used = NULL;
 		vq->vq_desc_gpa = 0;
 		vq->vq_avail_gpa = 0;
 		vq->vq_used_gpa = 0;
@@ -874,7 +877,7 @@ vi_pci_reset(struct pci_devinst *pi)
 /*
  * Initialize the currently-selected virtio queue (vs->vs_curq).
  */
-static void
+static int
 vi_vq_init_modern(struct virtio_softc *vs)
 {
 	struct vqueue_info *vq;
@@ -887,20 +890,46 @@ vi_vq_init_modern(struct virtio_softc *vs)
 	// descriptors
 	base = paddr_guest2host(vs->vs_pi->pi_vmctx, vq->vq_desc_gpa, size);
 	vq->vq_desc = (struct vring_desc *)base;
+	if (vq->vq_desc == NULL) {
+		EPRINTLN("%s: queue %u invalid descriptor address %#jx",
+		    vs->vs_vc->vc_name, vs->vs_curq,
+		    (uintmax_t)vq->vq_desc_gpa);
+		goto fail;
+	}
 
 	/* "avail" ring (entirely uint16_t's) */
 	base = paddr_guest2host(vs->vs_pi->pi_vmctx, vq->vq_avail_gpa, size);
 	vq->vq_avail = (struct vring_avail *)base;
+	if (vq->vq_avail == NULL) {
+		EPRINTLN("%s: queue %u invalid avail address %#jx",
+		    vs->vs_vc->vc_name, vs->vs_curq,
+		    (uintmax_t)vq->vq_avail_gpa);
+		goto fail;
+	}
 
 	/* used ring */
 	base = paddr_guest2host(vs->vs_pi->pi_vmctx, vq->vq_used_gpa, size);
 	vq->vq_used = (struct vring_used *)base;
+	if (vq->vq_used == NULL) {
+		EPRINTLN("%s: queue %u invalid used address %#jx",
+		    vs->vs_vc->vc_name, vs->vs_curq,
+		    (uintmax_t)vq->vq_used_gpa);
+		goto fail;
+	}
 
 	/* Mark queue as allocated, and start at 0 when we use it. */
 	vq->vq_flags = VQ_ALLOC;
 	vq->vq_last_avail = 0;
 	vq->vq_next_used = 0;
 	vq->vq_save_used = 0;
+	return (0);
+
+fail:
+	vq->vq_flags = 0;
+	vq->vq_desc = NULL;
+	vq->vq_avail = NULL;
+	vq->vq_used = NULL;
+	return (-1);
 }
 
 int
@@ -1063,8 +1092,10 @@ vi_pci_write_common_cfg_modern(struct pci_devinst *pi, uint64_t offset,
 		break;
 	case VIRTIO_PCI_COMMON_Q_ENABLE:
 		if (value && vs->vs_curq < vc->vc_nvq) {
-			vi_vq_init_modern(vs);
-			vs->vs_queues[vs->vs_curq].vq_enabled = true;
+			if (vi_vq_init_modern(vs) == 0)
+				vs->vs_queues[vs->vs_curq].vq_enabled = true;
+			else
+				vs->vs_queues[vs->vs_curq].vq_enabled = false;
 		}
 		break;
 	case VIRTIO_PCI_COMMON_Q_DESCLO:
@@ -1136,6 +1167,10 @@ vi_pci_write_modern(struct pci_devinst *pi, int baridx, uint64_t offset,
 			break;
 		}
 		vq = &vs->vs_queues[value];
+		if (!vq_ring_ready(vq)) {
+			EPRINTLN("queue %d notify before ready", (int)value);
+			break;
+		}
 		if (vq->vq_notify)
 			(*vq->vq_notify)(DEV_SOFTC(vs), vq);
 		else if (vc->vc_qnotify)

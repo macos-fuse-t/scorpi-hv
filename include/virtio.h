@@ -342,7 +342,9 @@ static inline int
 vq_ring_ready(struct vqueue_info *vq)
 {
 
-	return (vq->vq_flags & VQ_ALLOC);
+	return (vq != NULL && (vq->vq_flags & VQ_ALLOC) != 0 &&
+	    vq->vq_desc != NULL && vq->vq_avail != NULL &&
+	    vq->vq_used != NULL);
 }
 
 /*
