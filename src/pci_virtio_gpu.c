@@ -91,6 +91,7 @@ static int vgpu_debug = 0;
 
 #define LEGACY_FRAMEBUFFER_BAR 1
 #define LEGACY_CTRL_BAR	       0
+#define VGPU_LEGACY_RESOURCE_ID 0xFFFFFFFF
 
 #define DMEMSZ		       512
 
@@ -145,6 +146,7 @@ static void pci_vgpu_reset(void *vsc);
 static int pci_vgpu_cfgread(void *vsc, int offset, int size, uint32_t *retval);
 static int pci_vgpu_cfgwrite(void *vsc, int offset, int size, uint32_t value);
 static void pci_vgpu_neg_features(void *vsc, uint64_t negotiated_features);
+static void pci_vgpu_destroy_scanouts(struct pci_vgpu_softc *sc);
 
 static struct virtio_consts vgpu_vi_consts = {
 	.vc_name = "vgpu",
@@ -209,20 +211,10 @@ static void
 pci_vgpu_reset(void *vsc)
 {
 	struct pci_vgpu_softc *sc = vsc;
-	struct vgpu_scanout *scanout, *tmp;
 
 	DPRINTF(("vgpu: device reset requested !"));
-	if (!sc->fb_enabled) {
-		console_set_scanout(false, 0, 0, 0, 0, NULL, 0, false);
-
-		LIST_FOREACH_SAFE(scanout, &sc->scanouts, entries, tmp) {
-			LIST_REMOVE(scanout, entries);
-			munmap(scanout->base_ptr, scanout->size);
-			shm_unlink(scanout->shm_name);
-			close(scanout->shm_fd);
-			free(scanout);
-		}
-	}
+	console_set_scanout(false, 0, 0, 0, 0, NULL, 0, false);
+	pci_vgpu_destroy_scanouts(sc);
 
 	sc->resx = sc->start_resx;
 	sc->resy = sc->start_resy;
@@ -276,6 +268,31 @@ pci_vgpu_find_resource(struct pci_vgpu_softc *sc, uint32_t resource_id)
 		}
 	}
 	return (NULL);
+}
+
+static void
+pci_vgpu_destroy_scanout(struct vgpu_scanout *scanout)
+{
+	LIST_REMOVE(scanout, entries);
+	munmap(scanout->base_ptr, scanout->size);
+	shm_unlink(scanout->shm_name);
+	close(scanout->shm_fd);
+	free(scanout->backing_iov);
+	free(scanout);
+}
+
+static void
+pci_vgpu_destroy_scanouts(struct pci_vgpu_softc *sc)
+{
+	struct vgpu_scanout *scanout, *tmp;
+
+	LIST_FOREACH_SAFE(scanout, &sc->scanouts, entries, tmp) {
+		if (sc->fb_enabled &&
+		    scanout->resource_id == VGPU_LEGACY_RESOURCE_ID) {
+			continue;
+		}
+		pci_vgpu_destroy_scanout(scanout);
+	}
 }
 
 static int
@@ -416,12 +433,13 @@ pci_vgpu_resource_unref(struct pci_vgpu_softc *sc,
 		return (len);
 	}
 
-	LIST_REMOVE(scanout, entries);
-	munmap(scanout->base_ptr, scanout->size);
-	shm_unlink(scanout->shm_name);
-	close(scanout->shm_fd);
-	free(scanout->backing_iov);
-	free(scanout);
+	if (sc->fb_enabled && scanout->resource_id == VGPU_LEGACY_RESOURCE_ID) {
+		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+		memcpy(rsp, &hdr, len);
+		return (len);
+	}
+
+	pci_vgpu_destroy_scanout(scanout);
 
 	return (len);
 }
@@ -1489,7 +1507,7 @@ pci_vgpu_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 	stride = roundup2(sc->resx * 4, 32);
 
 	// create a default scanout
-	resource_id = 0xFFFFFFFF;
+	resource_id = VGPU_LEGACY_RESOURCE_ID;
 	scanout = pci_vgpu_find_resource(sc, resource_id);
 	created = false;
 	if (scanout == NULL) {
