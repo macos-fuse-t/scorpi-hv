@@ -72,6 +72,7 @@ static struct {
 	uint32_t mouse_format;
 	int mouse_w;
 	int mouse_h;
+	int mouse_stride;
 	int mouse_hot_x;
 	int mouse_hot_y;
 	const char *mouse_shm_name;
@@ -82,6 +83,12 @@ void
 console_set_hdpi(bool hdpi)
 {
 	console.hdpi = hdpi;
+}
+
+void
+console_set_hardware_mouse(bool hardware_mouse)
+{
+	console.hardware_mouse = hardware_mouse;
 }
 
 void
@@ -120,8 +127,8 @@ console_set_scanout(bool scanout_active, int w, int h, int stride,
 }
 
 void
-console_set_mouse_scanout(bool scanout_active, int w, int h, uint32_t format,
-    int hot_x, int hot_y, const char *shm_name)
+console_set_mouse_scanout(bool scanout_active, int w, int h, int stride,
+    uint32_t format, int hot_x, int hot_y, const char *shm_name)
 {
 	char notification[1024];
 
@@ -129,6 +136,7 @@ console_set_mouse_scanout(bool scanout_active, int w, int h, uint32_t format,
 	console.mouse_active = scanout_active;
 	console.mouse_w = w;
 	console.mouse_h = h;
+	console.mouse_stride = stride;
 	console.mouse_format = format;
 	console.mouse_shm_name = shm_name;
 	console.mouse_hot_x = hot_x;
@@ -145,11 +153,12 @@ console_set_mouse_scanout(bool scanout_active, int w, int h, uint32_t format,
 		    "\"hot_y\": %d,"
 		    "\"width\": %d, "
 		    "\"height\": %d, "
+		    "\"stride\": %d, "
 		    "\"format\": %d, "
 		    "\"shm_name\": \"%s\", "
 		    "}"
 		    "}",
-		    hot_x, hot_y, w, h, format, shm_name);
+		    hot_x, hot_y, w, h, stride, format, shm_name);
 
 	cnc_send_notification(notification);
 }
@@ -268,6 +277,7 @@ get_framebuffer(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	    "\"hot_y\": %d,"
 	    "\"width\": %d, "
 	    "\"height\": %d, "
+	    "\"stride\": %d, "
 	    "\"format\": %d, "
 	    "\"shm_name\": \"%s\""
 	    "}"
@@ -278,7 +288,7 @@ get_framebuffer(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	    console.shm_name ? console.shm_name : "", console.shm_size,
 	    console.redrawOnTimer ? "true" : "false", console.mouse_hot_x,
 	    console.mouse_hot_y, console.mouse_w, console.mouse_h,
-	    console.mouse_format,
+	    console.mouse_stride, console.mouse_format,
 	    console.mouse_shm_name ? console.mouse_shm_name : "");
 	cnc_send_response(c, req_id, rsp);
 }

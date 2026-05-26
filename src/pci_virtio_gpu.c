@@ -143,6 +143,7 @@ struct pci_vgpu_softc {
 	uint32_t host_scale;
 
 	bool hdpi_enabled;
+	bool hardware_mouse_enabled;
 	bool fb_enabled; /* enable legacy framebuffer */
 
 	LIST_HEAD(scanouts, vgpu_scanout) scanouts;
@@ -1152,8 +1153,11 @@ pci_vgpu_update_cursor(struct pci_vgpu_softc *sc,
 {
 	struct vgpu_scanout *scanout;
 
+	if (!sc->hardware_mouse_enabled)
+		return (-1);
+
 	if (!req->resource_id) {
-		console_set_mouse_scanout(false, 0, 0, 0, 0, 0, NULL);
+		console_set_mouse_scanout(false, 0, 0, 0, 0, 0, 0, NULL);
 		return (0);
 	}
 
@@ -1165,7 +1169,8 @@ pci_vgpu_update_cursor(struct pci_vgpu_softc *sc,
 	}
 
 	console_set_mouse_scanout(true, le32toh(scanout->width),
-	    le32toh(scanout->height), le32toh(scanout->format),
+	    le32toh(scanout->height), scanout->stride,
+	    le32toh(scanout->format),
 	    le32toh(req->hot_x), le32toh(req->hot_y), scanout->shm_name);
 	return (0);
 }
@@ -1314,6 +1319,21 @@ pci_vgpu_init(struct pci_devinst *pi, nvlist_t *nvl)
 	sc->vsc_queues[VGPU_CURSOR].vq_qsize = VGPU_RINGSZ;
 	sc->vsc_queues[VGPU_CURSOR].vq_notify = pci_vgpu_ping_cursor;
 
+	sc->hardware_mouse_enabled = true;
+	value = get_config_value_node(nvl, "hardware_mouse");
+	if (value != NULL) {
+		if (!strcmp(value, "on") || !strcmp(value, "true") ||
+		    !strcmp(value, "yes")) {
+			sc->hardware_mouse_enabled = true;
+		} else if (!strcmp(value, "off") || !strcmp(value, "false") ||
+		    !strcmp(value, "no")) {
+			sc->hardware_mouse_enabled = false;
+		} else {
+			EPRINTLN("vgpu: invalid hardware_mouse value '%s'", value);
+			return (-1);
+		}
+	}
+
 	value = get_config_value_node(nvl, "fb");
 	if (value && !strcmp(value, "on"))
 		sc->fb_enabled = true;
@@ -1429,6 +1449,7 @@ pci_vgpu_init(struct pci_devinst *pi, nvlist_t *nvl)
 	}
 
 	console_set_hdpi(sc->hdpi_enabled);
+	console_set_hardware_mouse(false);
 	console_resize_register(resize_event, sc);
 
 	return (0);
