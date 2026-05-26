@@ -793,14 +793,14 @@ pci_vgpu_flush(struct pci_vgpu_softc *sc, struct virtio_gpu_ctrl_hdr *req,
 
 	memcpy(rsp, &hdr, len);
 	snprintf(notification, sizeof(notification),
-	    "{ \"event\": \"update_scanout\", \
-            \"data\": {\
-                \"x\": %d, \
-                \"y\": %d, \
-                \"width\": %d, \
-                \"height\": %d, \
-            } \
-        }",
+	    "{ \"event\": \"update_scanout\", "
+	    "\"data\": {"
+	    "\"x\": %d, "
+	    "\"y\": %d, "
+	    "\"width\": %d, "
+	    "\"height\": %d"
+	    "}"
+	    "}",
 	    le32toh(res->r.x), le32toh(res->r.y), le32toh(res->r.width),
 	    le32toh(res->r.height));
 	cnc_send_notification(notification);
@@ -1185,7 +1185,7 @@ pci_vgpu_move_cursor(struct pci_vgpu_softc *sc,
 	    "{ \"event\": \"move_cursor\","
 	    "\"data\": {"
 	    "\"x\": %d,"
-	    "\"y\": %d,"
+	    "\"y\": %d"
 	    "}"
 	    "}",
 	    le32toh(req->pos.x), le32toh(req->pos.y));

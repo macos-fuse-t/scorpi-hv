@@ -155,7 +155,7 @@ console_set_mouse_scanout(bool scanout_active, int w, int h, int stride,
 		    "\"height\": %d, "
 		    "\"stride\": %d, "
 		    "\"format\": %d, "
-		    "\"shm_name\": \"%s\", "
+		    "\"shm_name\": \"%s\""
 		    "}"
 		    "}",
 		    hot_x, hot_y, w, h, stride, format, shm_name);
