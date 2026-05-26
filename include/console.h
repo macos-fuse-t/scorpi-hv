@@ -47,8 +47,9 @@ int console_scanout_size(int *w, int *h);
 
 void console_set_hdpi(bool hdpi);
 
-void console_set_scanout(bool scanout_active, int w, int h, int sride, uint32_t format, 
-    const char *shm_name, size_t shm_size, bool redrawOnTimer);
+void console_set_scanout(bool scanout_active, int w, int h, int sride,
+    uint32_t format, const char *shm_name, size_t shm_size,
+    bool redrawOnTimer);
 
 void  console_set_mouse_scanout(bool scanout_active, int w, int h, uint32_t format, 
 	int hot_x, int hot_y, const char *shm_name);

@@ -87,7 +87,8 @@ message('Hypervisor backend: ' + hypervisor_backend)
 if host_system == 'darwin'
     hv_framework = [
         '-framework', 'Hypervisor',
-        '-framework', 'VMNet' ]
+        '-framework', 'VMNet',
+        '-framework', 'CoreGraphics' ]
     add_project_arguments('-fblocks', language: 'c')
     add_project_link_arguments(hv_framework, language: 'c')
     #add_project_link_arguments(['-ld64'], language: 'c' )
@@ -151,6 +152,7 @@ runtime_core_sources = files(
     'src/rfb.c',
     'src/bhyvegc.c',
     'src/console.c',
+    'src/edid.c',
     'src/sockstream.c',
     'src/iov.c',
     'src/net_utils.c',

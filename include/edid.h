@@ -23,6 +23,7 @@
 #ifndef __DRM_EDID_H__
 #define __DRM_EDID_H__
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #define EDID_LENGTH 128
@@ -243,5 +244,10 @@ struct edid {
 } __attribute__((packed));
 
 #define EDID_PRODUCT_ID(e) ((e)->prod_code[0] | ((e)->prod_code[1] << 8))
+
+int generate_edid(uint16_t width, uint16_t height,
+    uint16_t logical_width, uint16_t logical_height,
+    uint16_t physical_width_mm, uint16_t physical_height_mm, bool hdpi_enabled,
+    uint32_t max_width, uint32_t max_height, uint8_t *edid_buf);
 
 #endif /* __DRM_EDID_H__ */
