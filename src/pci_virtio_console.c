@@ -446,6 +446,9 @@ pci_vtcon_sock_rx(int fd __unused, enum ev_type t __unused, void *arg)
 	if (!sock->vss_open)
 		return;
 
+	if (!vq_ring_ready(vq))
+		return;
+
 	if (!vq_has_descs(vq)) {
 		vq_endchains(vq, 1);
 		return;
