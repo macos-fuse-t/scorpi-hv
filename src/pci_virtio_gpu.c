@@ -145,6 +145,8 @@ struct pci_vgpu_softc {
 	bool hdpi_enabled;
 	bool hardware_mouse_enabled;
 	bool fb_enabled; /* enable legacy framebuffer */
+	bool legacy_fb_direct_mapped;
+	uint64_t legacy_fb_direct_gpa;
 
 	LIST_HEAD(scanouts, vgpu_scanout) scanouts;
 };
@@ -162,6 +164,10 @@ static bool pci_vgpu_host_physical_size(uint32_t *width_mm,
     uint32_t *height_mm);
 static void pci_vgpu_edid_physical_size(struct pci_vgpu_softc *sc,
     uint32_t *width_mm, uint32_t *height_mm);
+static uint64_t pci_vgpu_legacy_fb_read(struct pci_devinst *pi,
+    uint64_t offset, int size);
+static void pci_vgpu_legacy_fb_write(struct pci_devinst *pi, uint64_t offset,
+    int size, uint64_t value);
 
 static struct virtio_consts vgpu_vi_consts = {
 	.vc_name = "vgpu",
@@ -1460,7 +1466,6 @@ pci_vgpu_baraddr(struct pci_devinst *pi, int baridx, int enabled,
     uint64_t address)
 {
 	struct pci_vgpu_softc *sc;
-	int prot;
 	uint32_t resource_id;
 	struct vgpu_scanout *scanout;
 	int stride;
@@ -1470,8 +1475,23 @@ pci_vgpu_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 		return;
 
 	sc = pi->pi_arg;
-	if (!enabled)
+	if (!enabled) {
+		if (sc->legacy_fb_direct_mapped) {
+			int error;
+
+			error = vm_munmap_memseg(pi->pi_vmctx,
+			    sc->legacy_fb_direct_gpa, FB_SIZE);
+			if (error != 0) {
+				EPRINTLN("pci_vgpu: failed to unmap legacy "
+				    "framebuffer BAR at 0x%llx size 0x%lx: %s",
+				    sc->legacy_fb_direct_gpa, FB_SIZE,
+				    strerror(error));
+			}
+			sc->legacy_fb_direct_mapped = false;
+			sc->legacy_fb_direct_gpa = 0;
+		}
 		return;
+	}
 
 	stride = roundup2(sc->resx * 4, 32);
 
@@ -1493,13 +1513,23 @@ pci_vgpu_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 		return;
 	}
 
-	prot = PROT_READ | PROT_WRITE | PROT_DONT_ALLOCATE;
-	if (vm_setup_memory_segment(pi->pi_vmctx, address, FB_SIZE, prot,
-		(uintptr_t *)&scanout->base_ptr) != 0) {
-		EPRINTLN("pci_vgpu: failed to direct-map legacy framebuffer "
-		    "BAR at 0x%llx size 0x%lx", address, FB_SIZE);
-		assert(0);
-		return;
+	if ((pi->pi_bar[baridx].flags & PCIBAR_F_DIRECT_MAPPED) != 0) {
+		int error;
+		int prot;
+
+		prot = PROT_READ | PROT_WRITE | PROT_DONT_ALLOCATE;
+		error = vm_setup_memory_segment(pi->pi_vmctx, address, FB_SIZE,
+		    prot, (uintptr_t *)&scanout->base_ptr);
+		if (error != 0) {
+			EPRINTLN("pci_vgpu: failed to direct-map legacy framebuffer "
+			    "BAR at 0x%llx size 0x%lx: %s", address, FB_SIZE,
+			    strerror(error));
+			pci_emul_set_bar_direct_mapped(pi, baridx, 0);
+			sc->legacy_fb_direct_mapped = false;
+		} else {
+			sc->legacy_fb_direct_mapped = true;
+			sc->legacy_fb_direct_gpa = address;
+		}
 	}
 
 	console_set_scanout(true, sc->resx, sc->resy, stride,
@@ -1561,8 +1591,7 @@ pci_vgpu_barread(struct pci_devinst *pi, int baridx, uint64_t offset, int size)
 		val = pci_vgpu_legacy_ctrl_read(pi, baridx, offset, size);
 		break;
 	case LEGACY_FRAMEBUFFER_BAR:
-		EPRINTLN("pci_vgpu_barread: can't read from the framebuffer");
-		assert(0);
+		val = pci_vgpu_legacy_fb_read(pi, offset, size);
 		break;
 	default:
 		val = vi_pci_read_modern(pi, baridx, offset, size);
@@ -1605,6 +1634,42 @@ pci_vgpu_legacy_ctrl_write(struct pci_devinst *pi, int baridx, uint64_t offset,
 	}
 }
 
+static uint64_t
+pci_vgpu_legacy_fb_read(struct pci_devinst *pi, uint64_t offset, int size)
+{
+	struct pci_vgpu_softc *sc;
+	struct vgpu_scanout *scanout;
+	uint64_t value;
+
+	sc = pi->pi_arg;
+	scanout = pci_vgpu_find_resource(sc, VGPU_LEGACY_RESOURCE_ID);
+	if (scanout == NULL || scanout->base_ptr == NULL ||
+	    offset + size > scanout->size || size > (int)sizeof(value)) {
+		return (UINT64_MAX);
+	}
+
+	value = 0;
+	memcpy(&value, (uint8_t *)scanout->base_ptr + offset, size);
+	return (value);
+}
+
+static void
+pci_vgpu_legacy_fb_write(struct pci_devinst *pi, uint64_t offset, int size,
+    uint64_t value)
+{
+	struct pci_vgpu_softc *sc;
+	struct vgpu_scanout *scanout;
+
+	sc = pi->pi_arg;
+	scanout = pci_vgpu_find_resource(sc, VGPU_LEGACY_RESOURCE_ID);
+	if (scanout == NULL || scanout->base_ptr == NULL ||
+	    offset + size > scanout->size || size > (int)sizeof(value)) {
+		return;
+	}
+
+	memcpy((uint8_t *)scanout->base_ptr + offset, &value, size);
+}
+
 static void
 pci_vgpu_barwrite(struct pci_devinst *pi, int baridx, uint64_t offset, int size,
     uint64_t value)
@@ -1614,7 +1679,7 @@ pci_vgpu_barwrite(struct pci_devinst *pi, int baridx, uint64_t offset, int size,
 		pci_vgpu_legacy_ctrl_write(pi, baridx, offset, size, value);
 		break;
 	case LEGACY_FRAMEBUFFER_BAR:
-		EPRINTLN("pci_vgpu_barwrite: can't write to the framebuffer");
+		pci_vgpu_legacy_fb_write(pi, offset, size, value);
 		break;
 	default:
 		vi_pci_write_modern(pi, baridx, offset, size, value);

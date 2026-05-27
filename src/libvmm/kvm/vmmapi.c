@@ -309,6 +309,8 @@ vm_mem_allocated(struct vmctx *ctx, uint64_t gpa)
 	for (int i = 0; i < ctx->num_mem_ranges; i++) {
 		uint64_t base = ctx->mem_ranges[i].gpa;
 		uint64_t limit = base + ctx->mem_ranges[i].len;
+		if (ctx->mem_ranges[i].len == 0)
+			continue;
 		if (gpa >= base && gpa < limit)
 			return (true);
 	}
@@ -348,15 +350,26 @@ vm_setup_memory_segment_internal(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 	void *object;
 	bool owned;
 	int error;
+	int slotidx;
 
 	if ((gpa & PAGE_MASK) || (len & PAGE_MASK) || len == 0)
 		return (EINVAL);
 	for (uint64_t p = gpa; p < gpa + len; p += PAGE_SIZE) {
 		if (vm_mem_allocated(ctx, p))
-			return (0);
+			return (EEXIST);
 	}
-	if (ctx->num_mem_ranges >= VM_MAX_MEMORY_SEGMENTS)
-		return (E2BIG);
+	slotidx = -1;
+	for (int i = 0; i < ctx->num_mem_ranges; i++) {
+		if (ctx->mem_ranges[i].len == 0) {
+			slotidx = i;
+			break;
+		}
+	}
+	if (slotidx == -1) {
+		if (ctx->num_mem_ranges >= VM_MAX_MEMORY_SEGMENTS)
+			return (E2BIG);
+		slotidx = ctx->num_mem_ranges++;
+	}
 
 	if ((prot & PROT_DONT_ALLOCATE) != 0) {
 		if (addr == NULL || *addr == 0)
@@ -372,12 +385,12 @@ vm_setup_memory_segment_internal(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 		owned = true;
 	}
 
-	seg = &ctx->mem_ranges[ctx->num_mem_ranges];
+	seg = &ctx->mem_ranges[slotidx];
 	seg->gpa = gpa;
 	seg->prot = prot;
 	seg->len = len;
 	seg->object = object;
-	seg->slot = ctx->num_mem_ranges;
+	seg->slot = slotidx;
 	seg->owned = owned;
 	seg->active = false;
 
@@ -385,11 +398,15 @@ vm_setup_memory_segment_internal(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 	if (error != 0) {
 		if (owned)
 			free(object);
+		seg->gpa = 0;
+		seg->prot = 0;
+		seg->len = 0;
+		seg->object = NULL;
+		seg->owned = false;
+		seg->active = false;
 		return (error);
 	}
 	seg->active = true;
-
-	ctx->num_mem_ranges++;
 	return (0);
 }
 
@@ -471,6 +488,8 @@ vm_map_gpa(struct vmctx *ctx, vm_paddr_t gaddr, size_t len)
 {
 	for (int i = 0; i < ctx->num_mem_ranges; i++) {
 		struct kvm_mem_range *seg = &ctx->mem_ranges[i];
+		if (!seg->active || seg->len == 0)
+			continue;
 		if (gaddr >= seg->gpa && gaddr + len <= seg->gpa + seg->len)
 			return ((char *)seg->object + (gaddr - seg->gpa));
 	}
@@ -482,6 +501,8 @@ vm_rev_map_gpa(struct vmctx *ctx, void *addr)
 {
 	for (int i = 0; i < ctx->num_mem_ranges; i++) {
 		struct kvm_mem_range *seg = &ctx->mem_ranges[i];
+		if (!seg->active || seg->len == 0)
+			continue;
 		if (addr >= seg->object &&
 		    (char *)addr < (char *)seg->object + seg->len)
 			return (seg->gpa + ((char *)addr - (char *)seg->object));
@@ -540,7 +561,31 @@ int
 vm_munmap_memseg(struct vmctx *ctx __unused, vm_paddr_t gpa __unused,
     size_t len __unused)
 {
-	return (scorpi_kvm_unimplemented(__func__));
+	struct kvm_mem_range *seg;
+	int error;
+
+	for (int i = 0; i < ctx->num_mem_ranges; i++) {
+		seg = &ctx->mem_ranges[i];
+		if (seg->gpa != gpa || seg->len != len)
+			continue;
+
+		if (seg->active) {
+			error = vm_set_mem_range(ctx, seg, false);
+			if (error != 0)
+				return (error);
+		}
+		if (seg->owned)
+			free(seg->object);
+		seg->gpa = 0;
+		seg->prot = 0;
+		seg->len = 0;
+		seg->object = NULL;
+		seg->owned = false;
+		seg->active = false;
+		return (0);
+	}
+
+	return (ENOENT);
 }
 
 int

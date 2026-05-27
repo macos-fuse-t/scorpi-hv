@@ -1068,12 +1068,34 @@ vm_add_memslot(struct vmctx *ctx, vm_paddr_t gpa, size_t len, void *host,
 {
 	struct kvm_memslot *slot;
 	int error;
+	int slotidx;
 
-	if (ctx->nmemslots >= VM_MAX_MEMSLOTS)
-		return (E2BIG);
+	for (int i = 0; i < ctx->nmemslots; i++) {
+		struct kvm_memslot *existing = &ctx->memslots[i];
+		uint64_t end = gpa + len;
+		uint64_t existing_end = existing->gpa + existing->len;
 
-	slot = &ctx->memslots[ctx->nmemslots];
-	slot->slot = ctx->nmemslots;
+		if (existing->len == 0)
+			continue;
+		if (gpa < existing_end && end > existing->gpa)
+			return (EEXIST);
+	}
+
+	slotidx = -1;
+	for (int i = 0; i < ctx->nmemslots; i++) {
+		if (ctx->memslots[i].len == 0) {
+			slotidx = i;
+			break;
+		}
+	}
+	if (slotidx == -1) {
+		if (ctx->nmemslots >= VM_MAX_MEMSLOTS)
+			return (E2BIG);
+		slotidx = ctx->nmemslots++;
+	}
+
+	slot = &ctx->memslots[slotidx];
+	slot->slot = slotidx;
 	slot->gpa = gpa;
 	slot->prot = prot;
 	slot->len = len;
@@ -1082,11 +1104,17 @@ vm_add_memslot(struct vmctx *ctx, vm_paddr_t gpa, size_t len, void *host,
 	slot->active = false;
 
 	error = vm_set_memslot(ctx, slot, true);
-	if (error != 0)
+	if (error != 0) {
+		slot->gpa = 0;
+		slot->prot = 0;
+		slot->len = 0;
+		slot->host = NULL;
+		slot->owned = false;
+		slot->active = false;
 		return (error);
+	}
 
 	slot->active = true;
-	ctx->nmemslots++;
 	return (0);
 }
 
@@ -1099,7 +1127,7 @@ vm_set_memory_segment_visible(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 
 	for (int i = 0; i < ctx->nmemslots; i++) {
 		slot = &ctx->memslots[i];
-		if (slot->gpa == gpa && slot->len == len) {
+		if (slot->len != 0 && slot->gpa == gpa && slot->len == len) {
 			if (slot->active == visible)
 				return (0);
 			error = vm_set_memslot(ctx, slot, visible);
@@ -1196,6 +1224,8 @@ vm_map_gpa(struct vmctx *ctx, vm_paddr_t gaddr, size_t len)
 
 	for (int i = 0; i < ctx->nmemslots; i++) {
 		slot = &ctx->memslots[i];
+		if (!slot->active || slot->len == 0)
+			continue;
 		if (gaddr >= slot->gpa && len <= slot->len &&
 		    gaddr + len <= slot->gpa + slot->len) {
 			return ((uint8_t *)slot->host + (gaddr - slot->gpa));
@@ -1213,6 +1243,8 @@ vm_rev_map_gpa(struct vmctx *ctx, void *addr)
 	for (int i = 0; i < ctx->nmemslots; i++) {
 		struct kvm_memslot *slot = &ctx->memslots[i];
 		uintptr_t start = (uintptr_t)slot->host;
+		if (!slot->active || slot->len == 0)
+			continue;
 		if (p >= start && p < start + slot->len)
 			return (slot->gpa + (p - start));
 	}
@@ -1248,10 +1280,33 @@ vm_mmap_getnext(struct vmctx *ctx __unused, vm_paddr_t *gpa __unused,
 }
 
 int
-vm_munmap_memseg(struct vmctx *ctx __unused, vm_paddr_t gpa __unused,
-    size_t len __unused)
+vm_munmap_memseg(struct vmctx *ctx, vm_paddr_t gpa, size_t len)
 {
-	return (EOPNOTSUPP);
+	struct kvm_memslot *slot;
+	int error;
+
+	for (int i = 0; i < ctx->nmemslots; i++) {
+		slot = &ctx->memslots[i];
+		if (slot->gpa != gpa || slot->len != len)
+			continue;
+
+		if (slot->active) {
+			error = vm_set_memslot(ctx, slot, false);
+			if (error != 0)
+				return (error);
+		}
+		if (slot->owned)
+			free(slot->host);
+		slot->gpa = 0;
+		slot->prot = 0;
+		slot->len = 0;
+		slot->host = NULL;
+		slot->owned = false;
+		slot->active = false;
+		return (0);
+	}
+
+	return (ENOENT);
 }
 
 const char *

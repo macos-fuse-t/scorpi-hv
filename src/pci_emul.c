@@ -614,11 +614,22 @@ modify_bar_registration(struct pci_devinst *pi, int idx, int registration)
 	struct pci_devemu *pe;
 	int error;
 	enum pcibar_type type;
+	bool baraddr_called;
 
 	pe = pi->pi_d;
 	type = pi->pi_bar[idx].type;
-	if ((pi->pi_bar[idx].flags & PCIBAR_F_DIRECT_MAPPED) != 0)
-		goto done;
+	baraddr_called = false;
+	if ((pi->pi_bar[idx].flags & PCIBAR_F_DIRECT_MAPPED) != 0) {
+		if (pe->pe_baraddr != NULL) {
+			(*pe->pe_baraddr)(pi, idx, registration,
+			    pi->pi_bar[idx].addr);
+			baraddr_called = true;
+		}
+		if ((pi->pi_bar[idx].flags & PCIBAR_F_DIRECT_MAPPED) != 0 ||
+		    !registration) {
+			return;
+		}
+	}
 
 	switch (type) {
 	case PCIBAR_IO: {
@@ -681,8 +692,7 @@ modify_bar_registration(struct pci_devinst *pi, int idx, int registration)
 	}
 	assert(error == 0);
 
-done:
-	if (pe->pe_baraddr != NULL)
+	if (!baraddr_called && pe->pe_baraddr != NULL)
 		(*pe->pe_baraddr)(pi, idx, registration, pi->pi_bar[idx].addr);
 }
 
