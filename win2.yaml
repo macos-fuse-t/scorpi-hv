@@ -27,7 +27,7 @@ devices:
       port.1.type: cd
       port.1.path: /Users/alexf/vms/virtio-win-0.1.266.iso
 
-    - device: virtio-host
+    - device: virtio-gpu-vhost
       slot: 5
       backend: gpu0
       backend_device: virtio-gpu

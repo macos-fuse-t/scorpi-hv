@@ -24,12 +24,12 @@
 #include "config.h"
 #include "console.h"
 #include "debug.h"
-#include "external_vmmem.h"
 #include "host_display.h"
 #include "pci_emul.h"
+#include "pci_virtio_vhost.h"
 #include "virtio.h"
-#include "virtio_external_backend.h"
 #include "virtio_gpu.h"
+#include "virtio_vhost_transport.h"
 #include "vmmapi.h"
 
 #define VHOST_DEFAULT_BACKEND_ID  "gpu0"
@@ -55,10 +55,7 @@ struct pci_vhost_softc {
 	struct virtio_consts vsc_consts;
 	pthread_mutex_t vsc_mtx;
 
-	char backend_id[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];
-	char device_name[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];
-	uint64_t features;
-	uint32_t reset_generation;
+	struct pci_vhost_state vhost;
 
 	struct virtio_gpu_config gpu_config;
 	uint32_t resx;
@@ -115,7 +112,7 @@ pci_vhost_parse_bool(const char *name, const char *value, bool *out)
 		*out = false;
 		return (0);
 	}
-	EPRINTLN("virtio-host: invalid %s value '%s'", name, value);
+	EPRINTLN("virtio-gpu-vhost: invalid %s value '%s'", name, value);
 	return (-1);
 }
 
@@ -134,7 +131,7 @@ pci_vhost_set_effective_resolution(struct pci_vhost_softc *sc)
 }
 
 static struct virtio_consts vhost_consts = {
-	.vc_name = "virtio-host",
+	.vc_name = "virtio-gpu-vhost",
 	.vc_nvq = VHOST_GPU_QUEUE_COUNT,
 	.vc_cfgsize = sizeof(struct virtio_gpu_config),
 	.vc_reset = pci_vhost_reset,
@@ -145,44 +142,6 @@ static struct virtio_consts vhost_consts = {
 	.vc_hv_caps = VIRTIO_RING_F_INDIRECT_DESC | VIRTIO_F_VERSION_1 |
 	    (1ULL << VIRTIO_GPU_F_EDID),
 };
-
-static uint64_t
-pci_vhost_queue_desc_gpa(const struct vqueue_info *vq)
-{
-	if (vq->vq_desc_gpa != 0)
-		return (vq->vq_desc_gpa);
-	if (vq->vq_pfn != 0)
-		return ((uint64_t)vq->vq_pfn << VRING_PFN);
-	return (0);
-}
-
-static uint64_t
-pci_vhost_queue_avail_gpa(const struct vqueue_info *vq)
-{
-	uint64_t desc_gpa;
-
-	if (vq->vq_avail_gpa != 0)
-		return (vq->vq_avail_gpa);
-	desc_gpa = pci_vhost_queue_desc_gpa(vq);
-	if (desc_gpa == 0)
-		return (0);
-	return (desc_gpa + (uint64_t)vq->vq_qsize * sizeof(struct vring_desc));
-}
-
-static uint64_t
-pci_vhost_queue_used_gpa(const struct vqueue_info *vq)
-{
-	uint64_t avail_gpa;
-
-	if (vq->vq_used_gpa != 0)
-		return (vq->vq_used_gpa);
-	avail_gpa = pci_vhost_queue_avail_gpa(vq);
-	if (avail_gpa == 0)
-		return (0);
-	return (roundup2(avail_gpa +
-		(uint64_t)(2 + vq->vq_qsize + 1) * sizeof(uint16_t),
-	    VRING_ALIGN));
-}
 
 static void
 pci_vhost_set_legacy_scanout(struct pci_vhost_softc *sc)
@@ -212,7 +171,7 @@ pci_vhost_create_legacy_fb(struct pci_vhost_softc *sc)
 	    "/%s-%08x", uuid, VHOST_LEGACY_RESOURCE_ID);
 
 	if (shm_unlink(sc->legacy_fb_shm_name) == -1 && errno != ENOENT) {
-		EPRINTLN("virtio-host: shm_unlink stale %s: %s",
+		EPRINTLN("virtio-gpu-vhost: shm_unlink stale %s: %s",
 		    sc->legacy_fb_shm_name, strerror(errno));
 		return (-1);
 	}
@@ -220,14 +179,14 @@ pci_vhost_create_legacy_fb(struct pci_vhost_softc *sc)
 	sc->legacy_fb_shm_fd = shm_open(sc->legacy_fb_shm_name,
 	    O_CREAT | O_EXCL | O_RDWR, S_IRUSR | S_IWUSR);
 	if (sc->legacy_fb_shm_fd == -1) {
-		EPRINTLN("virtio-host: shm_open %s: %s", sc->legacy_fb_shm_name,
-		    strerror(errno));
+		EPRINTLN("virtio-gpu-vhost: shm_open %s: %s",
+		    sc->legacy_fb_shm_name, strerror(errno));
 		return (-1);
 	}
 
 	sc->legacy_fb_size = VHOST_LEGACY_FB_SIZE;
 	if (ftruncate(sc->legacy_fb_shm_fd, sc->legacy_fb_size) == -1) {
-		EPRINTLN("virtio-host: ftruncate %s: %s",
+		EPRINTLN("virtio-gpu-vhost: ftruncate %s: %s",
 		    sc->legacy_fb_shm_name, strerror(errno));
 		close(sc->legacy_fb_shm_fd);
 		shm_unlink(sc->legacy_fb_shm_name);
@@ -238,8 +197,8 @@ pci_vhost_create_legacy_fb(struct pci_vhost_softc *sc)
 	sc->legacy_fb_base = mmap(NULL, sc->legacy_fb_size,
 	    PROT_READ | PROT_WRITE, MAP_SHARED, sc->legacy_fb_shm_fd, 0);
 	if (sc->legacy_fb_base == MAP_FAILED) {
-		EPRINTLN("virtio-host: mmap %s: %s", sc->legacy_fb_shm_name,
-		    strerror(errno));
+		EPRINTLN("virtio-gpu-vhost: mmap %s: %s",
+		    sc->legacy_fb_shm_name, strerror(errno));
 		close(sc->legacy_fb_shm_fd);
 		shm_unlink(sc->legacy_fb_shm_name);
 		sc->legacy_fb_shm_fd = -1;
@@ -376,7 +335,7 @@ pci_vhost_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 			    sc->legacy_fb_direct_gpa, VHOST_LEGACY_FB_SIZE);
 			if (error != 0) {
 				EPRINTLN(
-				    "virtio-host: failed to unmap legacy "
+				    "virtio-gpu-vhost: failed to unmap legacy "
 				    "framebuffer BAR at 0x%llx size 0x%lx: %s",
 				    sc->legacy_fb_direct_gpa,
 				    VHOST_LEGACY_FB_SIZE, strerror(error));
@@ -388,7 +347,8 @@ pci_vhost_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 	}
 
 	if (pci_vhost_create_legacy_fb(sc) != 0) {
-		EPRINTLN("virtio-host: failed to create legacy framebuffer");
+		EPRINTLN(
+		    "virtio-gpu-vhost: failed to create legacy framebuffer");
 		return;
 	}
 
@@ -398,8 +358,9 @@ pci_vhost_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 		    VHOST_LEGACY_FB_SIZE, prot,
 		    (uintptr_t *)&sc->legacy_fb_base);
 		if (error != 0) {
-			EPRINTLN("virtio-host: failed to direct-map legacy "
-				 "framebuffer BAR at 0x%llx size 0x%lx: %s",
+			EPRINTLN(
+			    "virtio-gpu-vhost: failed to direct-map legacy "
+			    "framebuffer BAR at 0x%llx size 0x%lx: %s",
 			    address, VHOST_LEGACY_FB_SIZE, strerror(error));
 			pci_emul_set_bar_direct_mapped(pi, baridx, 0);
 			sc->legacy_fb_direct_mapped = false;
@@ -410,16 +371,6 @@ pci_vhost_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 	}
 
 	pci_vhost_set_legacy_scanout(sc);
-}
-
-static void
-pci_vhost_interrupt(void *opaque, uint32_t queue_index)
-{
-	struct pci_vhost_softc *sc = opaque;
-
-	if (queue_index >= (uint32_t)sc->vsc_consts.vc_nvq)
-		return;
-	vq_endchains(&sc->queues[queue_index], 1);
 }
 
 static void
@@ -435,36 +386,24 @@ pci_vhost_interrupt_config(struct pci_vhost_softc *sc)
 }
 
 static void
+pci_vhost_gpu_transport_info(struct pci_vhost_softc *sc,
+    struct pci_vhost_transport_info *info)
+{
+	memset(info, 0, sizeof(*info));
+	info->display_width = sc->resx;
+	info->display_height = sc->resy;
+	info->display_hdpi = sc->hdpi_enabled;
+	info->ready_queue = VHOST_GPU_CTRLQ;
+}
+
+static void
 pci_vhost_bind_callbacks(struct pci_vhost_softc *sc)
 {
-	struct scorpi_virtio_external_transport_desc transport;
+	struct pci_vhost_transport_info info;
 
-	memset(&transport, 0, sizeof(transport));
-	snprintf(transport.backend_id, sizeof(transport.backend_id), "%s",
-	    sc->backend_id);
-	snprintf(transport.device_name, sizeof(transport.device_name), "%s",
-	    sc->device_name);
-	transport.features = sc->features;
-	transport.reset_generation = sc->reset_generation;
-	transport.display_width = sc->resx;
-	transport.display_height = sc->resy;
-	transport.display_hdpi = sc->hdpi_enabled;
-	transport.queue_count = sc->vsc_consts.vc_nvq;
-	for (uint32_t i = 0; i < transport.queue_count; i++) {
-		struct vqueue_info *vq = &sc->queues[i];
-
-		transport.queues[i].index = vq->vq_num;
-		transport.queues[i].size = vq->vq_qsize;
-		transport.queues[i].desc_addr = pci_vhost_queue_desc_gpa(vq);
-		transport.queues[i].avail_addr = pci_vhost_queue_avail_gpa(vq);
-		transport.queues[i].used_addr = pci_vhost_queue_used_gpa(vq);
-		transport.queues[i].ready = vq_ring_ready(vq) != 0;
-	}
-	external_vmmem_fill_transport(sc->vsc_vs.vs_pi->pi_vmctx, &transport);
-	transport.ready = transport.queues[VHOST_GPU_CTRLQ].ready;
-
-	(void)virtio_external_backend_bind_device(sc->backend_id, &transport,
-	    pci_vhost_interrupt, pci_vhost_reset, sc);
+	pci_vhost_gpu_transport_info(sc, &info);
+	(void)pci_vhost_bind_transport(&sc->vhost, sc->vsc_vs.vs_pi->pi_vmctx,
+	    &info);
 }
 
 static void
@@ -472,7 +411,7 @@ pci_vhost_reset(void *vsc)
 {
 	struct pci_vhost_softc *sc = vsc;
 
-	sc->reset_generation++;
+	pci_vhost_advance_reset_generation(&sc->vhost);
 	vi_reset_dev(&sc->vsc_vs);
 	pci_vhost_bind_callbacks(sc);
 }
@@ -482,7 +421,7 @@ pci_vhost_neg_features(void *vsc, uint64_t negotiated_features)
 {
 	struct pci_vhost_softc *sc = vsc;
 
-	sc->features = negotiated_features;
+	pci_vhost_set_features(&sc->vhost, negotiated_features);
 	pci_vhost_bind_callbacks(sc);
 }
 
@@ -516,10 +455,11 @@ static void
 pci_vhost_queue_notify(void *vsc, struct vqueue_info *vq)
 {
 	struct pci_vhost_softc *sc = vsc;
+	struct pci_vhost_transport_info info;
 
-	pci_vhost_bind_callbacks(sc);
-	(void)virtio_external_backend_notify_queue_kick(sc->backend_id,
-	    vq->vq_num);
+	pci_vhost_gpu_transport_info(sc, &info);
+	(void)pci_vhost_notify_queue_kick(&sc->vhost,
+	    sc->vsc_vs.vs_pi->pi_vmctx, &info, vq->vq_num);
 }
 
 static void
@@ -543,8 +483,8 @@ pci_vhost_resize_event(int x, int y, void *arg)
 		sc->gpu_config.events_read |= VIRTIO_GPU_EVENT_DISPLAY;
 		if (notify)
 			pci_vhost_interrupt_config(sc);
-		(void)virtio_external_backend_notify_display_resize(
-		    sc->backend_id, sc->resx, sc->resy);
+		(void)virtio_vhost_transport_notify_display_resize(
+		    sc->vhost.backend_id, sc->resx, sc->resy);
 	}
 	pthread_mutex_unlock(&sc->vsc_mtx);
 }
@@ -571,7 +511,8 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	if (device_name == NULL)
 		device_name = VHOST_DEFAULT_DEVICE_NAME;
 	if (strcmp(device_name, "virtio-gpu") != 0) {
-		EPRINTLN("virtio-host: unsupported device '%s'", device_name);
+		EPRINTLN("virtio-gpu-vhost: unsupported device '%s'",
+		    device_name);
 		return (-1);
 	}
 
@@ -579,8 +520,6 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	if (sc == NULL)
 		return (-1);
 
-	snprintf(sc->backend_id, sizeof(sc->backend_id), "%s", backend_id);
-	snprintf(sc->device_name, sizeof(sc->device_name), "%s", device_name);
 	sc->vsc_consts = vhost_consts;
 	sc->start_resx = VHOST_GPU_COLS_DEFAULT;
 	sc->start_resy = VHOST_GPU_ROWS_DEFAULT;
@@ -601,14 +540,14 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 		sc->start_resy = strtol(value, NULL, 10);
 	if (sc->start_resx > VHOST_GPU_COLS_MAX ||
 	    sc->start_resy > VHOST_GPU_ROWS_MAX) {
-		EPRINTLN("virtio-host: max resolution is %ux%u",
+		EPRINTLN("virtio-gpu-vhost: max resolution is %ux%u",
 		    VHOST_GPU_COLS_MAX, VHOST_GPU_ROWS_MAX);
 		free(sc);
 		return (-1);
 	}
 	if (sc->start_resx < VHOST_GPU_COLS_MIN ||
 	    sc->start_resy < VHOST_GPU_ROWS_MIN) {
-		EPRINTLN("virtio-host: minimum resolution is %ux%u",
+		EPRINTLN("virtio-gpu-vhost: minimum resolution is %ux%u",
 		    VHOST_GPU_COLS_MIN, VHOST_GPU_ROWS_MIN);
 		free(sc);
 		return (-1);
@@ -632,7 +571,8 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	}
 	if (sc->hdpi_enabled &&
 	    !pci_vhost_mode_supports_hdpi(sc->start_resx, sc->start_resy)) {
-		EPRINTLN("virtio-host: hdpi resolution %ux%u exceeds max %ux%u",
+		EPRINTLN(
+		    "virtio-gpu-vhost: hdpi resolution %ux%u exceeds max %ux%u",
 		    sc->start_resx * 2, sc->start_resy * 2, VHOST_GPU_COLS_MAX,
 		    VHOST_GPU_ROWS_MAX);
 		free(sc);
@@ -649,6 +589,9 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 		sc->queues[i].vq_qsize = VHOST_DEFAULT_QUEUE_SIZE;
 		sc->queues[i].vq_notify = pci_vhost_queue_notify;
 	}
+	pci_vhost_state_init(&sc->vhost, &sc->vsc_vs, sc->queues,
+	    VHOST_GPU_QUEUE_COUNT, backend_id, device_name, pci_vhost_reset,
+	    sc);
 
 	pci_set_cfgdata16(pi, PCIR_DEVICE, VIRTIO_DEV_GPU);
 	pci_set_cfgdata16(pi, PCIR_VENDOR, VIRTIO_VENDOR);
@@ -689,7 +632,7 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 }
 
 static const struct pci_devemu pci_de_vhost = {
-	.pe_emu = "virtio-host",
+	.pe_emu = "virtio-gpu-vhost",
 	.pe_init = pci_vhost_init,
 	.pe_barwrite = pci_vhost_barwrite,
 	.pe_barread = pci_vhost_barread,

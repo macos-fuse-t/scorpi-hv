@@ -38,7 +38,7 @@ install_headers(
 install_headers(
   '../../include/scorpi/protocol/virtio_gpu.h',
   '../../include/scorpi/protocol/virtio_ring.h',
-  '../../include/scorpi/protocol/virtio_external.h',
+  '../../include/scorpi/protocol/virtio_vhost.h',
   subdir: 'scorpi/protocol',
 )
 

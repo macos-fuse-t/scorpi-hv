@@ -62,7 +62,7 @@
 
 #include "arch.h"
 #include "debug.h"
-#include "external_vmmem.h"
+#include "vhost_vmmem.h"
 #include "internal.h"
 #include "vmmapi.h"
 
@@ -339,7 +339,7 @@ vm_close(struct vmctx *ctx)
 			free(seg->object);
 		} else if (seg->shm_suffix[0] != '\0') {
 			munmap(seg->object, seg->len);
-			external_vmmem_shm_name(name, sizeof(name),
+			vhost_vmmem_shm_name(name, sizeof(name),
 			    seg->shm_suffix);
 			shm_unlink(name);
 		}
@@ -791,7 +791,7 @@ setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
 			goto fail;
 		}
 
-		external_vmmem_shm_name(name, sizeof(name), chunk_suffix);
+		vhost_vmmem_shm_name(name, sizeof(name), chunk_suffix);
 		if (shm_unlink(name) == -1 && errno != ENOENT) {
 			error = errno;
 			goto fail;
@@ -846,7 +846,7 @@ fail:
 	for (unsigned int i = 0; i <= chunk_index; i++) {
 		if (snprintf(chunk_suffix, sizeof(chunk_suffix), "%s%u", suffix,
 			i) < (int)sizeof(chunk_suffix)) {
-			external_vmmem_shm_name(name, sizeof(name),
+			vhost_vmmem_shm_name(name, sizeof(name),
 			    chunk_suffix);
 			shm_unlink(name);
 		}

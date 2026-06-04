@@ -1,4 +1,4 @@
-# External GPU Renderer Plan
+# Vhost GPU Renderer Plan
 
 Date: 2026-06-04
 
@@ -57,7 +57,7 @@ D3D12, Metal, or Vulkan.
 The split follows the same broad separation used by mature virtual GPU stacks:
 
 - QEMU `vhost-user`/`vhost-user-gpu`: a VMM-side stub communicates with an
-  external device backend over a socket and shared memory.
+  vhost device backend over a socket and shared memory.
 - virglrenderer/Venus: virtio-gpu transport with explicit capsets, contexts,
   blob resources, host-visible memory, and command-stream validation.
 - crosvm rutabaga/gfxstream: a renderer abstraction with selectable backends
@@ -77,18 +77,18 @@ The WebSocket control surface is not the GPU command path. DirectX/virtio-gpu
 command payloads are read by `scorpi-gpu-renderer` from mapped guest memory and
 virtqueue descriptors.
 
-## Final External-Virtio Direction
+## Final Vhost Direction
 
-The long-term architecture is a generic external virtio backend framework, not
+The long-term architecture is a generic vhost virtio backend framework, not
 a GPU-only one-off path.
 
 ```text
 scorpi-hv
   -> virtio PCI frontend
-  -> generic external virtio backend setup/control
-       -> external virtio-gpu backend: scorpi-gpu-renderer
-       -> external virtio-fs backend: future scorpi-fs-backend
-       -> other external virtio backends later
+  -> generic vhost virtio backend setup/control
+       -> vhost virtio-gpu backend: scorpi-gpu-renderer
+       -> vhost virtio-fs backend: future scorpi-fs-backend
+       -> other vhost virtio backends later
 ```
 
 The generic layer owns only shared virtio mechanics:
@@ -110,12 +110,12 @@ backend.
 
 Generic CNC setup/control actions should use device-agnostic names:
 
-- `virtio_backend_register`
-- `virtio_device_describe`
-- `virtio_queue_kick`
-- `virtio_queue_interrupt`
-- `virtio_device_reset`
-- `virtio_backend_disconnect`
+- `virtio_vhost_register`
+- `virtio_vhost_describe`
+- `virtio_vhost_queue_kick`
+- `virtio_vhost_queue_interrupt`
+- `virtio_vhost_reset`
+- `virtio_vhost_disconnect`
 
 GPU display publication remains separate and GPU/display-specific:
 
@@ -125,7 +125,7 @@ GPU display publication remains separate and GPU/display-specific:
 
 ## Milestones
 
-### MS1: External Renderer Skeleton
+### MS1: Vhost Renderer Skeleton
 
 Goal: prove process separation and ScorpiViewer display brokering.
 
@@ -157,9 +157,9 @@ Replace the software test pattern with a backend-rendered frame:
 - Linux: Vulkan clear/triangle into a renderer-owned target;
 - export to the same display path used in MS1.
 
-### MS3A: Generic External Virtio Backend Framework
+### MS3A: Generic Vhost Virtio Framework
 
-Create the reusable setup/control layer for external virtio backends:
+Create the reusable setup/control layer for vhost virtio backends:
 
 - backend registration;
 - device description;
@@ -172,15 +172,26 @@ Create the reusable setup/control layer for external virtio backends:
 The first implementation uses CNC WebSocket setup/control messages. It does not
 move submit payloads through JSON.
 
-### MS3B: Generic Virtio-Host Frontend
+### MS3B: Generic Vhost Frontend
 
-Add a separate `virtio-host` PCI device implementation in `scorpi-hv`.
-Do not modify the validated `pci_virtio_gpu.c` path for external backend work.
+Add a separate `virtio-gpu-vhost` PCI device implementation in `scorpi-hv`.
+Do not modify the validated `pci_virtio_gpu.c` path for vhost backend work.
+
+Implementation split:
+
+- `pci_virtio_vhost.c`: shared HV-side vhost frontend mechanics:
+  virtqueue metadata, memory export description, queue kicks, interrupt
+  dispatch, reset dispatch, and transport binding.
+- `pci_virtio_gpu_vhost.c`: virtio-gpu adapter: PCI identity, GPU config,
+  display resize state, legacy framebuffer compatibility, HDPI, and scanout
+  brokering.
+- Future adapters such as `pci_virtio_fs_vhost.c` should reuse
+  `pci_virtio_vhost.c` instead of duplicating queue and memory transport code.
 
 The VM config selects one path:
 
 - `virtio-gpu`: current validated internal `scorpi-hv` 2D/display device;
-- `virtio-host,device=virtio-gpu,backend=gpu0`: generic external virtio
+- `virtio-gpu-vhost,device=virtio-gpu,backend=gpu0`: generic vhost virtio
   frontend that presents virtio-gpu identity while `scorpi-gpu-renderer`
   implements the virtio-gpu backend.
 
@@ -242,7 +253,7 @@ Add the Scorpi D3D12 packet decoder and validator:
 ### MS6: Windows Guest Native DX12 Prototype
 
 Extend the Windows KMD/UMD path until a native D3D12 triangle presents through
-the external renderer.
+the vhost renderer.
 
 ### MS7: Hardening
 
@@ -288,7 +299,7 @@ scorpi-gpu-renderer \
 11. [done] Make `scorpi-hv` translate that to ScorpiViewer's `update_scanout`
     notification.
 12. [done] Add clean shutdown using `renderer_unset_scanout`.
-13. [done] Keep all MS1 behavior external-client driven so the validated display-only
+13. [done] Keep all MS1 behavior vhost-client driven so the validated display-only
     driver path is unchanged unless the renderer publishes a scanout.
 
 Remaining MS1 validation:
@@ -320,44 +331,43 @@ Status: started. This milestone is the first transport milestone for the
 eventual DX12 path. It does not execute DirectX yet.
 
 1. [done] Define the generic CNC WebSocket setup/control actions:
-   - `virtio_backend_register`
-   - `virtio_device_describe`
-   - `virtio_queue_kick`
-   - `virtio_queue_interrupt`
-   - `virtio_device_reset`
-   - `virtio_backend_disconnect`
+   - `virtio_vhost_register`
+   - `virtio_vhost_describe`
+   - `virtio_vhost_queue_kick`
+   - `virtio_vhost_queue_interrupt`
+   - `virtio_vhost_reset`
+   - `virtio_vhost_disconnect`
 2. [done] Add a renderer registration state in `scorpi-hv` without spawning the
    renderer.
 3. [done] Make `scorpi-gpu-renderer` register and disconnect over the generic
-   external virtio setup/control surface.
-4. [partial] Add a transport description object in `scorpi-hv` containing:
+   vhost virtio setup/control surface.
+4. [done] Add a transport description object in `scorpi-hv` containing:
    - negotiated virtio-gpu features;
    - queue index, size, descriptor address, avail address, and used address;
    - exported guest memory region metadata;
    - reset generation.
-   Current status: the new `virtio-host` frontend publishes feature bits, reset
+   Current status: the new `virtio-gpu-vhost` frontend publishes feature bits, reset
    generation, queue metadata, and low/high guest RAM metadata. Guest RAM is
-   backed by stable VM-UUID POSIX shm names:
-   `/scorpi-<vm-uuid>-ram-low` and `/scorpi-<vm-uuid>-ram-high`.
-5. [partial] Add a renderer-side transport object in `scorpi-gpu-renderer` that stores the
+   backed by stable POSIX shm names generated by `vhost_vmmem_shm_name()`.
+5. [done] Add a renderer-side transport object in `scorpi-gpu-renderer` that stores the
    transport description received over CNC.
-   Current status: the renderer requests `virtio_device_describe`, records
+   Current status: the renderer requests `virtio_vhost_describe`, records
    whether the transport is ready, and opens/maps exported guest RAM regions.
-6. [pending] Add renderer-side virtqueue helpers:
+6. [done] Add renderer-side virtqueue helpers:
    - translate guest physical address to mapped host pointer;
    - read descriptor table;
    - read avail ring;
    - walk descriptor chains;
    - write response data;
    - publish used entries.
-7. [partial] Add `virtio-host` queue handling so `scorpi-hv` only sends a kick
+7. [done] Add `virtio-gpu-vhost` queue handling so `scorpi-hv` only sends a kick
    notification for renderer-owned queues. It must not parse or copy command
    payloads for those queues.
-   Current status: `virtio-host` sends generic `virtio_queue_kick`
+   Current status: `virtio-gpu-vhost` sends generic `virtio_vhost_queue_kick`
    notifications.
-8. [pending] Add a renderer completion path where `scorpi-gpu-renderer` asks `scorpi-hv`
+8. [done] Add a renderer completion path where `scorpi-gpu-renderer` asks `scorpi-hv`
    to inject the virtio interrupt after updating the used ring.
-9. [pending] Validate with one minimal renderer-owned virtio command:
+9. [done] Validate with renderer-owned virtio-gpu 2D commands:
    - guest posts command;
    - HV sends kick only;
    - renderer reads the command directly from the queue;

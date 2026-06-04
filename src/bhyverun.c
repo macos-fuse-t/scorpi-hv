@@ -92,7 +92,7 @@
 #include "tpm_device.h"
 #include "vmexit.h"
 #include "vmgenc.h"
-#include "virtio_external_backend.h"
+#include "virtio_vhost_transport.h"
 
 #define MB (1024UL * 1024)
 #define GB (1024UL * MB)
@@ -997,9 +997,9 @@ bhyve_run_configured_vm(void)
 #endif
 
 	console_init();
-	virtio_external_backend_init();
+	virtio_vhost_transport_init();
 	cnc_start_srv();
-	virtio_external_backend_wait_bound_connected();
+	virtio_vhost_transport_wait_bound_connected();
 
 #ifdef BHYVE_SNAPSHOT
 	if (restore_file != NULL) {

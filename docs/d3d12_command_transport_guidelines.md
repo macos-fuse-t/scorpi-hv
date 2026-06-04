@@ -64,9 +64,9 @@ queues. `scorpi-hv` exposes the virtio PCI device, negotiates features, sets up
 queue and memory metadata, reports kicks, and injects interrupts. It must not
 parse, copy, or forward D3D12 submit payloads on the hot path.
 
-This should be implemented through Scorpi's generic external virtio backend
+This should be implemented through Scorpi's generic vhost virtio backend
 framework. Virtio-gpu is the first consumer, but the setup/control layer should
-also be reusable by future external virtio devices such as virtio-fs.
+also be reusable by future vhost virtio devices such as virtio-fs.
 
 Do not put every D3D12 command directly in virtqueue descriptors. Virtqueues
 should act as doorbells and lifecycle/control channels. Render command streams

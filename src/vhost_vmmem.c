@@ -8,13 +8,13 @@
 #include <stdio.h>
 #include <uuid/uuid.h>
 
-#include "external_vmmem.h"
+#include "vhost_vmmem.h"
 #include "vmmapi.h"
 
 extern uuid_t vm_uuid;
 
 void
-external_vmmem_shm_name(char *buf, size_t len, const char *suffix)
+vhost_vmmem_shm_name(char *buf, size_t len, const char *suffix)
 {
 	uint64_t hash;
 
@@ -27,15 +27,15 @@ external_vmmem_shm_name(char *buf, size_t len, const char *suffix)
 }
 
 static void
-external_vmmem_add_region(
-    struct scorpi_virtio_external_transport_desc *transport,
+vhost_vmmem_add_region(
+    struct scorpi_virtio_vhost_transport_desc *transport,
     uint64_t guest_phys_addr, uint64_t size, const char *suffix)
 {
-	struct scorpi_virtio_external_memory_region_desc *region;
+	struct scorpi_virtio_vhost_memory_region_desc *region;
 
 	if (size == 0 ||
 	    transport->memory_region_count >=
-		SCORPI_VIRTIO_EXTERNAL_MAX_MEMORY_REGIONS)
+		SCORPI_VIRTIO_VHOST_MAX_MEMORY_REGIONS)
 		return;
 
 	region = &transport->memory_regions[transport->memory_region_count++];
@@ -43,15 +43,15 @@ external_vmmem_add_region(
 	region->guest_phys_addr = guest_phys_addr;
 	region->size = size;
 	region->shm_offset = 0;
-	external_vmmem_shm_name(region->shm_name, sizeof(region->shm_name),
+	vhost_vmmem_shm_name(region->shm_name, sizeof(region->shm_name),
 	    suffix);
 }
 
 void
-external_vmmem_fill_transport(struct vmctx *ctx,
-    struct scorpi_virtio_external_transport_desc *transport)
+vhost_vmmem_fill_transport(struct vmctx *ctx,
+    struct scorpi_virtio_vhost_transport_desc *transport)
 {
-	char suffix[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];
+	char suffix[SCORPI_VIRTIO_VHOST_NAME_MAX];
 	vm_paddr_t gpa;
 	size_t size;
 
@@ -59,6 +59,6 @@ external_vmmem_fill_transport(struct vmctx *ctx,
 	     vm_get_external_memory_region(ctx, i, &gpa, &size, suffix,
 		 sizeof(suffix)) == 0;
 	     i++) {
-		external_vmmem_add_region(transport, gpa, size, suffix);
+		vhost_vmmem_add_region(transport, gpa, size, suffix);
 	}
 }

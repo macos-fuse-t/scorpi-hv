@@ -40,7 +40,7 @@
 #include "bhyverun.h"
 #include "config.h"
 #include "debug.h"
-#include "external_vmmem.h"
+#include "vhost_vmmem.h"
 #include "mem.h"
 
 #define	VM_HIGHMEM_BASE		(4 * GB)
@@ -1195,7 +1195,7 @@ vm_setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
 	int error;
 	int fd;
 
-	external_vmmem_shm_name(name, sizeof(name), suffix);
+	vhost_vmmem_shm_name(name, sizeof(name), suffix);
 	fd = shm_open(name, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
 	if (fd == -1)
 		return (errno);

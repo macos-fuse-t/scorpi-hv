@@ -15,38 +15,38 @@
 
 #include "cnc.h"
 #include "debug.h"
-#include "virtio_external_backend.h"
+#include "virtio_vhost_transport.h"
 
-#define VIRTIO_EXT_RESPONSE_MAX (64 * 1024)
+#define VIRTIO_VHOST_RESPONSE_MAX (64 * 1024)
 
-struct virtio_external_backend {
-	char backend_id[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];
-	char device_name[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];
-	char protocol[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];
+struct virtio_vhost_transport {
+	char backend_id[SCORPI_VIRTIO_VHOST_NAME_MAX];
+	char device_name[SCORPI_VIRTIO_VHOST_NAME_MAX];
+	char protocol[SCORPI_VIRTIO_VHOST_NAME_MAX];
 	cnc_conn_t conn;
 	bool connected;
-	struct scorpi_virtio_external_transport_desc transport;
-	virtio_external_interrupt_cb interrupt_cb;
-	virtio_external_reset_cb reset_cb;
+	struct scorpi_virtio_vhost_transport_desc transport;
+	virtio_vhost_interrupt_cb interrupt_cb;
+	virtio_vhost_reset_cb reset_cb;
 	void *device_opaque;
-	LIST_ENTRY(virtio_external_backend) entries;
+	LIST_ENTRY(virtio_vhost_transport) entries;
 };
 
-static LIST_HEAD(virtio_external_backends,
-    virtio_external_backend) backends = LIST_HEAD_INITIALIZER(backends);
+static LIST_HEAD(virtio_vhost_transports,
+    virtio_vhost_transport) backends = LIST_HEAD_INITIALIZER(backends);
 static pthread_mutex_t backends_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t backends_cond = PTHREAD_COND_INITIALIZER;
 
-static size_t virtio_external_append_queue_json(char *buf, size_t len,
-    size_t used, const struct scorpi_virtio_external_queue_desc *queue);
-static size_t virtio_external_append_memory_json(char *buf, size_t len,
+static size_t virtio_vhost_transport_append_queue_json(char *buf, size_t len,
+    size_t used, const struct scorpi_virtio_vhost_queue_desc *queue);
+static size_t virtio_vhost_transport_append_memory_json(char *buf, size_t len,
     size_t used,
-    const struct scorpi_virtio_external_memory_region_desc *region);
+    const struct scorpi_virtio_vhost_memory_region_desc *region);
 
-static struct virtio_external_backend *
-virtio_external_backend_find_locked(const char *backend_id)
+static struct virtio_vhost_transport *
+virtio_vhost_transport_find_locked(const char *backend_id)
 {
-	struct virtio_external_backend *backend;
+	struct virtio_vhost_transport *backend;
 
 	LIST_FOREACH(backend, &backends, entries) {
 		if (strcmp(backend->backend_id, backend_id) == 0)
@@ -56,7 +56,7 @@ virtio_external_backend_find_locked(const char *backend_id)
 }
 
 static bool
-virtio_external_valid_name(const char *name)
+virtio_vhost_transport_valid_name(const char *name)
 {
 	if (name == NULL || name[0] == '\0')
 		return (false);
@@ -71,20 +71,20 @@ virtio_external_valid_name(const char *name)
 }
 
 bool
-virtio_external_backend_registered(const char *backend_id)
+virtio_vhost_transport_registered(const char *backend_id)
 {
 	bool registered;
 
 	pthread_mutex_lock(&backends_lock);
-	registered = virtio_external_backend_find_locked(backend_id) != NULL;
+	registered = virtio_vhost_transport_find_locked(backend_id) != NULL;
 	pthread_mutex_unlock(&backends_lock);
 	return (registered);
 }
 
 static bool
-virtio_external_bound_backends_connected_locked(void)
+virtio_vhost_transport_bound_backends_connected_locked(void)
 {
-	struct virtio_external_backend *backend;
+	struct virtio_vhost_transport *backend;
 
 	LIST_FOREACH(backend, &backends, entries) {
 		if (backend->interrupt_cb != NULL && !backend->connected)
@@ -94,15 +94,15 @@ virtio_external_bound_backends_connected_locked(void)
 }
 
 void
-virtio_external_backend_wait_bound_connected(void)
+virtio_vhost_transport_wait_bound_connected(void)
 {
 	bool logged = false;
 
 	pthread_mutex_lock(&backends_lock);
-	while (!virtio_external_bound_backends_connected_locked()) {
+	while (!virtio_vhost_transport_bound_backends_connected_locked()) {
 		if (!logged) {
 			PRINTLN(
-			    "waiting for external virtio backend connection");
+			    "waiting for virtio vhost backend connection");
 			logged = true;
 		}
 		pthread_cond_wait(&backends_cond, &backends_lock);
@@ -111,21 +111,21 @@ virtio_external_backend_wait_bound_connected(void)
 }
 
 int
-virtio_external_backend_set_transport(const char *backend_id,
-    const struct scorpi_virtio_external_transport_desc *transport)
+virtio_vhost_transport_set_transport(const char *backend_id,
+    const struct scorpi_virtio_vhost_transport_desc *transport)
 {
-	struct virtio_external_backend *backend;
+	struct virtio_vhost_transport *backend;
 	int rc = 0;
 
 	if (backend_id == NULL || transport == NULL)
 		return (-1);
-	if (transport->queue_count > SCORPI_VIRTIO_EXTERNAL_MAX_QUEUES ||
+	if (transport->queue_count > SCORPI_VIRTIO_VHOST_MAX_QUEUES ||
 	    transport->memory_region_count >
-		SCORPI_VIRTIO_EXTERNAL_MAX_MEMORY_REGIONS)
+		SCORPI_VIRTIO_VHOST_MAX_MEMORY_REGIONS)
 		return (-1);
 
 	pthread_mutex_lock(&backends_lock);
-	backend = virtio_external_backend_find_locked(backend_id);
+	backend = virtio_vhost_transport_find_locked(backend_id);
 	if (backend == NULL) {
 		backend = calloc(1, sizeof(*backend));
 		if (backend == NULL) {
@@ -153,20 +153,20 @@ done:
 }
 
 int
-virtio_external_backend_bind_device(const char *backend_id,
-    const struct scorpi_virtio_external_transport_desc *transport,
-    virtio_external_interrupt_cb interrupt_cb,
-    virtio_external_reset_cb reset_cb, void *opaque)
+virtio_vhost_transport_bind_device(const char *backend_id,
+    const struct scorpi_virtio_vhost_transport_desc *transport,
+    virtio_vhost_interrupt_cb interrupt_cb,
+    virtio_vhost_reset_cb reset_cb, void *opaque)
 {
-	struct virtio_external_backend *backend;
+	struct virtio_vhost_transport *backend;
 	int rc;
 
-	rc = virtio_external_backend_set_transport(backend_id, transport);
+	rc = virtio_vhost_transport_set_transport(backend_id, transport);
 	if (rc != 0)
 		return (rc);
 
 	pthread_mutex_lock(&backends_lock);
-	backend = virtio_external_backend_find_locked(backend_id);
+	backend = virtio_vhost_transport_find_locked(backend_id);
 	if (backend == NULL) {
 		pthread_mutex_unlock(&backends_lock);
 		return (-1);
@@ -180,12 +180,12 @@ virtio_external_backend_bind_device(const char *backend_id,
 }
 
 void
-virtio_external_backend_clear_transport(const char *backend_id)
+virtio_vhost_transport_clear_transport(const char *backend_id)
 {
-	struct virtio_external_backend *backend;
+	struct virtio_vhost_transport *backend;
 
 	pthread_mutex_lock(&backends_lock);
-	backend = virtio_external_backend_find_locked(backend_id);
+	backend = virtio_vhost_transport_find_locked(backend_id);
 	if (backend != NULL)
 		memset(&backend->transport, 0, sizeof(backend->transport));
 	pthread_cond_broadcast(&backends_cond);
@@ -193,12 +193,12 @@ virtio_external_backend_clear_transport(const char *backend_id)
 }
 
 int
-virtio_external_backend_notify_queue_kick(const char *backend_id,
+virtio_vhost_transport_notify_queue_kick(const char *backend_id,
     uint32_t queue_index)
 {
-	struct virtio_external_backend *backend;
+	struct virtio_vhost_transport *backend;
 	cnc_conn_t conn;
-	char notification[VIRTIO_EXT_RESPONSE_MAX];
+	char notification[VIRTIO_VHOST_RESPONSE_MAX];
 	size_t used;
 	int rc;
 
@@ -206,7 +206,7 @@ virtio_external_backend_notify_queue_kick(const char *backend_id,
 		return (-1);
 
 	pthread_mutex_lock(&backends_lock);
-	backend = virtio_external_backend_find_locked(backend_id);
+	backend = virtio_vhost_transport_find_locked(backend_id);
 	if (backend == NULL || !backend->connected || backend->conn == NULL) {
 		pthread_mutex_unlock(&backends_lock);
 		return (-1);
@@ -214,7 +214,7 @@ virtio_external_backend_notify_queue_kick(const char *backend_id,
 	conn = backend->conn;
 
 	rc = snprintf(notification, sizeof(notification),
-	    "{ \"event\": \"virtio_queue_kick\", \"data\": {"
+	    "{ \"event\": \"virtio_vhost_queue_kick\", \"data\": {"
 	    "\"backend_id\": \"%s\","
 	    "\"device_name\": \"%s\","
 	    "\"queue_index\": %u,"
@@ -227,7 +227,7 @@ virtio_external_backend_notify_queue_kick(const char *backend_id,
 	used = (size_t)rc;
 
 	for (uint32_t i = 0; i < backend->transport.queue_count; i++)
-		used = virtio_external_append_queue_json(notification,
+		used = virtio_vhost_transport_append_queue_json(notification,
 		    sizeof(notification), used, &backend->transport.queues[i]);
 	if (used >= sizeof(notification))
 		goto too_large;
@@ -239,7 +239,7 @@ virtio_external_backend_notify_queue_kick(const char *backend_id,
 	used += (size_t)rc;
 
 	for (uint32_t i = 0; i < backend->transport.memory_region_count; i++)
-		used = virtio_external_append_memory_json(notification,
+		used = virtio_vhost_transport_append_memory_json(notification,
 		    sizeof(notification), used,
 		    &backend->transport.memory_regions[i]);
 	if (used >= sizeof(notification))
@@ -259,19 +259,19 @@ too_large:
 }
 
 int
-virtio_external_backend_notify_display_resize(const char *backend_id,
+virtio_vhost_transport_notify_display_resize(const char *backend_id,
     uint32_t width, uint32_t height)
 {
-	struct virtio_external_backend *backend;
+	struct virtio_vhost_transport *backend;
 	cnc_conn_t conn;
-	char notification[VIRTIO_EXT_RESPONSE_MAX];
+	char notification[VIRTIO_VHOST_RESPONSE_MAX];
 	int rc;
 
 	if (backend_id == NULL)
 		return (-1);
 
 	pthread_mutex_lock(&backends_lock);
-	backend = virtio_external_backend_find_locked(backend_id);
+	backend = virtio_vhost_transport_find_locked(backend_id);
 	if (backend == NULL || !backend->connected || backend->conn == NULL) {
 		pthread_mutex_unlock(&backends_lock);
 		return (-1);
@@ -279,7 +279,7 @@ virtio_external_backend_notify_display_resize(const char *backend_id,
 	conn = backend->conn;
 
 	rc = snprintf(notification, sizeof(notification),
-	    "{ \"event\": \"virtio_gpu_resize\", \"data\": {"
+	    "{ \"event\": \"virtio_vhost_gpu_resize\", \"data\": {"
 	    "\"backend_id\": \"%s\","
 	    "\"device_name\": \"%s\","
 	    "\"width\": %u,"
@@ -299,17 +299,17 @@ virtio_external_backend_notify_display_resize(const char *backend_id,
 }
 
 static void
-virtio_external_backend_send_not_ready(cnc_conn_t c, int req_id)
+virtio_vhost_transport_send_not_ready(cnc_conn_t c, int req_id)
 {
 	cnc_send_response(c, req_id,
 	    "{\"accepted\":false,\"reason\":\"not_ready\"}");
 }
 
 static void
-virtio_backend_register(cnc_conn_t c, int req_id, int argc, char *argv[],
+virtio_vhost_register(cnc_conn_t c, int req_id, int argc, char *argv[],
     void *param)
 {
-	struct virtio_external_backend *backend;
+	struct virtio_vhost_transport *backend;
 
 	(void)param;
 	if (argc < 3) {
@@ -317,16 +317,16 @@ virtio_backend_register(cnc_conn_t c, int req_id, int argc, char *argv[],
 		    "{\"accepted\":false,\"reason\":\"bad_args\"}");
 		return;
 	}
-	if (!virtio_external_valid_name(argv[0]) ||
-	    !virtio_external_valid_name(argv[1]) ||
-	    !virtio_external_valid_name(argv[2])) {
+	if (!virtio_vhost_transport_valid_name(argv[0]) ||
+	    !virtio_vhost_transport_valid_name(argv[1]) ||
+	    !virtio_vhost_transport_valid_name(argv[2])) {
 		cnc_send_response(c, req_id,
 		    "{\"accepted\":false,\"reason\":\"bad_name\"}");
 		return;
 	}
 
 	pthread_mutex_lock(&backends_lock);
-	backend = virtio_external_backend_find_locked(argv[0]);
+	backend = virtio_vhost_transport_find_locked(argv[0]);
 	if (backend != NULL) {
 		backend->conn = c;
 		backend->connected = true;
@@ -369,16 +369,16 @@ virtio_backend_register(cnc_conn_t c, int req_id, int argc, char *argv[],
 	pthread_mutex_unlock(&backends_lock);
 
 	PRINTLN(
-	    "virtio external backend registered: id=%s device=%s protocol=%s",
+	    "virtio vhost backend registered: id=%s device=%s protocol=%s",
 	    backend->backend_id, backend->device_name, backend->protocol);
 	cnc_send_response(c, req_id, "{\"accepted\":true,\"updated\":false}");
 }
 
 static void
-virtio_backend_disconnect(cnc_conn_t c, int req_id, int argc, char *argv[],
+virtio_vhost_disconnect(cnc_conn_t c, int req_id, int argc, char *argv[],
     void *param)
 {
-	struct virtio_external_backend *backend;
+	struct virtio_vhost_transport *backend;
 
 	(void)param;
 	if (argc < 1) {
@@ -386,14 +386,14 @@ virtio_backend_disconnect(cnc_conn_t c, int req_id, int argc, char *argv[],
 		    "{\"accepted\":false,\"reason\":\"bad_args\"}");
 		return;
 	}
-	if (!virtio_external_valid_name(argv[0])) {
+	if (!virtio_vhost_transport_valid_name(argv[0])) {
 		cnc_send_response(c, req_id,
 		    "{\"accepted\":false,\"reason\":\"bad_name\"}");
 		return;
 	}
 
 	pthread_mutex_lock(&backends_lock);
-	backend = virtio_external_backend_find_locked(argv[0]);
+	backend = virtio_vhost_transport_find_locked(argv[0]);
 	if (backend == NULL) {
 		pthread_mutex_unlock(&backends_lock);
 		cnc_send_response(c, req_id,
@@ -402,7 +402,7 @@ virtio_backend_disconnect(cnc_conn_t c, int req_id, int argc, char *argv[],
 	}
 
 	LIST_REMOVE(backend, entries);
-	PRINTLN("virtio external backend disconnected: id=%s",
+	PRINTLN("virtio vhost backend disconnected: id=%s",
 	    backend->backend_id);
 	if (backend->transport.ready || backend->transport.queue_count > 0 ||
 	    backend->transport.memory_region_count > 0) {
@@ -419,8 +419,8 @@ virtio_backend_disconnect(cnc_conn_t c, int req_id, int argc, char *argv[],
 }
 
 static size_t
-virtio_external_append_queue_json(char *buf, size_t len, size_t used,
-    const struct scorpi_virtio_external_queue_desc *queue)
+virtio_vhost_transport_append_queue_json(char *buf, size_t len, size_t used,
+    const struct scorpi_virtio_vhost_queue_desc *queue)
 {
 	int rc;
 
@@ -438,8 +438,8 @@ virtio_external_append_queue_json(char *buf, size_t len, size_t used,
 }
 
 static size_t
-virtio_external_append_memory_json(char *buf, size_t len, size_t used,
-    const struct scorpi_virtio_external_memory_region_desc *region)
+virtio_vhost_transport_append_memory_json(char *buf, size_t len, size_t used,
+    const struct scorpi_virtio_vhost_memory_region_desc *region)
 {
 	int rc;
 
@@ -456,12 +456,12 @@ virtio_external_append_memory_json(char *buf, size_t len, size_t used,
 }
 
 static void
-virtio_external_send_transport_desc(cnc_conn_t c, int req_id,
-    const struct virtio_external_backend *backend)
+virtio_vhost_transport_send_transport_desc(cnc_conn_t c, int req_id,
+    const struct virtio_vhost_transport *backend)
 {
-	const struct scorpi_virtio_external_transport_desc *transport =
+	const struct scorpi_virtio_vhost_transport_desc *transport =
 	    &backend->transport;
-	char response[VIRTIO_EXT_RESPONSE_MAX];
+	char response[VIRTIO_VHOST_RESPONSE_MAX];
 	size_t used = 0;
 	int rc;
 
@@ -485,7 +485,7 @@ virtio_external_send_transport_desc(cnc_conn_t c, int req_id,
 	used = (size_t)rc;
 
 	for (uint32_t i = 0; i < transport->queue_count; i++)
-		used = virtio_external_append_queue_json(response,
+		used = virtio_vhost_transport_append_queue_json(response,
 		    sizeof(response), used, &transport->queues[i]);
 	if (used >= sizeof(response))
 		goto too_large;
@@ -497,7 +497,7 @@ virtio_external_send_transport_desc(cnc_conn_t c, int req_id,
 	used += (size_t)rc;
 
 	for (uint32_t i = 0; i < transport->memory_region_count; i++)
-		used = virtio_external_append_memory_json(response,
+		used = virtio_vhost_transport_append_memory_json(response,
 		    sizeof(response), used, &transport->memory_regions[i]);
 	if (used >= sizeof(response))
 		goto too_large;
@@ -515,11 +515,11 @@ too_large:
 }
 
 static void
-virtio_device_describe(cnc_conn_t c, int req_id, int argc, char *argv[],
+virtio_vhost_describe(cnc_conn_t c, int req_id, int argc, char *argv[],
     void *param)
 {
-	struct virtio_external_backend *backend;
-	struct virtio_external_backend snapshot;
+	struct virtio_vhost_transport *backend;
+	struct virtio_vhost_transport snapshot;
 
 	(void)param;
 	if (argc < 1) {
@@ -527,14 +527,14 @@ virtio_device_describe(cnc_conn_t c, int req_id, int argc, char *argv[],
 		    "{\"accepted\":false,\"reason\":\"bad_args\"}");
 		return;
 	}
-	if (!virtio_external_valid_name(argv[0])) {
+	if (!virtio_vhost_transport_valid_name(argv[0])) {
 		cnc_send_response(c, req_id,
 		    "{\"accepted\":false,\"reason\":\"bad_name\"}");
 		return;
 	}
 
 	pthread_mutex_lock(&backends_lock);
-	backend = virtio_external_backend_find_locked(argv[0]);
+	backend = virtio_vhost_transport_find_locked(argv[0]);
 	if (backend == NULL) {
 		pthread_mutex_unlock(&backends_lock);
 		cnc_send_response(c, req_id,
@@ -543,24 +543,25 @@ virtio_device_describe(cnc_conn_t c, int req_id, int argc, char *argv[],
 	}
 	snapshot = *backend;
 	pthread_mutex_unlock(&backends_lock);
-	virtio_external_send_transport_desc(c, req_id, &snapshot);
+	virtio_vhost_transport_send_transport_desc(c, req_id, &snapshot);
 }
 
 static void
-virtio_queue_kick(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
+virtio_vhost_queue_kick(cnc_conn_t c, int req_id, int argc, char *argv[],
+    void *param)
 {
 	(void)argc;
 	(void)argv;
 	(void)param;
-	virtio_external_backend_send_not_ready(c, req_id);
+	virtio_vhost_transport_send_not_ready(c, req_id);
 }
 
 static void
-virtio_queue_interrupt(cnc_conn_t c, int req_id, int argc, char *argv[],
+virtio_vhost_queue_interrupt(cnc_conn_t c, int req_id, int argc, char *argv[],
     void *param)
 {
-	struct virtio_external_backend *backend;
-	virtio_external_interrupt_cb interrupt_cb;
+	struct virtio_vhost_transport *backend;
+	virtio_vhost_interrupt_cb interrupt_cb;
 	void *opaque;
 	uint32_t queue_index;
 
@@ -570,7 +571,7 @@ virtio_queue_interrupt(cnc_conn_t c, int req_id, int argc, char *argv[],
 		    "{\"accepted\":false,\"reason\":\"bad_args\"}");
 		return;
 	}
-	if (!virtio_external_valid_name(argv[0])) {
+	if (!virtio_vhost_transport_valid_name(argv[0])) {
 		cnc_send_response(c, req_id,
 		    "{\"accepted\":false,\"reason\":\"bad_name\"}");
 		return;
@@ -578,10 +579,10 @@ virtio_queue_interrupt(cnc_conn_t c, int req_id, int argc, char *argv[],
 
 	queue_index = (uint32_t)strtoul(argv[1], NULL, 10);
 	pthread_mutex_lock(&backends_lock);
-	backend = virtio_external_backend_find_locked(argv[0]);
+	backend = virtio_vhost_transport_find_locked(argv[0]);
 	if (backend == NULL || backend->interrupt_cb == NULL) {
 		pthread_mutex_unlock(&backends_lock);
-		virtio_external_backend_send_not_ready(c, req_id);
+		virtio_vhost_transport_send_not_ready(c, req_id);
 		return;
 	}
 	interrupt_cb = backend->interrupt_cb;
@@ -593,11 +594,11 @@ virtio_queue_interrupt(cnc_conn_t c, int req_id, int argc, char *argv[],
 }
 
 static void
-virtio_device_reset(cnc_conn_t c, int req_id, int argc, char *argv[],
+virtio_vhost_reset(cnc_conn_t c, int req_id, int argc, char *argv[],
     void *param)
 {
-	struct virtio_external_backend *backend;
-	virtio_external_reset_cb reset_cb;
+	struct virtio_vhost_transport *backend;
+	virtio_vhost_reset_cb reset_cb;
 	void *opaque;
 
 	(void)param;
@@ -606,17 +607,17 @@ virtio_device_reset(cnc_conn_t c, int req_id, int argc, char *argv[],
 		    "{\"accepted\":false,\"reason\":\"bad_args\"}");
 		return;
 	}
-	if (!virtio_external_valid_name(argv[0])) {
+	if (!virtio_vhost_transport_valid_name(argv[0])) {
 		cnc_send_response(c, req_id,
 		    "{\"accepted\":false,\"reason\":\"bad_name\"}");
 		return;
 	}
 
 	pthread_mutex_lock(&backends_lock);
-	backend = virtio_external_backend_find_locked(argv[0]);
+	backend = virtio_vhost_transport_find_locked(argv[0]);
 	if (backend == NULL || backend->reset_cb == NULL) {
 		pthread_mutex_unlock(&backends_lock);
-		virtio_external_backend_send_not_ready(c, req_id);
+		virtio_vhost_transport_send_not_ready(c, req_id);
 		return;
 	}
 	reset_cb = backend->reset_cb;
@@ -628,22 +629,23 @@ virtio_device_reset(cnc_conn_t c, int req_id, int argc, char *argv[],
 }
 
 void
-virtio_external_backend_init(void)
+virtio_vhost_transport_init(void)
 {
 	static int once;
 
 	if (once)
 		return;
 
-	cnc_register_command("virtio_backend_register", virtio_backend_register,
+	cnc_register_command("virtio_vhost_register", virtio_vhost_register,
 	    NULL);
-	cnc_register_command("virtio_device_describe", virtio_device_describe,
+	cnc_register_command("virtio_vhost_describe", virtio_vhost_describe,
 	    NULL);
-	cnc_register_command("virtio_queue_kick", virtio_queue_kick, NULL);
-	cnc_register_command("virtio_queue_interrupt", virtio_queue_interrupt,
+	cnc_register_command("virtio_vhost_queue_kick", virtio_vhost_queue_kick,
 	    NULL);
-	cnc_register_command("virtio_device_reset", virtio_device_reset, NULL);
-	cnc_register_command("virtio_backend_disconnect",
-	    virtio_backend_disconnect, NULL);
+	cnc_register_command("virtio_vhost_queue_interrupt",
+	    virtio_vhost_queue_interrupt, NULL);
+	cnc_register_command("virtio_vhost_reset", virtio_vhost_reset, NULL);
+	cnc_register_command("virtio_vhost_disconnect",
+	    virtio_vhost_disconnect, NULL);
 	once = 1;
 }
