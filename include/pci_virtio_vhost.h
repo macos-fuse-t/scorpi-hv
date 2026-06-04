@@ -25,6 +25,7 @@ struct pci_vhost_state {
 	pci_vhost_reset_cb reset_cb;
 	pci_vhost_device_features_cb device_features_cb;
 	void *reset_opaque;
+	void *device_features_opaque;
 };
 
 struct pci_vhost_transport_info {
@@ -39,7 +40,7 @@ void pci_vhost_set_features(struct pci_vhost_state *state, uint64_t features);
 void pci_vhost_clear_features(struct pci_vhost_state *state);
 bool pci_vhost_features_negotiated(const struct pci_vhost_state *state);
 void pci_vhost_set_device_features_cb(struct pci_vhost_state *state,
-    pci_vhost_device_features_cb device_features_cb);
+    pci_vhost_device_features_cb device_features_cb, void *opaque);
 void pci_vhost_advance_reset_generation(struct pci_vhost_state *state);
 int pci_vhost_bind_transport(struct pci_vhost_state *state, struct vmctx *ctx,
     const struct pci_vhost_transport_info *info);

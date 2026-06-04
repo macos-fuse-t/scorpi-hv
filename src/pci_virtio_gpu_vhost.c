@@ -693,7 +693,8 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	pci_vhost_state_init(&sc->vhost, &sc->vsc_vs, sc->queues,
 	    VHOST_GPU_QUEUE_COUNT, backend_id, device_name, pci_vhost_reset,
 	    sc);
-	pci_vhost_set_device_features_cb(&sc->vhost, pci_vhost_device_features);
+	pci_vhost_set_device_features_cb(&sc->vhost, pci_vhost_device_features,
+	    sc);
 
 	pci_set_cfgdata16(pi, PCIR_DEVICE, VIRTIO_DEV_GPU);
 	pci_set_cfgdata16(pi, PCIR_VENDOR, VIRTIO_VENDOR);

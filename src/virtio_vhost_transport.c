@@ -34,6 +34,7 @@ struct virtio_vhost_transport {
 	bool connected;
 	bool connection_started;
 	bool device_features_valid;
+	bool device_features_applied;
 	uint64_t device_features;
 	struct scorpi_virtio_vhost_transport_desc transport;
 	virtio_vhost_interrupt_cb interrupt_cb;
@@ -216,7 +217,9 @@ virtio_vhost_transport_wait_configured_backends_registered(void)
 		LIST_FOREACH(backend, &backends, entries) {
 			if (backend->socket_path[0] == '\0')
 				continue;
-			if (backend->connected && backend->device_features_valid)
+			if (backend->connected &&
+			    backend->device_features_valid &&
+			    backend->device_features_applied)
 				continue;
 			waiting_backend = backend->backend_id;
 			break;
@@ -294,6 +297,8 @@ virtio_vhost_transport_bind_device(const char *backend_id,
     virtio_vhost_device_features_cb device_features_cb, void *opaque)
 {
 	struct virtio_vhost_transport *backend;
+	virtio_vhost_device_features_cb applied_features_cb = NULL;
+	void *applied_features_opaque = NULL;
 	uint64_t device_features = 0;
 	bool device_features_valid = false;
 	int rc;
@@ -315,11 +320,22 @@ virtio_vhost_transport_bind_device(const char *backend_id,
 	if (backend->device_features_valid) {
 		device_features = backend->device_features;
 		device_features_valid = true;
+		backend->device_features_applied = device_features_cb == NULL;
+		applied_features_cb = device_features_cb;
+		applied_features_opaque = opaque;
 	}
 	pthread_cond_broadcast(&backends_cond);
 	pthread_mutex_unlock(&backends_lock);
-	if (device_features_valid && device_features_cb != NULL)
-		device_features_cb(opaque, device_features);
+	if (device_features_valid && applied_features_cb != NULL) {
+		applied_features_cb(applied_features_opaque, device_features);
+		pthread_mutex_lock(&backends_lock);
+		backend = virtio_vhost_transport_find_locked(backend_id);
+		if (backend != NULL) {
+			backend->device_features_applied = true;
+			pthread_cond_broadcast(&backends_cond);
+		}
+		pthread_mutex_unlock(&backends_lock);
+	}
 	return (0);
 }
 
@@ -488,6 +504,7 @@ virtio_vhost_register(cnc_conn_t c, int req_id, int argc, char *argv[],
 		backend->connected = true;
 		backend->device_features = device_features;
 		backend->device_features_valid = true;
+		backend->device_features_applied = false;
 		snprintf(backend->device_name, sizeof(backend->device_name),
 		    "%s", argv[1]);
 		snprintf(backend->protocol, sizeof(backend->protocol), "%s",
@@ -498,10 +515,21 @@ virtio_vhost_register(cnc_conn_t c, int req_id, int argc, char *argv[],
 		    sizeof(backend->transport.device_name), "%s", argv[1]);
 		device_features_cb = backend->device_features_cb;
 		device_opaque = backend->device_opaque;
-		pthread_cond_broadcast(&backends_cond);
+		if (device_features_cb == NULL) {
+			backend->device_features_applied = true;
+			pthread_cond_broadcast(&backends_cond);
+		}
 		pthread_mutex_unlock(&backends_lock);
-		if (device_features_cb != NULL)
+		if (device_features_cb != NULL) {
 			device_features_cb(device_opaque, device_features);
+			pthread_mutex_lock(&backends_lock);
+			backend = virtio_vhost_transport_find_locked(argv[0]);
+			if (backend != NULL) {
+				backend->device_features_applied = true;
+				pthread_cond_broadcast(&backends_cond);
+			}
+			pthread_mutex_unlock(&backends_lock);
+		}
 		cnc_send_response(c, req_id,
 		    "{\"accepted\":true,\"updated\":true}");
 		return;
@@ -524,6 +552,7 @@ virtio_vhost_register(cnc_conn_t c, int req_id, int argc, char *argv[],
 	backend->connected = true;
 	backend->device_features = device_features;
 	backend->device_features_valid = true;
+	backend->device_features_applied = true;
 	snprintf(backend->transport.backend_id,
 	    sizeof(backend->transport.backend_id), "%s", argv[0]);
 	snprintf(backend->transport.device_name,
