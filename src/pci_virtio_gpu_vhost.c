@@ -35,7 +35,7 @@
 #include "vmmapi.h"
 
 #define VHOST_DEFAULT_BACKEND_ID  "gpu0"
-#define VHOST_DEFAULT_DEVICE_NAME "virtio-gpu"
+#define VHOST_DEFAULT_DEVICE_NAME SCORPI_VIRTIO_VHOST_DEVICE_GPU
 #define VHOST_DEFAULT_QUEUE_SIZE  1024
 #define VHOST_GPU_QUEUE_COUNT	  2
 #define VHOST_GPU_CTRLQ		  0
@@ -53,7 +53,7 @@
 #define VHOST_LEGACY_RESOURCE_ID  0xFFFFFFFF
 #define VHOST_GPU_TRANSPORT_FEATURES \
 	(VIRTIO_RING_F_INDIRECT_DESC | VIRTIO_F_VERSION_1)
-#define VHOST_GPU_BACKEND_FEATURES (1ULL << VIRTIO_GPU_F_EDID)
+#define VHOST_GPU_DEVICE_FEATURES (1ULL << VIRTIO_GPU_F_EDID)
 
 struct pci_vhost_softc {
 	struct virtio_softc vsc_vs;
@@ -155,13 +155,17 @@ static struct virtio_consts vhost_consts = {
 };
 
 static void
-pci_vhost_backend_features(void *opaque, uint64_t backend_features)
+pci_vhost_device_features(void *opaque, uint64_t device_features)
 {
 	struct pci_vhost_softc *sc = opaque;
 
 	pthread_mutex_lock(&sc->vsc_mtx);
+	if (pci_vhost_features_negotiated(&sc->vhost)) {
+		pthread_mutex_unlock(&sc->vsc_mtx);
+		return;
+	}
 	sc->vsc_consts.vc_hv_caps = VHOST_GPU_TRANSPORT_FEATURES |
-	    (backend_features & VHOST_GPU_BACKEND_FEATURES);
+	    (device_features & VHOST_GPU_DEVICE_FEATURES);
 	pthread_mutex_unlock(&sc->vsc_mtx);
 }
 
@@ -422,7 +426,7 @@ pci_vhost_gpu_register_device(struct pci_vhost_softc *sc)
 
 	pthread_mutex_lock(&pci_vhost_gpu_devices_mtx);
 	if (!command_registered) {
-		cnc_register_command("virtio_vhost_gpu_config",
+		cnc_register_command(SCORPI_VIRTIO_VHOST_CMD_GPU_CONFIG,
 		    pci_vhost_gpu_config, NULL);
 		command_registered = 1;
 	}
@@ -497,6 +501,7 @@ pci_vhost_reset(void *vsc)
 {
 	struct pci_vhost_softc *sc = vsc;
 
+	pci_vhost_clear_features(&sc->vhost);
 	pci_vhost_advance_reset_generation(&sc->vhost);
 	vi_reset_dev(&sc->vsc_vs);
 	pci_vhost_bind_callbacks(sc);
@@ -597,7 +602,7 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	device_name = get_config_value_node(nvl, "backend_device");
 	if (device_name == NULL)
 		device_name = VHOST_DEFAULT_DEVICE_NAME;
-	if (strcmp(device_name, "virtio-gpu") != 0) {
+	if (strcmp(device_name, SCORPI_VIRTIO_VHOST_DEVICE_GPU) != 0) {
 		EPRINTLN("virtio-gpu-vhost: unsupported device '%s'",
 		    device_name);
 		return (-1);
@@ -680,8 +685,7 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	pci_vhost_state_init(&sc->vhost, &sc->vsc_vs, sc->queues,
 	    VHOST_GPU_QUEUE_COUNT, backend_id, device_name, pci_vhost_reset,
 	    sc);
-	pci_vhost_set_backend_features_cb(&sc->vhost,
-	    pci_vhost_backend_features);
+	pci_vhost_set_device_features_cb(&sc->vhost, pci_vhost_device_features);
 
 	pci_set_cfgdata16(pi, PCIR_DEVICE, VIRTIO_DEV_GPU);
 	pci_set_cfgdata16(pi, PCIR_VENDOR, VIRTIO_VENDOR);

@@ -10,8 +10,8 @@ struct vqueue_info;
 struct vmctx;
 
 typedef void (*pci_vhost_reset_cb)(void *opaque);
-typedef void (*pci_vhost_backend_features_cb)(void *opaque,
-    uint64_t backend_features);
+typedef void (*pci_vhost_device_features_cb)(void *opaque,
+    uint64_t device_features);
 
 struct pci_vhost_state {
 	struct virtio_softc *vs;
@@ -20,9 +20,10 @@ struct pci_vhost_state {
 	char backend_id[SCORPI_VIRTIO_VHOST_NAME_MAX];
 	char device_name[SCORPI_VIRTIO_VHOST_NAME_MAX];
 	uint64_t features;
+	bool features_negotiated;
 	uint32_t reset_generation;
 	pci_vhost_reset_cb reset_cb;
-	pci_vhost_backend_features_cb backend_features_cb;
+	pci_vhost_device_features_cb device_features_cb;
 	void *reset_opaque;
 };
 
@@ -35,8 +36,10 @@ void pci_vhost_state_init(struct pci_vhost_state *state,
     const char *backend_id, const char *device_name, pci_vhost_reset_cb reset_cb,
     void *reset_opaque);
 void pci_vhost_set_features(struct pci_vhost_state *state, uint64_t features);
-void pci_vhost_set_backend_features_cb(struct pci_vhost_state *state,
-    pci_vhost_backend_features_cb backend_features_cb);
+void pci_vhost_clear_features(struct pci_vhost_state *state);
+bool pci_vhost_features_negotiated(const struct pci_vhost_state *state);
+void pci_vhost_set_device_features_cb(struct pci_vhost_state *state,
+    pci_vhost_device_features_cb device_features_cb);
 void pci_vhost_advance_reset_generation(struct pci_vhost_state *state);
 int pci_vhost_bind_transport(struct pci_vhost_state *state, struct vmctx *ctx,
     const struct pci_vhost_transport_info *info);

@@ -94,13 +94,27 @@ void
 pci_vhost_set_features(struct pci_vhost_state *state, uint64_t features)
 {
 	state->features = features;
+	state->features_negotiated = true;
 }
 
 void
-pci_vhost_set_backend_features_cb(struct pci_vhost_state *state,
-    pci_vhost_backend_features_cb backend_features_cb)
+pci_vhost_clear_features(struct pci_vhost_state *state)
 {
-	state->backend_features_cb = backend_features_cb;
+	state->features = 0;
+	state->features_negotiated = false;
+}
+
+bool
+pci_vhost_features_negotiated(const struct pci_vhost_state *state)
+{
+	return (state->features_negotiated);
+}
+
+void
+pci_vhost_set_device_features_cb(struct pci_vhost_state *state,
+    pci_vhost_device_features_cb device_features_cb)
+{
+	state->device_features_cb = device_features_cb;
 }
 
 void
@@ -139,7 +153,7 @@ pci_vhost_bind_transport(struct pci_vhost_state *state, struct vmctx *ctx,
 
 	return (virtio_vhost_transport_bind_device(state->backend_id,
 	    &transport, pci_vhost_interrupt, pci_vhost_reset,
-	    state->backend_features_cb, state));
+	    state->device_features_cb, state));
 }
 
 int

@@ -1003,6 +1003,10 @@ bhyve_run_configured_vm(void)
 		EPRINTLN("Failed to connect configured virtio vhost backends");
 		return (4);
 	}
+	if (virtio_vhost_transport_wait_configured_backends_registered() != 0) {
+		EPRINTLN("Failed to register configured virtio vhost backends");
+		return (4);
+	}
 
 #ifdef BHYVE_SNAPSHOT
 	if (restore_file != NULL) {
