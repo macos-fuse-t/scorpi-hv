@@ -385,10 +385,10 @@ renderer_set_scanout(cnc_conn_t c, int req_id, int argc, char *argv[],
 	bool redraw_on_timer;
 
 	(void)param;
-	if (argc < 7) {
-		cnc_send_response(c, req_id, "{\"accepted\":false}");
+	(void)c;
+	(void)req_id;
+	if (argc < 7)
 		return;
-	}
 
 	width = console_parse_u32_arg(argv[0]);
 	height = console_parse_u32_arg(argv[1]);
@@ -400,7 +400,6 @@ renderer_set_scanout(cnc_conn_t c, int req_id, int argc, char *argv[],
 
 	console_set_scanout(true, width, height, stride, format, argv[4],
 	    shm_size, redraw_on_timer);
-	cnc_send_response(c, req_id, "{\"accepted\":true}");
 }
 
 static void
@@ -408,15 +407,14 @@ renderer_update_scanout(cnc_conn_t c, int req_id, int argc, char *argv[],
     void *param)
 {
 	(void)param;
-	if (argc < 4) {
-		cnc_send_response(c, req_id, "{\"accepted\":false}");
+	(void)c;
+	(void)req_id;
+	if (argc < 4)
 		return;
-	}
 
 	console_update_scanout_rect(console_parse_u32_arg(argv[0]),
 	    console_parse_u32_arg(argv[1]), console_parse_u32_arg(argv[2]),
 	    console_parse_u32_arg(argv[3]));
-	cnc_send_response(c, req_id, "{\"accepted\":true}");
 }
 
 static void
@@ -426,9 +424,10 @@ renderer_unset_scanout(cnc_conn_t c, int req_id, int argc, char *argv[],
 	(void)argc;
 	(void)argv;
 	(void)param;
+	(void)c;
+	(void)req_id;
 
 	console_set_scanout(false, 0, 0, 0, 0, NULL, 0, false);
-	cnc_send_response(c, req_id, "{\"accepted\":true}");
 }
 
 static void
@@ -438,10 +437,10 @@ renderer_set_cursor(cnc_conn_t c, int req_id, int argc, char *argv[],
 	uint32_t width, height, stride, format, hot_x, hot_y;
 
 	(void)param;
-	if (argc < 7) {
-		cnc_send_response(c, req_id, "{\"accepted\":false}");
+	(void)c;
+	(void)req_id;
+	if (argc < 7)
 		return;
-	}
 
 	width = console_parse_u32_arg(argv[0]);
 	height = console_parse_u32_arg(argv[1]);
@@ -452,7 +451,6 @@ renderer_set_cursor(cnc_conn_t c, int req_id, int argc, char *argv[],
 
 	console_set_mouse_scanout(true, width, height, stride, format, hot_x,
 	    hot_y, argv[6]);
-	cnc_send_response(c, req_id, "{\"accepted\":true}");
 }
 
 static void
@@ -460,14 +458,13 @@ renderer_move_cursor(cnc_conn_t c, int req_id, int argc, char *argv[],
     void *param)
 {
 	(void)param;
-	if (argc < 2) {
-		cnc_send_response(c, req_id, "{\"accepted\":false}");
+	(void)c;
+	(void)req_id;
+	if (argc < 2)
 		return;
-	}
 
 	console_move_cursor(console_parse_u32_arg(argv[0]),
 	    console_parse_u32_arg(argv[1]));
-	cnc_send_response(c, req_id, "{\"accepted\":true}");
 }
 
 static void
@@ -477,9 +474,10 @@ renderer_unset_cursor(cnc_conn_t c, int req_id, int argc, char *argv[],
 	(void)argc;
 	(void)argv;
 	(void)param;
+	(void)c;
+	(void)req_id;
 
 	console_set_mouse_scanout(false, 0, 0, 0, 0, 0, 0, NULL);
-	cnc_send_response(c, req_id, "{\"accepted\":true}");
 }
 
 void
