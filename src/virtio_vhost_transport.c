@@ -653,7 +653,6 @@ virtio_vhost_queue_interrupt(cnc_conn_t c, int req_id, int argc, char *argv[],
 	pthread_mutex_unlock(&backends_lock);
 
 	interrupt_cb(opaque, queue_index);
-	cnc_send_response(c, req_id, "{\"accepted\":true}");
 }
 
 static void
