@@ -325,13 +325,17 @@ eventual DX12 path. It does not execute DirectX yet.
    renderer.
 3. [done] Make `scorpi-gpu-renderer` register and disconnect over the generic
    external virtio setup/control surface.
-4. [pending] Add a transport description object in `scorpi-hv` containing:
+4. [partial] Add a transport description object in `scorpi-hv` containing:
    - negotiated virtio-gpu features;
    - queue index, size, descriptor address, avail address, and used address;
    - exported guest memory region metadata;
    - reset generation.
-5. [pending] Add a renderer-side transport object in `scorpi-gpu-renderer` that stores the
+   Current status: the generic object and `virtio_device_describe` response
+   shape exist, but virtio-gpu does not populate queue or memory data yet.
+5. [partial] Add a renderer-side transport object in `scorpi-gpu-renderer` that stores the
    transport description received over CNC.
+   Current status: the renderer requests `virtio_device_describe` and records
+   whether the transport is ready.
 6. [pending] Add renderer-side virtqueue helpers:
    - translate guest physical address to mapped host pointer;
    - read descriptor table;

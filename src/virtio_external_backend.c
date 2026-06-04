@@ -7,21 +7,24 @@
 #include <sys/queue.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "cnc.h"
 #include "debug.h"
 #include "virtio_external_backend.h"
 
-#define VIRTIO_EXT_NAME_MAX 64
+#define VIRTIO_EXT_RESPONSE_MAX 1024
 
 struct virtio_external_backend {
-	char backend_id[VIRTIO_EXT_NAME_MAX];
-	char device_name[VIRTIO_EXT_NAME_MAX];
-	char protocol[VIRTIO_EXT_NAME_MAX];
+	char backend_id[VIRTIO_EXTERNAL_NAME_MAX];
+	char device_name[VIRTIO_EXTERNAL_NAME_MAX];
+	char protocol[VIRTIO_EXTERNAL_NAME_MAX];
 	cnc_conn_t conn;
+	struct virtio_external_transport_desc transport;
 	LIST_ENTRY(virtio_external_backend) entries;
 };
 
@@ -41,6 +44,21 @@ virtio_external_backend_find_locked(const char *backend_id)
 	return (NULL);
 }
 
+static bool
+virtio_external_valid_name(const char *name)
+{
+	if (name == NULL || name[0] == '\0')
+		return (false);
+
+	for (const unsigned char *p = (const unsigned char *)name; *p != '\0';
+	    p++) {
+		if (isalnum(*p) || *p == '-' || *p == '_' || *p == '.')
+			continue;
+		return (false);
+	}
+	return (true);
+}
+
 bool
 virtio_external_backend_registered(const char *backend_id)
 {
@@ -50,6 +68,47 @@ virtio_external_backend_registered(const char *backend_id)
 	registered = virtio_external_backend_find_locked(backend_id) != NULL;
 	pthread_mutex_unlock(&backends_lock);
 	return (registered);
+}
+
+int
+virtio_external_backend_set_transport(const char *backend_id,
+    const struct virtio_external_transport_desc *transport)
+{
+	struct virtio_external_backend *backend;
+
+	if (backend_id == NULL || transport == NULL)
+		return (-1);
+	if (transport->queue_count > VIRTIO_EXTERNAL_MAX_QUEUES ||
+	    transport->memory_region_count >
+	    VIRTIO_EXTERNAL_MAX_MEMORY_REGIONS)
+		return (-1);
+
+	pthread_mutex_lock(&backends_lock);
+	backend = virtio_external_backend_find_locked(backend_id);
+	if (backend == NULL) {
+		pthread_mutex_unlock(&backends_lock);
+		return (-1);
+	}
+	backend->transport = *transport;
+	snprintf(backend->transport.backend_id,
+	    sizeof(backend->transport.backend_id), "%s", backend_id);
+	snprintf(backend->transport.device_name,
+	    sizeof(backend->transport.device_name), "%s",
+	    backend->device_name);
+	pthread_mutex_unlock(&backends_lock);
+	return (0);
+}
+
+void
+virtio_external_backend_clear_transport(const char *backend_id)
+{
+	struct virtio_external_backend *backend;
+
+	pthread_mutex_lock(&backends_lock);
+	backend = virtio_external_backend_find_locked(backend_id);
+	if (backend != NULL)
+		memset(&backend->transport, 0, sizeof(backend->transport));
+	pthread_mutex_unlock(&backends_lock);
 }
 
 static void
@@ -69,6 +128,13 @@ virtio_backend_register(cnc_conn_t c, int req_id, int argc, char *argv[],
 	if (argc < 3) {
 		cnc_send_response(c, req_id,
 		    "{\"accepted\":false,\"reason\":\"bad_args\"}");
+		return;
+	}
+	if (!virtio_external_valid_name(argv[0]) ||
+	    !virtio_external_valid_name(argv[1]) ||
+	    !virtio_external_valid_name(argv[2])) {
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"bad_name\"}");
 		return;
 	}
 
@@ -100,6 +166,10 @@ virtio_backend_register(cnc_conn_t c, int req_id, int argc, char *argv[],
 	    argv[1]);
 	snprintf(backend->protocol, sizeof(backend->protocol), "%s", argv[2]);
 	backend->conn = c;
+	snprintf(backend->transport.backend_id,
+	    sizeof(backend->transport.backend_id), "%s", argv[0]);
+	snprintf(backend->transport.device_name,
+	    sizeof(backend->transport.device_name), "%s", argv[1]);
 	LIST_INSERT_HEAD(&backends, backend, entries);
 	pthread_mutex_unlock(&backends_lock);
 
@@ -118,6 +188,11 @@ virtio_backend_disconnect(cnc_conn_t c, int req_id, int argc, char *argv[],
 	if (argc < 1) {
 		cnc_send_response(c, req_id,
 		    "{\"accepted\":false,\"reason\":\"bad_args\"}");
+		return;
+	}
+	if (!virtio_external_valid_name(argv[0])) {
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"bad_name\"}");
 		return;
 	}
 
@@ -139,14 +214,126 @@ virtio_backend_disconnect(cnc_conn_t c, int req_id, int argc, char *argv[],
 	cnc_send_response(c, req_id, "{\"accepted\":true}");
 }
 
+static size_t
+virtio_external_append_queue_json(char *buf, size_t len, size_t used,
+    const struct virtio_external_queue_desc *queue)
+{
+	int rc;
+
+	rc = snprintf(buf + used, len - used,
+	    "%s{\"index\":%u,\"size\":%u,\"desc_addr\":%llu,"
+	    "\"avail_addr\":%llu,\"used_addr\":%llu,\"ready\":%s}",
+	    used > 0 && buf[used - 1] != '[' ? "," : "", queue->index,
+	    queue->size, (unsigned long long)queue->desc_addr,
+	    (unsigned long long)queue->avail_addr,
+	    (unsigned long long)queue->used_addr,
+	    queue->ready ? "true" : "false");
+	if (rc < 0 || (size_t)rc >= len - used)
+		return (len);
+	return (used + (size_t)rc);
+}
+
+static size_t
+virtio_external_append_memory_json(char *buf, size_t len, size_t used,
+    const struct virtio_external_memory_region_desc *region)
+{
+	int rc;
+
+	rc = snprintf(buf + used, len - used,
+	    "%s{\"index\":%u,\"guest_phys_addr\":%llu,\"size\":%llu,"
+	    "\"shm_name\":\"%s\",\"shm_offset\":%llu}",
+	    used > 0 && buf[used - 1] != '[' ? "," : "", region->index,
+	    (unsigned long long)region->guest_phys_addr,
+	    (unsigned long long)region->size, region->shm_name,
+	    (unsigned long long)region->shm_offset);
+	if (rc < 0 || (size_t)rc >= len - used)
+		return (len);
+	return (used + (size_t)rc);
+}
+
+static void
+virtio_external_send_transport_desc(cnc_conn_t c, int req_id,
+    const struct virtio_external_backend *backend)
+{
+	const struct virtio_external_transport_desc *transport =
+	    &backend->transport;
+	char response[VIRTIO_EXT_RESPONSE_MAX];
+	size_t used = 0;
+	int rc;
+
+	rc = snprintf(response, sizeof(response),
+	    "{\"accepted\":true,\"backend_id\":\"%s\",\"device_name\":\"%s\","
+	    "\"protocol\":\"%s\",\"transport_ready\":%s,"
+	    "\"features\":%llu,\"reset_generation\":%u,\"queues\":[",
+	    backend->backend_id, backend->device_name, backend->protocol,
+	    transport->ready ? "true" : "false",
+	    (unsigned long long)transport->features,
+	    transport->reset_generation);
+	if (rc < 0 || (size_t)rc >= sizeof(response)) {
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"response_too_large\"}");
+		return;
+	}
+	used = (size_t)rc;
+
+	for (uint32_t i = 0; i < transport->queue_count; i++)
+		used = virtio_external_append_queue_json(response,
+		    sizeof(response), used, &transport->queues[i]);
+	if (used >= sizeof(response))
+		goto too_large;
+
+	rc = snprintf(response + used, sizeof(response) - used,
+	    "],\"memory_regions\":[");
+	if (rc < 0 || (size_t)rc >= sizeof(response) - used)
+		goto too_large;
+	used += (size_t)rc;
+
+	for (uint32_t i = 0; i < transport->memory_region_count; i++)
+		used = virtio_external_append_memory_json(response,
+		    sizeof(response), used, &transport->memory_regions[i]);
+	if (used >= sizeof(response))
+		goto too_large;
+
+	rc = snprintf(response + used, sizeof(response) - used, "]}");
+	if (rc < 0 || (size_t)rc >= sizeof(response) - used)
+		goto too_large;
+
+	cnc_send_response(c, req_id, response);
+	return;
+
+too_large:
+	cnc_send_response(c, req_id,
+	    "{\"accepted\":false,\"reason\":\"response_too_large\"}");
+}
+
 static void
 virtio_device_describe(cnc_conn_t c, int req_id, int argc, char *argv[],
     void *param)
 {
-	(void)argc;
-	(void)argv;
+	struct virtio_external_backend *backend;
+
 	(void)param;
-	virtio_external_backend_send_not_ready(c, req_id);
+	if (argc < 1) {
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"bad_args\"}");
+		return;
+	}
+	if (!virtio_external_valid_name(argv[0])) {
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"bad_name\"}");
+		return;
+	}
+
+	pthread_mutex_lock(&backends_lock);
+	backend = virtio_external_backend_find_locked(argv[0]);
+	if (backend == NULL) {
+		pthread_mutex_unlock(&backends_lock);
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"not_registered\"}");
+		return;
+	}
+	virtio_external_send_transport_desc(c, req_id, backend);
+	pthread_mutex_unlock(&backends_lock);
 }
 
 static void
