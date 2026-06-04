@@ -898,7 +898,7 @@ bhyve_run_configured_vm(void)
 	vm_set_memflags(ctx, memflags);
 	error = vm_setup_memory(ctx, memsize, VM_MMAP_ALL);
 	if (error) {
-		fprintf(stderr, "Unable to setup memory (%d)\n", errno);
+		fprintf(stderr, "Unable to setup memory (%d)\n", error);
 		return (4);
 	}
 
