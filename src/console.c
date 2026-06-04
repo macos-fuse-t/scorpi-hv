@@ -40,6 +40,7 @@
 #include "console.h"
 
 #define BUFSIZE 1024
+#define CONSOLE_SHM_NAME_MAX 256
 
 static struct {
 	// struct bhyvegc		*gc;
@@ -63,7 +64,7 @@ static struct {
 	int w;
 	int h;
 	int stride;
-	const char *shm_name;
+	char shm_name[CONSOLE_SHM_NAME_MAX];
 	size_t shm_size;
 	bool redrawOnTimer;
 	bool hdpi;
@@ -75,7 +76,7 @@ static struct {
 	int mouse_stride;
 	int mouse_hot_x;
 	int mouse_hot_y;
-	const char *mouse_shm_name;
+	char mouse_shm_name[CONSOLE_SHM_NAME_MAX];
 	bool mouse_active;
 } console;
 
@@ -102,7 +103,11 @@ console_set_scanout(bool scanout_active, int w, int h, int stride,
 	console.h = h;
 	console.stride = stride;
 	console.format = format;
-	console.shm_name = shm_name;
+	if (scanout_active && shm_name != NULL)
+		snprintf(console.shm_name, sizeof(console.shm_name), "%s",
+		    shm_name);
+	else
+		console.shm_name[0] = '\0';
 	console.shm_size = shm_size;
 	console.redrawOnTimer = redrawOnTimer;
 
@@ -119,7 +124,7 @@ console_set_scanout(bool scanout_active, int w, int h, int stride,
 		    "\"redrawOnTimer\": %s"
 		    "}"
 		    "}",
-		    w, h, stride, format, shm_name ? shm_name : "", shm_size,
+		    w, h, stride, format, console.shm_name, shm_size,
 		    redrawOnTimer ? "true" : "false");
 	else
 		snprintf(data, sizeof(data), "{ \"event\": \"unset_scanout\"}");
@@ -156,7 +161,11 @@ console_set_mouse_scanout(bool scanout_active, int w, int h, int stride,
 	console.mouse_h = h;
 	console.mouse_stride = stride;
 	console.mouse_format = format;
-	console.mouse_shm_name = shm_name;
+	if (scanout_active && shm_name != NULL)
+		snprintf(console.mouse_shm_name, sizeof(console.mouse_shm_name),
+		    "%s", shm_name);
+	else
+		console.mouse_shm_name[0] = '\0';
 	console.mouse_hot_x = hot_x;
 	console.mouse_hot_y = hot_y;
 
@@ -176,7 +185,8 @@ console_set_mouse_scanout(bool scanout_active, int w, int h, int stride,
 		    "\"shm_name\": \"%s\""
 		    "}"
 		    "}",
-		    hot_x, hot_y, w, h, stride, format, shm_name);
+		    hot_x, hot_y, w, h, stride, format,
+		    console.mouse_shm_name);
 
 	cnc_send_notification(notification);
 }
@@ -318,12 +328,11 @@ get_framebuffer(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	    "}",
 	    console.hardware_mouse ? "true" : "false",
 	    console.hdpi ? "true" : "false", console.w, console.h,
-	    console.stride, console.format,
-	    console.shm_name ? console.shm_name : "", console.shm_size,
+	    console.stride, console.format, console.shm_name, console.shm_size,
 	    console.redrawOnTimer ? "true" : "false", console.mouse_hot_x,
 	    console.mouse_hot_y, console.mouse_w, console.mouse_h,
 	    console.mouse_stride, console.mouse_format,
-	    console.mouse_shm_name ? console.mouse_shm_name : "");
+	    console.mouse_shm_name);
 	cnc_send_response(c, req_id, rsp);
 }
 

@@ -87,6 +87,7 @@
 #include "snapshot.h"
 #endif
 #include "cnc.h"
+#include "console.h"
 #include "compat.h"
 #include "tpm_device.h"
 #include "vmexit.h"
@@ -995,6 +996,7 @@ bhyve_run_configured_vm(void)
 		return (EX_OSERR);
 #endif
 
+	console_init();
 	virtio_external_backend_init();
 	cnc_start_srv();
 
