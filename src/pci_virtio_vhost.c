@@ -115,11 +115,6 @@ pci_vhost_bind_transport(struct pci_vhost_state *state, struct vmctx *ctx,
 	    state->device_name);
 	transport.features = state->features;
 	transport.reset_generation = state->reset_generation;
-	if (info != NULL) {
-		transport.display_width = info->display_width;
-		transport.display_height = info->display_height;
-		transport.display_hdpi = info->display_hdpi;
-	}
 	transport.queue_count = state->queue_count;
 	for (uint32_t i = 0; i < transport.queue_count; i++) {
 		struct vqueue_info *vq = &state->queues[i];

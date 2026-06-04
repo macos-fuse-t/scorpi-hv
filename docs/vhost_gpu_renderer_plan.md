@@ -66,12 +66,18 @@ The split follows the same broad separation used by mature virtual GPU stacks:
 Scorpi should use these as architectural references, not as an immediate
 requirement to implement the full standard `vhost-user-gpu` protocol.
 
-Scorpi does not add a custom HV-renderer socket protocol. The renderer uses the
-existing CNC WebSocket channel as another `scorpi-cnc` client. For MS1 this is
-only used for display publication. In later milestones the same WebSocket
-control surface is used for transport setup: renderer registration, queue
-metadata, memory-region metadata, kick notifications, interrupt requests, and
-reset/disconnect events.
+Scorpi does not add a custom HV-renderer socket protocol. The renderer and HV
+use the existing CNC WebSocket message format. The renderer owns the vhost Unix
+socket and waits for a connection; `scorpi-hv` initiates that connection when a
+`virtio-gpu-vhost` device is configured with a `socket:` path. This keeps
+process lifecycle outside HV while still making backend readiness explicit at VM
+startup.
+
+For compatibility, `scorpi-gpu-renderer` can still connect to the existing HV
+CNC socket, but the desired vhost direction is renderer-listens / HV-connects.
+The WebSocket control surface is used for renderer registration, device
+description, GPU-specific config, queue metadata, memory-region metadata, kick
+notifications, interrupt requests, and reset/disconnect events.
 
 The WebSocket control surface is not the GPU command path. DirectX/virtio-gpu
 command payloads are read by `scorpi-gpu-renderer` from mapped guest memory and
@@ -108,7 +114,7 @@ resources, `SUBMIT_3D`, D3D12, Metal, and Vulkan remain in
 `scorpi-gpu-renderer`. Future virtio-fs semantics remain in a future filesystem
 backend.
 
-Generic CNC setup/control actions should use device-agnostic names:
+Generic CNC setup/control actions use device-agnostic names:
 
 - `virtio_vhost_register`
 - `virtio_vhost_describe`
@@ -117,7 +123,13 @@ Generic CNC setup/control actions should use device-agnostic names:
 - `virtio_vhost_reset`
 - `virtio_vhost_disconnect`
 
-GPU display publication remains separate and GPU/display-specific:
+The generic transport descriptor must not carry GPU display state. GPU display
+configuration and resize state remain GPU-specific:
+
+- `virtio_vhost_gpu_config`
+- `virtio_vhost_gpu_resize`
+
+GPU display publication remains separate and display-specific:
 
 - `renderer_set_scanout`
 - `renderer_update_scanout`
@@ -132,9 +144,9 @@ Goal: prove process separation and ScorpiViewer display brokering.
 Deliverable:
 
 ```text
-scorpi-hv starts the existing CNC WebSocket server
-  -> scorpi-gpu-renderer is started separately
-  -> renderer connects to the existing CNC WebSocket
+scorpi-gpu-renderer is started separately
+  -> renderer creates a CNC WebSocket server on its vhost socket
+  -> scorpi-hv starts the VM and connects to that socket
   -> renderer creates a POSIX shm test scanout
   -> renderer calls renderer_set_scanout and renderer_update_scanout actions
   -> scorpi-hv forwards those as current ScorpiViewer CNC notifications
@@ -191,9 +203,9 @@ Implementation split:
 The VM config selects one path:
 
 - `virtio-gpu`: current validated internal `scorpi-hv` 2D/display device;
-- `virtio-gpu-vhost,device=virtio-gpu,backend=gpu0`: generic vhost virtio
-  frontend that presents virtio-gpu identity while `scorpi-gpu-renderer`
-  implements the virtio-gpu backend.
+- `virtio-gpu-vhost,backend_device=virtio-gpu,backend=gpu0,socket=<path>`:
+  generic vhost virtio frontend that presents virtio-gpu identity while
+  `scorpi-gpu-renderer` implements the virtio-gpu backend.
 
 Do not enable both for the same Windows VM unless intentionally testing two
 display adapters.
@@ -304,8 +316,9 @@ scorpi-gpu-renderer \
 
 Remaining MS1 validation:
 
-- run `scorpi-hv` normally;
-- launch `scorpi-gpu-renderer` separately with the active CNC socket path;
+- launch `scorpi-gpu-renderer` separately with `--listen <vhost-socket>`;
+- run `scorpi-hv` with a `virtio-gpu-vhost` device whose `socket:` points to
+  that renderer-owned socket;
 - verify ScorpiViewer receives the renderer-owned shared-memory scanout;
 - verify Ctrl-C or SIGTERM from the renderer clears the scanout through
   `renderer_unset_scanout`.
@@ -376,3 +389,22 @@ eventual DX12 path. It does not execute DirectX yet.
    - guest receives completion.
 10. [pending] Only after this works, add renderer-side handling for contexts, blob
    resources, `SUBMIT_3D`, and fences.
+
+## Current Run Shape
+
+Start the renderer first:
+
+```sh
+/Users/alexf/work/scorpi-gpu-renderer/build/scorpi-gpu-renderer \
+  --backend metal \
+  --listen /tmp/scorpi-vm1-gpu.sock \
+  --display-mode hv-broker \
+  --vm-uuid vm1
+```
+
+Then start the VM:
+
+```sh
+/Users/alexf/work/scorpi-hv/build-macos-arm64/scorpi-hv \
+  -f /Users/alexf/work/scorpi-hv/win2.yaml
+```

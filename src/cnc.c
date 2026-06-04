@@ -48,6 +48,7 @@
 #define MAX_PENDING_MESSAGES 50
 #define MAX_STRLEN	     128
 #define MAX_ARGS	     8
+#define CNC_URI_MAX	     512
 
 struct queued_message {
 	STAILQ_ENTRY(queued_message) entries;
@@ -62,8 +63,15 @@ struct per_session_data {
 	char *rx_data;
 	size_t rx_len;
 	bool rx_discarding;
+	bool initialized;
 	LIST_ENTRY(per_session_data) entries;
 	pthread_mutex_t queue_lock;
+};
+
+struct client_context {
+	struct lws_context *context;
+	pthread_t thread;
+	char parsed_uri[CNC_URI_MAX];
 };
 
 static struct lws_context *global_context = NULL;
@@ -121,6 +129,44 @@ server_thread_function(void *arg)
 	return (NULL);
 }
 
+static void
+cnc_init_session(struct per_session_data *pss, struct lws *wsi)
+{
+	pthread_mutex_lock(&sessions_lock);
+	LIST_INSERT_HEAD(&sessions, pss, entries);
+	pthread_mutex_unlock(&sessions_lock);
+
+	pss->wsi = wsi;
+	STAILQ_INIT(&pss->queue);
+	pss->queue_size = 0;
+	pss->rx_data = NULL;
+	pss->rx_len = 0;
+	pss->rx_discarding = false;
+	pthread_mutex_init(&pss->queue_lock, NULL);
+	pss->initialized = true;
+}
+
+static void
+cnc_write_queued(struct per_session_data *pss, struct lws *wsi)
+{
+	bool need_signal = false;
+
+	pthread_mutex_lock(&pss->queue_lock);
+	if (!STAILQ_EMPTY(&pss->queue)) {
+		struct queued_message *msg = STAILQ_FIRST(&pss->queue);
+		lws_write(wsi, (unsigned char *)msg->data + LWS_PRE,
+		    msg->length, LWS_WRITE_TEXT);
+		STAILQ_REMOVE_HEAD(&pss->queue, entries);
+		free(msg->data);
+		free(msg);
+		pss->queue_size--;
+		need_signal = true;
+	}
+	pthread_mutex_unlock(&pss->queue_lock);
+	if (need_signal)
+		lws_callback_on_writable(pss->wsi);
+}
+
 int
 cnc_start_srv()
 {
@@ -147,6 +193,74 @@ cnc_start_srv()
 	pthread_create(&server_thread, NULL, server_thread_function,
 	    global_context);
 	PRINTLN("CNC WebSocket server started at %s", socket_path);
+	return (0);
+}
+
+int
+cnc_connect_client(const char *socket_path)
+{
+	struct client_context *client;
+	struct lws_context_creation_info info;
+	struct lws_client_connect_info ccinfo;
+	const char *protocol;
+	const char *address;
+	const char *path;
+	int port;
+
+	if (socket_path == NULL)
+		return (-1);
+
+	client = calloc(1, sizeof(*client));
+	if (client == NULL)
+		return (-1);
+
+	memset(&info, 0, sizeof(info));
+	info.port = CONTEXT_PORT_NO_LISTEN;
+	info.protocols = protocols;
+
+	if (snprintf(client->parsed_uri, sizeof(client->parsed_uri),
+		"ws://+%s:/", socket_path) >= (int)sizeof(client->parsed_uri)) {
+		EPRINTLN("CNC client socket path is too long");
+		free(client);
+		return (-1);
+	}
+
+	if (lws_parse_uri(client->parsed_uri, &protocol, &address, &port,
+		&path) != 0) {
+		EPRINTLN("Failed to parse CNC client WebSocket URI");
+		free(client);
+		return (-1);
+	}
+
+	client->context = lws_create_context(&info);
+	if (client->context == NULL) {
+		EPRINTLN("Failed to create CNC client WebSocket context");
+		free(client);
+		return (-1);
+	}
+
+	memset(&ccinfo, 0, sizeof(ccinfo));
+	ccinfo.context = client->context;
+	ccinfo.address = address;
+	ccinfo.port = port;
+	ccinfo.path = path;
+	ccinfo.host = "localhost";
+	ccinfo.origin = "localhost";
+	ccinfo.protocol = protocols[0].name;
+	ccinfo.local_protocol_name = protocols[0].name;
+	ccinfo.ietf_version_or_minus_one = -1;
+
+	(void)protocol;
+	if (lws_client_connect_via_info(&ccinfo) == NULL) {
+		EPRINTLN("Failed to start CNC client WebSocket connection");
+		lws_context_destroy(client->context);
+		free(client);
+		return (-1);
+	}
+
+	pthread_create(&client->thread, NULL, server_thread_function,
+	    client->context);
+	PRINTLN("CNC WebSocket client connecting to %s", socket_path);
 	return (0);
 }
 
@@ -392,6 +506,9 @@ cnc_clean_context(struct per_session_data *pss)
 {
 	struct per_session_data *tmp_pss;
 
+	if (!pss->initialized)
+		return;
+
 	pthread_mutex_lock(&sessions_lock);
 	LIST_FOREACH(tmp_pss, &sessions, entries) {
 		if (tmp_pss->wsi == pss->wsi) {
@@ -412,6 +529,7 @@ cnc_clean_context(struct per_session_data *pss)
 	pthread_mutex_unlock(&pss->queue_lock);
 	pthread_mutex_destroy(&pss->queue_lock);
 	cnc_reset_rx_message(pss);
+	pss->initialized = false;
 }
 
 static int
@@ -419,45 +537,25 @@ cnc_callback(struct lws *wsi, enum lws_callback_reasons reason, void *user,
     void *in, size_t len)
 {
 	struct per_session_data *pss = (struct per_session_data *)user;
-	bool need_signal = false;
 
 	switch (reason) {
 	case LWS_CALLBACK_ESTABLISHED:
-		pthread_mutex_lock(&sessions_lock);
-		LIST_INSERT_HEAD(&sessions, pss, entries);
-		pthread_mutex_unlock(&sessions_lock);
-
-		pss->wsi = wsi;
-		STAILQ_INIT(&pss->queue);
-		pss->queue_size = 0;
-		pss->rx_data = NULL;
-		pss->rx_len = 0;
-		pss->rx_discarding = false;
-		pthread_mutex_init(&pss->queue_lock, NULL);
+	case LWS_CALLBACK_CLIENT_ESTABLISHED:
+		cnc_init_session(pss, wsi);
 		break;
 
 	case LWS_CALLBACK_RECEIVE:
+	case LWS_CALLBACK_CLIENT_RECEIVE:
 		cnc_receive_command(pss, wsi, (const char *)in, len);
 		break;
 
 	case LWS_CALLBACK_SERVER_WRITEABLE:
-		pthread_mutex_lock(&pss->queue_lock);
-		if (!STAILQ_EMPTY(&pss->queue)) {
-			struct queued_message *msg = STAILQ_FIRST(&pss->queue);
-			lws_write(wsi, (unsigned char *)msg->data + LWS_PRE,
-			    msg->length, LWS_WRITE_TEXT);
-			STAILQ_REMOVE_HEAD(&pss->queue, entries);
-			free(msg->data);
-			free(msg);
-			pss->queue_size--;
-			need_signal = true;
-		}
-		pthread_mutex_unlock(&pss->queue_lock);
-		if (need_signal)
-			lws_callback_on_writable(pss->wsi);
+	case LWS_CALLBACK_CLIENT_WRITEABLE:
+		cnc_write_queued(pss, wsi);
 		break;
 
 	case LWS_CALLBACK_CLOSED:
+	case LWS_CALLBACK_CLIENT_CLOSED:
 		cnc_clean_context(pss);
 		break;
 

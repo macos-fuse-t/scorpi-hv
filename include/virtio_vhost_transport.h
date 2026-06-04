@@ -13,6 +13,8 @@ typedef void (*virtio_vhost_reset_cb)(void *opaque);
 void virtio_vhost_transport_init(void);
 bool virtio_vhost_transport_registered(const char *backend_id);
 void virtio_vhost_transport_wait_bound_connected(void);
+int virtio_vhost_transport_connect_backend(const char *backend_id,
+    const char *socket_path);
 int virtio_vhost_transport_set_transport(const char *backend_id,
     const struct scorpi_virtio_vhost_transport_desc *transport);
 int virtio_vhost_transport_bind_device(const char *backend_id,

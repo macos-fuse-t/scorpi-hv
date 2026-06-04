@@ -24,9 +24,6 @@ struct pci_vhost_state {
 };
 
 struct pci_vhost_transport_info {
-	uint32_t display_width;
-	uint32_t display_height;
-	bool display_hdpi;
 	uint32_t ready_queue;
 };
 

@@ -111,6 +111,22 @@ virtio_vhost_transport_wait_bound_connected(void)
 }
 
 int
+virtio_vhost_transport_connect_backend(const char *backend_id,
+    const char *socket_path)
+{
+	if (backend_id == NULL || socket_path == NULL)
+		return (-1);
+	if (!virtio_vhost_transport_valid_name(backend_id))
+		return (-1);
+	if (!virtio_vhost_transport_registered(backend_id))
+		return (-1);
+
+	PRINTLN("connecting virtio vhost backend %s at %s", backend_id,
+	    socket_path);
+	return (cnc_connect_client(socket_path));
+}
+
+int
 virtio_vhost_transport_set_transport(const char *backend_id,
     const struct scorpi_virtio_vhost_transport_desc *transport)
 {
@@ -468,15 +484,11 @@ virtio_vhost_transport_send_transport_desc(cnc_conn_t c, int req_id,
 	rc = snprintf(response, sizeof(response),
 	    "{\"accepted\":true,\"backend_id\":\"%s\",\"device_name\":\"%s\","
 	    "\"protocol\":\"%s\",\"transport_ready\":%s,"
-	    "\"features\":%llu,\"reset_generation\":%u,"
-	    "\"display_width\":%u,\"display_height\":%u,"
-	    "\"display_hdpi\":%s,\"queues\":[",
+	    "\"features\":%llu,\"reset_generation\":%u,\"queues\":[",
 	    backend->backend_id, backend->device_name, backend->protocol,
 	    transport->ready ? "true" : "false",
 	    (unsigned long long)transport->features,
-	    transport->reset_generation, transport->display_width,
-	    transport->display_height,
-	    transport->display_hdpi ? "true" : "false");
+	    transport->reset_generation);
 	if (rc < 0 || (size_t)rc >= sizeof(response)) {
 		cnc_send_response(c, req_id,
 		    "{\"accepted\":false,\"reason\":\"response_too_large\"}");

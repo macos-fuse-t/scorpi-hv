@@ -29,9 +29,6 @@ struct scorpi_virtio_vhost_transport_desc {
 	char device_name[SCORPI_VIRTIO_VHOST_NAME_MAX];
 	uint64_t features;
 	uint32_t reset_generation;
-	uint32_t display_width;
-	uint32_t display_height;
-	bool display_hdpi;
 	uint32_t queue_count;
 	struct scorpi_virtio_vhost_queue_desc
 	    queues[SCORPI_VIRTIO_VHOST_MAX_QUEUES];

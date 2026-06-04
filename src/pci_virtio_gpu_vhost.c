@@ -6,6 +6,7 @@
 
 #include <sys/param.h>
 #include <sys/mman.h>
+#include <sys/queue.h>
 #include <sys/stat.h>
 #include <assert.h>
 #include <errno.h>
@@ -21,6 +22,7 @@
 #include <uuid/uuid.h>
 
 #include "bhyverun.h"
+#include "cnc.h"
 #include "config.h"
 #include "console.h"
 #include "debug.h"
@@ -74,7 +76,13 @@ struct pci_vhost_softc {
 	int legacy_fb_shm_fd;
 	uint8_t *legacy_fb_base;
 	size_t legacy_fb_size;
+	LIST_ENTRY(pci_vhost_softc) entries;
 };
+
+static LIST_HEAD(pci_vhost_gpu_devices,
+    pci_vhost_softc) pci_vhost_gpu_devices =
+    LIST_HEAD_INITIALIZER(pci_vhost_gpu_devices);
+static pthread_mutex_t pci_vhost_gpu_devices_mtx = PTHREAD_MUTEX_INITIALIZER;
 
 extern uuid_t vm_uuid;
 
@@ -89,6 +97,8 @@ static void pci_vhost_barwrite(struct pci_devinst *pi, int baridx,
     uint64_t offset, int size, uint64_t value);
 static void pci_vhost_baraddr(struct pci_devinst *pi, int baridx, int enabled,
     uint64_t address);
+static void pci_vhost_gpu_config(cnc_conn_t c, int req_id, int argc,
+    char *argv[], void *param);
 
 static bool
 pci_vhost_mode_supports_hdpi(uint32_t width, uint32_t height)
@@ -390,10 +400,74 @@ pci_vhost_gpu_transport_info(struct pci_vhost_softc *sc,
     struct pci_vhost_transport_info *info)
 {
 	memset(info, 0, sizeof(*info));
-	info->display_width = sc->resx;
-	info->display_height = sc->resy;
-	info->display_hdpi = sc->hdpi_enabled;
 	info->ready_queue = VHOST_GPU_CTRLQ;
+}
+
+static void
+pci_vhost_gpu_register_device(struct pci_vhost_softc *sc)
+{
+	static int command_registered;
+
+	pthread_mutex_lock(&pci_vhost_gpu_devices_mtx);
+	if (!command_registered) {
+		cnc_register_command("virtio_vhost_gpu_config",
+		    pci_vhost_gpu_config, NULL);
+		command_registered = 1;
+	}
+	LIST_INSERT_HEAD(&pci_vhost_gpu_devices, sc, entries);
+	pthread_mutex_unlock(&pci_vhost_gpu_devices_mtx);
+}
+
+static struct pci_vhost_softc *
+pci_vhost_gpu_find_locked(const char *backend_id)
+{
+	struct pci_vhost_softc *sc;
+
+	LIST_FOREACH(sc, &pci_vhost_gpu_devices, entries) {
+		if (strcmp(sc->vhost.backend_id, backend_id) == 0)
+			return (sc);
+	}
+	return (NULL);
+}
+
+static void
+pci_vhost_gpu_config(cnc_conn_t c, int req_id, int argc, char *argv[],
+    void *param)
+{
+	struct pci_vhost_softc *sc;
+	char response[256];
+	int rc;
+
+	(void)param;
+	if (argc < 1) {
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"bad_args\"}");
+		return;
+	}
+
+	pthread_mutex_lock(&pci_vhost_gpu_devices_mtx);
+	sc = pci_vhost_gpu_find_locked(argv[0]);
+	if (sc == NULL) {
+		pthread_mutex_unlock(&pci_vhost_gpu_devices_mtx);
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"not_registered\"}");
+		return;
+	}
+
+	rc = snprintf(response, sizeof(response),
+	    "{\"accepted\":true,\"backend_id\":\"%s\","
+	    "\"display_width\":%u,\"display_height\":%u,"
+	    "\"display_hdpi\":%s}",
+	    sc->vhost.backend_id, sc->resx, sc->resy,
+	    sc->hdpi_enabled ? "true" : "false");
+	pthread_mutex_unlock(&pci_vhost_gpu_devices_mtx);
+
+	if (rc < 0 || (size_t)rc >= sizeof(response)) {
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"response_too_large\"}");
+		return;
+	}
+	cnc_send_response(c, req_id, response);
 }
 
 static void
@@ -495,6 +569,7 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	struct pci_vhost_softc *sc;
 	const char *backend_id;
 	const char *device_name;
+	const char *socket_path;
 	pthread_mutexattr_t attr;
 	uint32_t host_logical_width;
 	uint32_t host_logical_height;
@@ -515,6 +590,7 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 		    device_name);
 		return (-1);
 	}
+	socket_path = get_config_value_node(nvl, "socket");
 
 	sc = calloc(1, sizeof(*sc));
 	if (sc == NULL)
@@ -625,6 +701,14 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	pci_emul_set_bar_direct_mapped(pi, VHOST_LEGACY_FB_BAR, 1);
 
 	pci_vhost_bind_callbacks(sc);
+	pci_vhost_gpu_register_device(sc);
+	if (socket_path != NULL &&
+	    virtio_vhost_transport_connect_backend(sc->vhost.backend_id,
+		socket_path) != 0) {
+		EPRINTLN("virtio-gpu-vhost: failed to connect backend socket %s",
+		    socket_path);
+		return (-1);
+	}
 	console_set_hdpi(sc->hdpi_enabled);
 	console_set_hardware_mouse(false);
 	console_resize_register(pci_vhost_resize_event, sc);

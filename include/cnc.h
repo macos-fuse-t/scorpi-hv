@@ -47,6 +47,7 @@ struct cnc_command {
 void  cnc_register_command(const char *cmd, CMD_HANDLER handler, void *param);
 void  cnc_unregister_commands_by_param(void *param);
 int   cnc_start_srv();
+int   cnc_connect_client(const char *socket_path);
 
 void cnc_send_response(struct cnc_conn_t *c, int response_id, const char *data);
 void cnc_send_notification(const char *data);
