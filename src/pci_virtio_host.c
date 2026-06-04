@@ -5,7 +5,6 @@
  */
 
 #include <sys/param.h>
-#include <support/linker_set.h>
 #include <assert.h>
 #include <errno.h>
 #include <pthread.h>
@@ -14,21 +13,29 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <support/linker_set.h>
 
-#include "config.h"
-#include "debug.h"
 #include "bhyverun.h"
+#include "config.h"
+#include "console.h"
+#include "debug.h"
 #include "external_vmmem.h"
 #include "pci_emul.h"
 #include "virtio.h"
 #include "virtio_external_backend.h"
 #include "virtio_gpu.h"
 
-#define VHOST_DEFAULT_BACKEND_ID "gpu0"
+#define VHOST_DEFAULT_BACKEND_ID  "gpu0"
 #define VHOST_DEFAULT_DEVICE_NAME "virtio-gpu"
-#define VHOST_DEFAULT_QUEUE_SIZE 1024
-#define VHOST_GPU_QUEUE_COUNT 2
-#define VHOST_GPU_CTRLQ 0
+#define VHOST_DEFAULT_QUEUE_SIZE  1024
+#define VHOST_GPU_QUEUE_COUNT	  2
+#define VHOST_GPU_CTRLQ		  0
+#define VHOST_GPU_COLS_MAX	  7680
+#define VHOST_GPU_ROWS_MAX	  4320
+#define VHOST_GPU_COLS_DEFAULT	  1024
+#define VHOST_GPU_ROWS_DEFAULT	  768
+#define VHOST_GPU_COLS_MIN	  640
+#define VHOST_GPU_ROWS_MIN	  480
 
 struct pci_vhost_softc {
 	struct virtio_softc vsc_vs;
@@ -41,13 +48,14 @@ struct pci_vhost_softc {
 	uint32_t reset_generation;
 
 	struct virtio_gpu_config gpu_config;
+	uint32_t resx;
+	uint32_t resy;
 	struct vqueue_info queues[VHOST_GPU_QUEUE_COUNT];
 };
 
 static void pci_vhost_reset(void *vsc);
 static void pci_vhost_neg_features(void *vsc, uint64_t negotiated_features);
-static int pci_vhost_cfgread(void *vsc, int offset, int size,
-    uint32_t *retval);
+static int pci_vhost_cfgread(void *vsc, int offset, int size, uint32_t *retval);
 static int pci_vhost_cfgwrite(void *vsc, int offset, int size, uint32_t value);
 static void pci_vhost_queue_notify(void *vsc, struct vqueue_info *vq);
 
@@ -84,8 +92,7 @@ pci_vhost_queue_avail_gpa(const struct vqueue_info *vq)
 	desc_gpa = pci_vhost_queue_desc_gpa(vq);
 	if (desc_gpa == 0)
 		return (0);
-	return (desc_gpa + (uint64_t)vq->vq_qsize *
-	    sizeof(struct vring_desc));
+	return (desc_gpa + (uint64_t)vq->vq_qsize * sizeof(struct vring_desc));
 }
 
 static uint64_t
@@ -98,8 +105,9 @@ pci_vhost_queue_used_gpa(const struct vqueue_info *vq)
 	avail_gpa = pci_vhost_queue_avail_gpa(vq);
 	if (avail_gpa == 0)
 		return (0);
-	return (roundup2(avail_gpa + (uint64_t)(2 + vq->vq_qsize + 1) *
-	    sizeof(uint16_t), VRING_ALIGN));
+	return (roundup2(avail_gpa +
+		(uint64_t)(2 + vq->vq_qsize + 1) * sizeof(uint16_t),
+	    VRING_ALIGN));
 }
 
 static void
@@ -110,6 +118,18 @@ pci_vhost_interrupt(void *opaque, uint32_t queue_index)
 	if (queue_index >= (uint32_t)sc->vsc_consts.vc_nvq)
 		return;
 	vq_interrupt(&sc->vsc_vs, &sc->queues[queue_index]);
+}
+
+static void
+pci_vhost_interrupt_config(struct pci_vhost_softc *sc)
+{
+	uint16_t msix_idx;
+
+	msix_idx = sc->vsc_vs.vs_msix_cfg_idx;
+	if (msix_idx == VIRTIO_MSI_NO_VECTOR)
+		msix_idx = sc->queues[VHOST_GPU_CTRLQ].vq_msix_idx;
+
+	vi_interrupt(&sc->vsc_vs, VIRTIO_PCI_ISR_CONFIG, msix_idx);
 }
 
 static void
@@ -135,8 +155,7 @@ pci_vhost_bind_callbacks(struct pci_vhost_softc *sc)
 		transport.queues[i].used_addr = pci_vhost_queue_used_gpa(vq);
 		transport.queues[i].ready = vq_ring_ready(vq) != 0;
 	}
-	external_vmmem_fill_transport(sc->vsc_vs.vs_pi->pi_vmctx,
-	    &transport);
+	external_vmmem_fill_transport(sc->vsc_vs.vs_pi->pi_vmctx, &transport);
 	transport.ready = transport.queues[VHOST_GPU_CTRLQ].ready;
 
 	(void)virtio_external_backend_bind_device(sc->backend_id, &transport,
@@ -198,6 +217,33 @@ pci_vhost_queue_notify(void *vsc, struct vqueue_info *vq)
 	    vq->vq_num);
 }
 
+static void
+pci_vhost_resize_event(int x, int y, void *arg)
+{
+	struct pci_vhost_softc *sc = arg;
+	bool notify;
+
+	pthread_mutex_lock(&sc->vsc_mtx);
+	if (x >= VHOST_GPU_COLS_MIN && x <= VHOST_GPU_COLS_MAX &&
+	    y >= VHOST_GPU_ROWS_MIN && y <= VHOST_GPU_ROWS_MAX) {
+		if (sc->resx == (uint32_t)x && sc->resy == (uint32_t)y) {
+			pthread_mutex_unlock(&sc->vsc_mtx);
+			return;
+		}
+
+		sc->resx = (uint32_t)x;
+		sc->resy = (uint32_t)y;
+		notify = (sc->gpu_config.events_read &
+			     VIRTIO_GPU_EVENT_DISPLAY) == 0;
+		sc->gpu_config.events_read |= VIRTIO_GPU_EVENT_DISPLAY;
+		if (notify)
+			pci_vhost_interrupt_config(sc);
+		(void)virtio_external_backend_notify_display_resize(
+		    sc->backend_id, sc->resx, sc->resy);
+	}
+	pthread_mutex_unlock(&sc->vsc_mtx);
+}
+
 static int
 pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 {
@@ -226,6 +272,8 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	snprintf(sc->backend_id, sizeof(sc->backend_id), "%s", backend_id);
 	snprintf(sc->device_name, sizeof(sc->device_name), "%s", device_name);
 	sc->vsc_consts = vhost_consts;
+	sc->resx = VHOST_GPU_COLS_DEFAULT;
+	sc->resy = VHOST_GPU_ROWS_DEFAULT;
 	sc->gpu_config.num_scanouts = 1;
 	sc->gpu_config.num_capsets = 0;
 
@@ -263,6 +311,7 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	}
 
 	pci_vhost_bind_callbacks(sc);
+	console_resize_register(pci_vhost_resize_event, sc);
 	return (0);
 }
 

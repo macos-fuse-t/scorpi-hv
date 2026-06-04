@@ -5,13 +5,13 @@
  */
 
 #include <sys/queue.h>
+#include <ctype.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 
 #include "cnc.h"
 #include "debug.h"
@@ -32,8 +32,8 @@ struct virtio_external_backend {
 	LIST_ENTRY(virtio_external_backend) entries;
 };
 
-static LIST_HEAD(virtio_external_backends, virtio_external_backend) backends =
-    LIST_HEAD_INITIALIZER(backends);
+static LIST_HEAD(virtio_external_backends,
+    virtio_external_backend) backends = LIST_HEAD_INITIALIZER(backends);
 static pthread_mutex_t backends_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static size_t virtio_external_append_queue_json(char *buf, size_t len,
@@ -91,7 +91,7 @@ virtio_external_backend_set_transport(const char *backend_id,
 		return (-1);
 	if (transport->queue_count > SCORPI_VIRTIO_EXTERNAL_MAX_QUEUES ||
 	    transport->memory_region_count >
-	    SCORPI_VIRTIO_EXTERNAL_MAX_MEMORY_REGIONS)
+		SCORPI_VIRTIO_EXTERNAL_MAX_MEMORY_REGIONS)
 		return (-1);
 
 	pthread_mutex_lock(&backends_lock);
@@ -102,8 +102,8 @@ virtio_external_backend_set_transport(const char *backend_id,
 			rc = -1;
 			goto done;
 		}
-		snprintf(backend->backend_id, sizeof(backend->backend_id),
-		    "%s", backend_id);
+		snprintf(backend->backend_id, sizeof(backend->backend_id), "%s",
+		    backend_id);
 		LIST_INSERT_HEAD(&backends, backend, entries);
 	}
 	backend->transport = *transport;
@@ -223,6 +223,44 @@ too_large:
 	return (-1);
 }
 
+int
+virtio_external_backend_notify_display_resize(const char *backend_id,
+    uint32_t width, uint32_t height)
+{
+	struct virtio_external_backend *backend;
+	char notification[VIRTIO_EXT_RESPONSE_MAX];
+	int rc;
+
+	if (backend_id == NULL)
+		return (-1);
+
+	pthread_mutex_lock(&backends_lock);
+	backend = virtio_external_backend_find_locked(backend_id);
+	if (backend == NULL) {
+		pthread_mutex_unlock(&backends_lock);
+		return (-1);
+	}
+
+	rc = snprintf(notification, sizeof(notification),
+	    "{ \"event\": \"virtio_gpu_resize\", \"data\": {"
+	    "\"backend_id\": \"%s\","
+	    "\"device_name\": \"%s\","
+	    "\"width\": %u,"
+	    "\"height\": %u,"
+	    "\"reset_generation\": %u"
+	    "} }",
+	    backend->backend_id, backend->device_name, width, height,
+	    backend->transport.reset_generation);
+	if (rc < 0 || (size_t)rc >= sizeof(notification)) {
+		pthread_mutex_unlock(&backends_lock);
+		return (-1);
+	}
+	pthread_mutex_unlock(&backends_lock);
+
+	cnc_send_notification(notification);
+	return (0);
+}
+
 static void
 virtio_external_backend_send_not_ready(cnc_conn_t c, int req_id)
 {
@@ -255,8 +293,8 @@ virtio_backend_register(cnc_conn_t c, int req_id, int argc, char *argv[],
 	if (backend != NULL) {
 		backend->conn = c;
 		backend->connected = true;
-		snprintf(backend->device_name, sizeof(backend->device_name), "%s",
-		    argv[1]);
+		snprintf(backend->device_name, sizeof(backend->device_name),
+		    "%s", argv[1]);
 		snprintf(backend->protocol, sizeof(backend->protocol), "%s",
 		    argv[2]);
 		snprintf(backend->transport.backend_id,
@@ -291,7 +329,8 @@ virtio_backend_register(cnc_conn_t c, int req_id, int argc, char *argv[],
 	LIST_INSERT_HEAD(&backends, backend, entries);
 	pthread_mutex_unlock(&backends_lock);
 
-	PRINTLN("virtio external backend registered: id=%s device=%s protocol=%s",
+	PRINTLN(
+	    "virtio external backend registered: id=%s device=%s protocol=%s",
 	    backend->backend_id, backend->device_name, backend->protocol);
 	cnc_send_response(c, req_id, "{\"accepted\":true,\"updated\":false}");
 }
@@ -464,8 +503,7 @@ virtio_device_describe(cnc_conn_t c, int req_id, int argc, char *argv[],
 }
 
 static void
-virtio_queue_kick(cnc_conn_t c, int req_id, int argc, char *argv[],
-    void *param)
+virtio_queue_kick(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 {
 	(void)argc;
 	(void)argv;
@@ -553,13 +591,13 @@ virtio_external_backend_init(void)
 	if (once)
 		return;
 
-	cnc_register_command("virtio_backend_register",
-	    virtio_backend_register, NULL);
-	cnc_register_command("virtio_device_describe",
-	    virtio_device_describe, NULL);
+	cnc_register_command("virtio_backend_register", virtio_backend_register,
+	    NULL);
+	cnc_register_command("virtio_device_describe", virtio_device_describe,
+	    NULL);
 	cnc_register_command("virtio_queue_kick", virtio_queue_kick, NULL);
-	cnc_register_command("virtio_queue_interrupt",
-	    virtio_queue_interrupt, NULL);
+	cnc_register_command("virtio_queue_interrupt", virtio_queue_interrupt,
+	    NULL);
 	cnc_register_command("virtio_device_reset", virtio_device_reset, NULL);
 	cnc_register_command("virtio_backend_disconnect",
 	    virtio_backend_disconnect, NULL);

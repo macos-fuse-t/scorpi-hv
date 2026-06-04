@@ -1185,17 +1185,8 @@ static size_t
 pci_vgpu_move_cursor(struct pci_vgpu_softc *sc,
     struct virtio_gpu_update_cursor *req)
 {
-	char notification[1024];
-
-	snprintf(notification, sizeof(notification),
-	    "{ \"event\": \"move_cursor\","
-	    "\"data\": {"
-	    "\"x\": %d,"
-	    "\"y\": %d"
-	    "}"
-	    "}",
-	    le32toh(req->pos.x), le32toh(req->pos.y));
-	cnc_send_notification(notification);
+	(void)sc;
+	console_move_cursor(le32toh(req->pos.x), le32toh(req->pos.y));
 	return (0);
 }
 

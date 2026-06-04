@@ -57,6 +57,7 @@ void console_update_scanout_rect(int x, int y, int w, int h);
 
 void  console_set_mouse_scanout(bool scanout_active, int w, int h, int stride,
 	uint32_t format, int hot_x, int hot_y, const char *shm_name);
+void console_move_cursor(int x, int y);
 
 struct bhyvegc_image *console_get_image(void);
 

@@ -181,6 +181,22 @@ console_set_mouse_scanout(bool scanout_active, int w, int h, int stride,
 	cnc_send_notification(notification);
 }
 
+void
+console_move_cursor(int x, int y)
+{
+	char notification[1024];
+
+	snprintf(notification, sizeof(notification),
+	    "{ \"event\": \"move_cursor\","
+	    "\"data\": {"
+	    "\"x\": %d,"
+	    "\"y\": %d"
+	    "}"
+	    "}",
+	    x, y);
+	cnc_send_notification(notification);
+}
+
 struct bhyvegc_image *
 console_get_image(void)
 {
@@ -415,6 +431,57 @@ renderer_unset_scanout(cnc_conn_t c, int req_id, int argc, char *argv[],
 	cnc_send_response(c, req_id, "{\"accepted\":true}");
 }
 
+static void
+renderer_set_cursor(cnc_conn_t c, int req_id, int argc, char *argv[],
+    void *param)
+{
+	uint32_t width, height, stride, format, hot_x, hot_y;
+
+	(void)param;
+	if (argc < 7) {
+		cnc_send_response(c, req_id, "{\"accepted\":false}");
+		return;
+	}
+
+	width = console_parse_u32_arg(argv[0]);
+	height = console_parse_u32_arg(argv[1]);
+	stride = console_parse_u32_arg(argv[2]);
+	format = console_parse_u32_arg(argv[3]);
+	hot_x = console_parse_u32_arg(argv[4]);
+	hot_y = console_parse_u32_arg(argv[5]);
+
+	console_set_mouse_scanout(true, width, height, stride, format, hot_x,
+	    hot_y, argv[6]);
+	cnc_send_response(c, req_id, "{\"accepted\":true}");
+}
+
+static void
+renderer_move_cursor(cnc_conn_t c, int req_id, int argc, char *argv[],
+    void *param)
+{
+	(void)param;
+	if (argc < 2) {
+		cnc_send_response(c, req_id, "{\"accepted\":false}");
+		return;
+	}
+
+	console_move_cursor(console_parse_u32_arg(argv[0]),
+	    console_parse_u32_arg(argv[1]));
+	cnc_send_response(c, req_id, "{\"accepted\":true}");
+}
+
+static void
+renderer_unset_cursor(cnc_conn_t c, int req_id, int argc, char *argv[],
+    void *param)
+{
+	(void)argc;
+	(void)argv;
+	(void)param;
+
+	console_set_mouse_scanout(false, 0, 0, 0, 0, 0, 0, NULL);
+	cnc_send_response(c, req_id, "{\"accepted\":true}");
+}
+
 void
 console_init()
 {
@@ -426,12 +493,18 @@ console_init()
 		    NULL);
 		cnc_register_command("mouse_event", mouse_event, NULL);
 		cnc_register_command("key_event", kbd_event, NULL);
-		cnc_register_command("renderer_set_scanout", renderer_set_scanout,
-		    NULL);
+		cnc_register_command("renderer_set_scanout",
+		    renderer_set_scanout, NULL);
 		cnc_register_command("renderer_update_scanout",
 		    renderer_update_scanout, NULL);
 		cnc_register_command("renderer_unset_scanout",
 		    renderer_unset_scanout, NULL);
+		cnc_register_command("renderer_set_cursor", renderer_set_cursor,
+		    NULL);
+		cnc_register_command("renderer_move_cursor",
+		    renderer_move_cursor, NULL);
+		cnc_register_command("renderer_unset_cursor",
+		    renderer_unset_cursor, NULL);
 	}
 	once = 1;
 }
