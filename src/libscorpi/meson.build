@@ -31,11 +31,23 @@ scorpi_kit_dep = declare_dependency(
 )
 
 install_headers('../../include/scorpi.h')
+install_headers(
+  '../../include/scorpi/protocol/virtio_gpu.h',
+  '../../include/scorpi/protocol/virtio_ring.h',
+  subdir: 'scorpi/protocol',
+)
 
 pkg.generate(
   scorpi_kit,
   name: 'scorpi-kit',
   filebase: 'scorpi-kit',
   description: 'Scorpi VM construction and launch library',
+  subdirs: '',
+)
+
+pkg.generate(
+  name: 'scorpi-protocol',
+  filebase: 'scorpi-protocol',
+  description: 'Scorpi public protocol headers',
   subdirs: '',
 )
