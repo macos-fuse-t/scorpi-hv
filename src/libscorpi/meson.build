@@ -32,8 +32,13 @@ scorpi_kit_dep = declare_dependency(
 
 install_headers('../../include/scorpi.h')
 install_headers(
+  '../../include/support/endian.h',
+  subdir: 'support',
+)
+install_headers(
   '../../include/scorpi/protocol/virtio_gpu.h',
   '../../include/scorpi/protocol/virtio_ring.h',
+  '../../include/scorpi/protocol/virtio_external.h',
   subdir: 'scorpi/protocol',
 )
 

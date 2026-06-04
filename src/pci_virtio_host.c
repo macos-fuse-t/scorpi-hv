@@ -35,8 +35,8 @@ struct pci_vhost_softc {
 	struct virtio_consts vsc_consts;
 	pthread_mutex_t vsc_mtx;
 
-	char backend_id[VIRTIO_EXTERNAL_NAME_MAX];
-	char device_name[VIRTIO_EXTERNAL_NAME_MAX];
+	char backend_id[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];
+	char device_name[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];
 	uint64_t features;
 	uint32_t reset_generation;
 
@@ -115,7 +115,7 @@ pci_vhost_interrupt(void *opaque, uint32_t queue_index)
 static void
 pci_vhost_bind_callbacks(struct pci_vhost_softc *sc)
 {
-	struct virtio_external_transport_desc transport;
+	struct scorpi_virtio_external_transport_desc transport;
 
 	memset(&transport, 0, sizeof(transport));
 	snprintf(transport.backend_id, sizeof(transport.backend_id), "%s",

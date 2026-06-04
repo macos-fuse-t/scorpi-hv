@@ -23,13 +23,13 @@ external_vmmem_shm_name(char *buf, size_t len, const char *suffix)
 }
 
 static void
-external_vmmem_add_region(struct virtio_external_transport_desc *transport,
+external_vmmem_add_region(struct scorpi_virtio_external_transport_desc *transport,
     uint64_t guest_phys_addr, uint64_t size, const char *suffix)
 {
-	struct virtio_external_memory_region_desc *region;
+	struct scorpi_virtio_external_memory_region_desc *region;
 
 	if (size == 0 ||
-	    transport->memory_region_count >= VIRTIO_EXTERNAL_MAX_MEMORY_REGIONS)
+	    transport->memory_region_count >= SCORPI_VIRTIO_EXTERNAL_MAX_MEMORY_REGIONS)
 		return;
 
 	region = &transport->memory_regions[transport->memory_region_count++];
@@ -43,7 +43,7 @@ external_vmmem_add_region(struct virtio_external_transport_desc *transport,
 
 void
 external_vmmem_fill_transport(struct vmctx *ctx,
-    struct virtio_external_transport_desc *transport)
+    struct scorpi_virtio_external_transport_desc *transport)
 {
 	external_vmmem_add_region(transport, 0, vm_get_lowmem_size(ctx),
 	    "low");

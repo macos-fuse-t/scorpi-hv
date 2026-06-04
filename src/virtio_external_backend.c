@@ -20,12 +20,12 @@
 #define VIRTIO_EXT_RESPONSE_MAX 1024
 
 struct virtio_external_backend {
-	char backend_id[VIRTIO_EXTERNAL_NAME_MAX];
-	char device_name[VIRTIO_EXTERNAL_NAME_MAX];
-	char protocol[VIRTIO_EXTERNAL_NAME_MAX];
+	char backend_id[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];
+	char device_name[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];
+	char protocol[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];
 	cnc_conn_t conn;
 	bool connected;
-	struct virtio_external_transport_desc transport;
+	struct scorpi_virtio_external_transport_desc transport;
 	virtio_external_interrupt_cb interrupt_cb;
 	virtio_external_reset_cb reset_cb;
 	void *device_opaque;
@@ -76,16 +76,16 @@ virtio_external_backend_registered(const char *backend_id)
 
 int
 virtio_external_backend_set_transport(const char *backend_id,
-    const struct virtio_external_transport_desc *transport)
+    const struct scorpi_virtio_external_transport_desc *transport)
 {
 	struct virtio_external_backend *backend;
 	int rc = 0;
 
 	if (backend_id == NULL || transport == NULL)
 		return (-1);
-	if (transport->queue_count > VIRTIO_EXTERNAL_MAX_QUEUES ||
+	if (transport->queue_count > SCORPI_VIRTIO_EXTERNAL_MAX_QUEUES ||
 	    transport->memory_region_count >
-	    VIRTIO_EXTERNAL_MAX_MEMORY_REGIONS)
+	    SCORPI_VIRTIO_EXTERNAL_MAX_MEMORY_REGIONS)
 		return (-1);
 
 	pthread_mutex_lock(&backends_lock);
@@ -117,7 +117,7 @@ done:
 
 int
 virtio_external_backend_bind_device(const char *backend_id,
-    const struct virtio_external_transport_desc *transport,
+    const struct scorpi_virtio_external_transport_desc *transport,
     virtio_external_interrupt_cb interrupt_cb,
     virtio_external_reset_cb reset_cb, void *opaque)
 {
@@ -303,7 +303,7 @@ virtio_backend_disconnect(cnc_conn_t c, int req_id, int argc, char *argv[],
 
 static size_t
 virtio_external_append_queue_json(char *buf, size_t len, size_t used,
-    const struct virtio_external_queue_desc *queue)
+    const struct scorpi_virtio_external_queue_desc *queue)
 {
 	int rc;
 
@@ -322,7 +322,7 @@ virtio_external_append_queue_json(char *buf, size_t len, size_t used,
 
 static size_t
 virtio_external_append_memory_json(char *buf, size_t len, size_t used,
-    const struct virtio_external_memory_region_desc *region)
+    const struct scorpi_virtio_external_memory_region_desc *region)
 {
 	int rc;
 
@@ -342,7 +342,7 @@ static void
 virtio_external_send_transport_desc(cnc_conn_t c, int req_id,
     const struct virtio_external_backend *backend)
 {
-	const struct virtio_external_transport_desc *transport =
+	const struct scorpi_virtio_external_transport_desc *transport =
 	    &backend->transport;
 	char response[VIRTIO_EXT_RESPONSE_MAX];
 	size_t used = 0;
