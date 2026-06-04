@@ -18,7 +18,7 @@
 #include "config.h"
 #include "debug.h"
 #include "bhyverun.h"
-#include "external_vm_memory.h"
+#include "external_vmmem.h"
 #include "pci_emul.h"
 #include "virtio.h"
 #include "virtio_external_backend.h"
@@ -135,7 +135,7 @@ pci_vhost_bind_callbacks(struct pci_vhost_softc *sc)
 		transport.queues[i].used_addr = pci_vhost_queue_used_gpa(vq);
 		transport.queues[i].ready = vq_ring_ready(vq) != 0;
 	}
-	external_vm_memory_fill_transport(sc->vsc_vs.vs_pi->pi_vmctx,
+	external_vmmem_fill_transport(sc->vsc_vs.vs_pi->pi_vmctx,
 	    &transport);
 	transport.ready = transport.queues[VHOST_GPU_CTRLQ].ready;
 
