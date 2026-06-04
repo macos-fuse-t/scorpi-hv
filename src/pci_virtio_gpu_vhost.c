@@ -703,9 +703,9 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	pci_vhost_bind_callbacks(sc);
 	pci_vhost_gpu_register_device(sc);
 	if (socket_path != NULL &&
-	    virtio_vhost_transport_connect_backend(sc->vhost.backend_id,
+	    virtio_vhost_transport_set_backend_socket(sc->vhost.backend_id,
 		socket_path) != 0) {
-		EPRINTLN("virtio-gpu-vhost: failed to connect backend socket %s",
+		EPRINTLN("virtio-gpu-vhost: failed to configure backend socket %s",
 		    socket_path);
 		return (-1);
 	}

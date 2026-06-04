@@ -6,6 +6,7 @@
 
 #include <sys/queue.h>
 #include <ctype.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -18,13 +19,17 @@
 #include "virtio_vhost_transport.h"
 
 #define VIRTIO_VHOST_RESPONSE_MAX (64 * 1024)
+#define VIRTIO_VHOST_SOCKET_PATH_MAX PATH_MAX
+#define VIRTIO_VHOST_CONNECT_BATCH_MAX 16
 
 struct virtio_vhost_transport {
 	char backend_id[SCORPI_VIRTIO_VHOST_NAME_MAX];
 	char device_name[SCORPI_VIRTIO_VHOST_NAME_MAX];
 	char protocol[SCORPI_VIRTIO_VHOST_NAME_MAX];
+	char socket_path[VIRTIO_VHOST_SOCKET_PATH_MAX];
 	cnc_conn_t conn;
 	bool connected;
+	bool connection_started;
 	struct scorpi_virtio_vhost_transport_desc transport;
 	virtio_vhost_interrupt_cb interrupt_cb;
 	virtio_vhost_reset_cb reset_cb;
@@ -82,32 +87,32 @@ virtio_vhost_transport_registered(const char *backend_id)
 }
 
 static bool
-virtio_vhost_transport_bound_backends_connected_locked(void)
+virtio_vhost_transport_socket_path_valid(const char *socket_path)
 {
-	struct virtio_vhost_transport *backend;
-
-	LIST_FOREACH(backend, &backends, entries) {
-		if (backend->interrupt_cb != NULL && !backend->connected)
-			return (false);
-	}
-	return (true);
+	return (socket_path != NULL && socket_path[0] != '\0' &&
+	    strlen(socket_path) < VIRTIO_VHOST_SOCKET_PATH_MAX);
 }
 
-void
-virtio_vhost_transport_wait_bound_connected(void)
+int
+virtio_vhost_transport_set_backend_socket(const char *backend_id,
+    const char *socket_path)
 {
-	bool logged = false;
+	struct virtio_vhost_transport *backend;
+	int rc = 0;
+
+	if (!virtio_vhost_transport_valid_name(backend_id) ||
+	    !virtio_vhost_transport_socket_path_valid(socket_path))
+		return (-1);
 
 	pthread_mutex_lock(&backends_lock);
-	while (!virtio_vhost_transport_bound_backends_connected_locked()) {
-		if (!logged) {
-			PRINTLN(
-			    "waiting for virtio vhost backend connection");
-			logged = true;
-		}
-		pthread_cond_wait(&backends_cond, &backends_lock);
-	}
+	backend = virtio_vhost_transport_find_locked(backend_id);
+	if (backend == NULL)
+		rc = -1;
+	else
+		snprintf(backend->socket_path, sizeof(backend->socket_path),
+		    "%s", socket_path);
 	pthread_mutex_unlock(&backends_lock);
+	return (rc);
 }
 
 int
@@ -116,14 +121,60 @@ virtio_vhost_transport_connect_backend(const char *backend_id,
 {
 	if (backend_id == NULL || socket_path == NULL)
 		return (-1);
-	if (!virtio_vhost_transport_valid_name(backend_id))
+	if (!virtio_vhost_transport_valid_name(backend_id) ||
+	    !virtio_vhost_transport_socket_path_valid(socket_path))
 		return (-1);
 	if (!virtio_vhost_transport_registered(backend_id))
 		return (-1);
 
+	virtio_vhost_transport_init();
 	PRINTLN("connecting virtio vhost backend %s at %s", backend_id,
 	    socket_path);
 	return (cnc_connect_client(socket_path));
+}
+
+int
+virtio_vhost_transport_connect_configured_backends(void)
+{
+	struct pending_backend {
+		char backend_id[SCORPI_VIRTIO_VHOST_NAME_MAX];
+		char socket_path[VIRTIO_VHOST_SOCKET_PATH_MAX];
+	} pending[VIRTIO_VHOST_CONNECT_BATCH_MAX];
+	struct virtio_vhost_transport *backend;
+	size_t count = 0;
+	int rc = 0;
+
+	virtio_vhost_transport_init();
+
+	pthread_mutex_lock(&backends_lock);
+	LIST_FOREACH(backend, &backends, entries) {
+		if (backend->socket_path[0] == '\0' ||
+		    backend->connection_started)
+			continue;
+		if (count >= VIRTIO_VHOST_CONNECT_BATCH_MAX) {
+			rc = -1;
+			break;
+		}
+		snprintf(pending[count].backend_id,
+		    sizeof(pending[count].backend_id), "%s",
+		    backend->backend_id);
+		snprintf(pending[count].socket_path,
+		    sizeof(pending[count].socket_path), "%s",
+		    backend->socket_path);
+		backend->connection_started = true;
+		count++;
+	}
+	pthread_mutex_unlock(&backends_lock);
+
+	if (rc != 0)
+		return (rc);
+
+	for (size_t i = 0; i < count; i++) {
+		if (virtio_vhost_transport_connect_backend(
+			pending[i].backend_id, pending[i].socket_path) != 0)
+			return (-1);
+	}
+	return (0);
 }
 
 int
