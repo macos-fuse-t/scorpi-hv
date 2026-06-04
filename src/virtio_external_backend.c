@@ -36,6 +36,12 @@ static LIST_HEAD(virtio_external_backends, virtio_external_backend) backends =
     LIST_HEAD_INITIALIZER(backends);
 static pthread_mutex_t backends_lock = PTHREAD_MUTEX_INITIALIZER;
 
+static size_t virtio_external_append_queue_json(char *buf, size_t len,
+    size_t used, const struct scorpi_virtio_external_queue_desc *queue);
+static size_t virtio_external_append_memory_json(char *buf, size_t len,
+    size_t used,
+    const struct scorpi_virtio_external_memory_region_desc *region);
+
 static struct virtio_external_backend *
 virtio_external_backend_find_locked(const char *backend_id)
 {
@@ -159,6 +165,8 @@ virtio_external_backend_notify_queue_kick(const char *backend_id,
 {
 	struct virtio_external_backend *backend;
 	char notification[VIRTIO_EXT_RESPONSE_MAX];
+	size_t used;
+	int rc;
 
 	if (backend_id == NULL)
 		return (-1);
@@ -170,19 +178,49 @@ virtio_external_backend_notify_queue_kick(const char *backend_id,
 		return (-1);
 	}
 
-	snprintf(notification, sizeof(notification),
+	rc = snprintf(notification, sizeof(notification),
 	    "{ \"event\": \"virtio_queue_kick\", \"data\": {"
 	    "\"backend_id\": \"%s\","
 	    "\"device_name\": \"%s\","
 	    "\"queue_index\": %u,"
-	    "\"reset_generation\": %u"
-	    "} }",
+	    "\"reset_generation\": %u,"
+	    "\"queues\":[",
 	    backend->backend_id, backend->device_name, queue_index,
 	    backend->transport.reset_generation);
+	if (rc < 0 || (size_t)rc >= sizeof(notification))
+		goto too_large;
+	used = (size_t)rc;
+
+	for (uint32_t i = 0; i < backend->transport.queue_count; i++)
+		used = virtio_external_append_queue_json(notification,
+		    sizeof(notification), used, &backend->transport.queues[i]);
+	if (used >= sizeof(notification))
+		goto too_large;
+
+	rc = snprintf(notification + used, sizeof(notification) - used,
+	    "],\"memory_regions\":[");
+	if (rc < 0 || (size_t)rc >= sizeof(notification) - used)
+		goto too_large;
+	used += (size_t)rc;
+
+	for (uint32_t i = 0; i < backend->transport.memory_region_count; i++)
+		used = virtio_external_append_memory_json(notification,
+		    sizeof(notification), used,
+		    &backend->transport.memory_regions[i]);
+	if (used >= sizeof(notification))
+		goto too_large;
+
+	rc = snprintf(notification + used, sizeof(notification) - used, "]} }");
+	if (rc < 0 || (size_t)rc >= sizeof(notification) - used)
+		goto too_large;
 	pthread_mutex_unlock(&backends_lock);
 
 	cnc_send_notification(notification);
 	return (0);
+
+too_large:
+	pthread_mutex_unlock(&backends_lock);
+	return (-1);
 }
 
 static void
