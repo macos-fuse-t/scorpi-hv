@@ -60,8 +60,7 @@ static struct virtio_consts vhost_consts = {
 	.vc_cfgread = pci_vhost_cfgread,
 	.vc_cfgwrite = pci_vhost_cfgwrite,
 	.vc_apply_features = pci_vhost_neg_features,
-	.vc_hv_caps = VIRTIO_RING_F_INDIRECT_DESC | VIRTIO_F_VERSION_1 |
-	    (1ULL << VIRTIO_GPU_F_EDID),
+	.vc_hv_caps = VIRTIO_RING_F_INDIRECT_DESC | VIRTIO_F_VERSION_1,
 };
 
 static uint64_t
