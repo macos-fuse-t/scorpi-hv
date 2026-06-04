@@ -58,10 +58,18 @@ static void
 pci_vhost_interrupt(void *opaque, uint32_t queue_index)
 {
 	struct pci_vhost_state *state = opaque;
+	struct vqueue_info *vq;
 
-	if (queue_index >= state->queue_count)
+	if (state == NULL || state->vs == NULL || state->vs->vs_mtx == NULL)
 		return;
-	vq_endchains(&state->queues[queue_index], 1);
+
+	pthread_mutex_lock(state->vs->vs_mtx);
+	if (queue_index < state->queue_count) {
+		vq = &state->queues[queue_index];
+		if (vq_ring_ready(vq))
+			vq_endchains(vq, 1);
+	}
+	pthread_mutex_unlock(state->vs->vs_mtx);
 }
 
 static void
@@ -69,8 +77,13 @@ pci_vhost_reset(void *opaque)
 {
 	struct pci_vhost_state *state = opaque;
 
+	if (state == NULL || state->vs == NULL || state->vs->vs_mtx == NULL)
+		return;
+
+	pthread_mutex_lock(state->vs->vs_mtx);
 	if (state->reset_cb != NULL)
 		state->reset_cb(state->reset_opaque);
+	pthread_mutex_unlock(state->vs->vs_mtx);
 }
 
 void
