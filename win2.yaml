@@ -1,0 +1,50 @@
+name: vm1
+memory: 8G
+cpu:
+    cores: 4
+#    nested-virt: true
+
+gic.msi: true
+#console: stdio
+#console: unix:/tmp/guest-control.sock
+bootrom: ./firmware/SCORPI_EFI_ARM.fd
+bootvars: ./firmware/SCORPI_VARS_ARM.fd
+secure-boot: on
+boot:timeout: 0
+
+devices:
+  pci:
+    - device: hostbridge
+      slot: 0
+
+    - device: xhci
+      slot: 1
+
+    - device: ahci
+      slot: 2
+      port.0.type: hd
+      port.0.path: /Users/alexf/vms/win11.sco
+      port.1.type: cd
+      port.1.path: /Users/alexf/vms/virtio-win-0.1.266.iso
+
+    - device: virtio-host
+      slot: 5
+      backend: gpu0
+      backend_device: virtio-gpu
+
+  usb:
+    - device: kbd
+    - device: tablet
+    - device: net
+      backend: slirp
+      #hostfwd: tcp:127.0.0.1:17654-10.0.2.15:17654
+
+  lpc:
+    - device: vm-control
+      path: /tmp/vm_sock
+
+    - device: tpm
+      type: swtpm
+      path: /tmp/scorpi-tpm/swtpm.sock
+      version: 2.0
+      intf: tis

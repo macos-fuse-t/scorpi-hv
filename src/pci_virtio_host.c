@@ -257,7 +257,7 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	if (backend_id == NULL)
 		backend_id = VHOST_DEFAULT_BACKEND_ID;
 
-	device_name = get_config_value_node(nvl, "device");
+	device_name = get_config_value_node(nvl, "backend_device");
 	if (device_name == NULL)
 		device_name = VHOST_DEFAULT_DEVICE_NAME;
 	if (strcmp(device_name, "virtio-gpu") != 0) {
