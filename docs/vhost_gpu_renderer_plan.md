@@ -73,8 +73,6 @@ socket and waits for a connection; `scorpi-hv` initiates that connection when a
 process lifecycle outside HV while still making backend readiness explicit at VM
 startup.
 
-For compatibility, `scorpi-gpu-renderer` can still connect to the existing HV
-CNC socket, but the desired vhost direction is renderer-listens / HV-connects.
 The WebSocket control surface is used for renderer registration, device
 description, GPU-specific config, queue metadata, memory-region metadata, kick
 notifications, interrupt requests, and reset/disconnect events.
@@ -294,16 +292,15 @@ scope; the renderer is launched separately and `scorpi-hv` does not spawn it.
 ```sh
 scorpi-gpu-renderer \
   --backend metal \
-  --cnc-socket <path> \
-  --display-mode hv-broker \
-  --vm-uuid <uuid>
+  --listen <vhost-socket>
 ```
 
 4. [done] Make `scorpi-hv` register renderer display broker actions on the existing
    CNC command surface. Do not make `scorpi-hv` spawn the renderer.
-5. [pending] Start `scorpi-gpu-renderer` separately with the active CNC socket path.
-6. [done] Make the renderer connect to the existing CNC WebSocket using
-   libwebsockets as a `scorpi-cnc` client.
+5. [done] Start `scorpi-gpu-renderer` separately with a renderer-owned vhost
+   socket path.
+6. [done] Make the renderer serve the existing CNC WebSocket protocol using
+   libwebsockets, with `scorpi-hv` connecting as the client.
 7. [done] Make the renderer allocate a POSIX shm test scanout.
 8. [done] Make the renderer send `renderer_set_scanout`.
 9. [done] Make `scorpi-hv` translate that to `console_set_scanout`.
@@ -311,7 +308,7 @@ scorpi-gpu-renderer \
 11. [done] Make `scorpi-hv` translate that to ScorpiViewer's `update_scanout`
     notification.
 12. [done] Add clean shutdown using `renderer_unset_scanout`.
-13. [done] Keep all MS1 behavior vhost-client driven so the validated display-only
+13. [done] Keep all MS1 behavior vhost driven so the validated display-only
     driver path is unchanged unless the renderer publishes a scanout.
 
 Remaining MS1 validation:
@@ -397,9 +394,7 @@ Start the renderer first:
 ```sh
 /Users/alexf/work/scorpi-gpu-renderer/build/scorpi-gpu-renderer \
   --backend metal \
-  --listen /tmp/scorpi-vm1-gpu.sock \
-  --display-mode hv-broker \
-  --vm-uuid vm1
+  --listen /tmp/scorpi-vm1-gpu.sock
 ```
 
 Then start the VM:
