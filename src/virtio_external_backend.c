@@ -197,6 +197,7 @@ virtio_external_backend_notify_queue_kick(const char *backend_id,
     uint32_t queue_index)
 {
 	struct virtio_external_backend *backend;
+	cnc_conn_t conn;
 	char notification[VIRTIO_EXT_RESPONSE_MAX];
 	size_t used;
 	int rc;
@@ -206,10 +207,11 @@ virtio_external_backend_notify_queue_kick(const char *backend_id,
 
 	pthread_mutex_lock(&backends_lock);
 	backend = virtio_external_backend_find_locked(backend_id);
-	if (backend == NULL) {
+	if (backend == NULL || !backend->connected || backend->conn == NULL) {
 		pthread_mutex_unlock(&backends_lock);
 		return (-1);
 	}
+	conn = backend->conn;
 
 	rc = snprintf(notification, sizeof(notification),
 	    "{ \"event\": \"virtio_queue_kick\", \"data\": {"
@@ -248,7 +250,7 @@ virtio_external_backend_notify_queue_kick(const char *backend_id,
 		goto too_large;
 	pthread_mutex_unlock(&backends_lock);
 
-	cnc_send_notification(notification);
+	cnc_send_notification_to(conn, notification);
 	return (0);
 
 too_large:
@@ -261,6 +263,7 @@ virtio_external_backend_notify_display_resize(const char *backend_id,
     uint32_t width, uint32_t height)
 {
 	struct virtio_external_backend *backend;
+	cnc_conn_t conn;
 	char notification[VIRTIO_EXT_RESPONSE_MAX];
 	int rc;
 
@@ -269,10 +272,11 @@ virtio_external_backend_notify_display_resize(const char *backend_id,
 
 	pthread_mutex_lock(&backends_lock);
 	backend = virtio_external_backend_find_locked(backend_id);
-	if (backend == NULL) {
+	if (backend == NULL || !backend->connected || backend->conn == NULL) {
 		pthread_mutex_unlock(&backends_lock);
 		return (-1);
 	}
+	conn = backend->conn;
 
 	rc = snprintf(notification, sizeof(notification),
 	    "{ \"event\": \"virtio_gpu_resize\", \"data\": {"
@@ -290,7 +294,7 @@ virtio_external_backend_notify_display_resize(const char *backend_id,
 	}
 	pthread_mutex_unlock(&backends_lock);
 
-	cnc_send_notification(notification);
+	cnc_send_notification_to(conn, notification);
 	return (0);
 }
 
@@ -464,11 +468,15 @@ virtio_external_send_transport_desc(cnc_conn_t c, int req_id,
 	rc = snprintf(response, sizeof(response),
 	    "{\"accepted\":true,\"backend_id\":\"%s\",\"device_name\":\"%s\","
 	    "\"protocol\":\"%s\",\"transport_ready\":%s,"
-	    "\"features\":%llu,\"reset_generation\":%u,\"queues\":[",
+	    "\"features\":%llu,\"reset_generation\":%u,"
+	    "\"display_width\":%u,\"display_height\":%u,"
+	    "\"display_hdpi\":%s,\"queues\":[",
 	    backend->backend_id, backend->device_name, backend->protocol,
 	    transport->ready ? "true" : "false",
 	    (unsigned long long)transport->features,
-	    transport->reset_generation);
+	    transport->reset_generation, transport->display_width,
+	    transport->display_height,
+	    transport->display_hdpi ? "true" : "false");
 	if (rc < 0 || (size_t)rc >= sizeof(response)) {
 		cnc_send_response(c, req_id,
 		    "{\"accepted\":false,\"reason\":\"response_too_large\"}");

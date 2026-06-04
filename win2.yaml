@@ -31,6 +31,7 @@ devices:
       slot: 5
       backend: gpu0
       backend_device: virtio-gpu
+      hdpi: on
 
   usb:
     - device: kbd

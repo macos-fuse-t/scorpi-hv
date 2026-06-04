@@ -136,6 +136,7 @@ vmexit_suspend(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 		    bootrom_rombase());
 		break;
 	case VM_SUSPEND_POWEROFF:
+		fbsdrun_deletecpu(vcpu_id(vcpu));
 		vm_destroy(ctx);
 		exit(0);
 	case VM_SUSPEND_HALT:

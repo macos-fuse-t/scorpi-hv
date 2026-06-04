@@ -562,11 +562,31 @@ vm_get_guestmem_from_ctx(struct vmctx *ctx, char **guest_baseaddr,
 	return (0);
 }
 
+static int vm_map_range(struct mem_range *seg, bool visible);
+
 int
 vm_munmap_memseg(struct vmctx *ctx, vm_paddr_t gpa, size_t len)
 {
-	printf("vm_munmap_memseg\n");
-	return -1;
+	struct mem_range *seg;
+	int error;
+
+	for (int i = 0; i < ctx->num_mem_ranges; i++) {
+		seg = &ctx->mem_ranges[i];
+		if (seg->gpa != gpa || seg->len != len)
+			continue;
+
+		if (seg->active) {
+			error = vm_map_range(seg, false);
+			if (error != 0)
+				return (error);
+		}
+		if (seg->owned)
+			free(seg->object);
+		memset(seg, 0, sizeof(*seg));
+		return (0);
+	}
+
+	return (ENOENT);
 }
 
 int
@@ -624,6 +644,7 @@ vm_malloc(struct vmctx *ctx, uint64_t gpa, size_t len, uint64_t prot,
 	void *object;
 	bool owned;
 	uint64_t g;
+	int free_slot;
 
 	if ((gpa & PAGE_MASK) || (len & PAGE_MASK) || len == 0)
 		return (EINVAL);
@@ -653,10 +674,19 @@ vm_malloc(struct vmctx *ctx, uint64_t gpa, size_t len, uint64_t prot,
 	if (allocated && available == 0)
 		return (0);
 
-	if (ctx->num_mem_ranges >= VM_MAX_MEMORY_SEGMENTS)
+	free_slot = -1;
+	for (int i = 0; i < ctx->num_mem_ranges; i++) {
+		seg = &ctx->mem_ranges[i];
+		if (!seg->active && seg->object == NULL && seg->len == 0) {
+			free_slot = i;
+			break;
+		}
+	}
+	if (free_slot < 0 && ctx->num_mem_ranges >= VM_MAX_MEMORY_SEGMENTS)
 		return (E2BIG);
 
-	seg = &ctx->mem_ranges[ctx->num_mem_ranges];
+	seg = free_slot >= 0 ? &ctx->mem_ranges[free_slot] :
+	    &ctx->mem_ranges[ctx->num_mem_ranges];
 
 	if (prot & PROT_DONT_ALLOCATE) {
 		object = (void *)*addr;
@@ -685,7 +715,8 @@ vm_malloc(struct vmctx *ctx, uint64_t gpa, size_t len, uint64_t prot,
 	}
 	seg->active = true;
 
-	ctx->num_mem_ranges++;
+	if (free_slot < 0)
+		ctx->num_mem_ranges++;
 
 	return (0);
 }

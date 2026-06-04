@@ -50,3 +50,4 @@ int   cnc_start_srv();
 
 void cnc_send_response(struct cnc_conn_t *c, int response_id, const char *data);
 void cnc_send_notification(const char *data);
+void cnc_send_notification_to(struct cnc_conn_t *c, const char *data);

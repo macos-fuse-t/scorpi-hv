@@ -47,9 +47,6 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
-#ifdef __APPLE__
-#include <CoreGraphics/CoreGraphics.h>
-#endif
 #include "compat.h"
 
 #include "bhyverun.h"
@@ -58,6 +55,7 @@
 #include "console.h"
 #include "debug.h"
 #include "edid.h"
+#include "host_display.h"
 #include "iov.h"
 #include "mevent.h"
 #include "net_backends.h"
@@ -71,36 +69,36 @@ static int vgpu_debug = 0;
 #define DPRINTF(params) \
 	if (vgpu_debug) \
 	PRINTLN params
-#define WPRINTF(params)	       PRINTLN params
+#define WPRINTF(params)		  PRINTLN params
 
-#define VQ_MAX_DESC	       512
+#define VQ_MAX_DESC		  512
 
-#define VGPU_MAXQ	       3
-#define VGPU_RINGSZ	       1024
-#define VGPU_EDID_DPI	       96
+#define VGPU_MAXQ		  3
+#define VGPU_RINGSZ		  1024
+#define VGPU_EDID_DPI		  96
 #define VGPU_EDID_MM_PER_INCH_X10 254
 
-#define VGPU_CTRL	       0
-#define VGPU_CURSOR	       1
+#define VGPU_CTRL		  0
+#define VGPU_CURSOR		  1
 
-#define VGPU_S_HOSTCAPS	       (VIRTIO_RING_F_INDIRECT_DESC)
+#define VGPU_S_HOSTCAPS		  (VIRTIO_RING_F_INDIRECT_DESC)
 
-#define COLS_MAX	       7680
-#define ROWS_MAX	       4320
+#define COLS_MAX		  7680
+#define ROWS_MAX		  4320
 
-#define COLS_DEFAULT	       1024
-#define ROWS_DEFAULT	       768
+#define COLS_DEFAULT		  1024
+#define ROWS_DEFAULT		  768
 
-#define COLS_MIN	       640
-#define ROWS_MIN	       480
+#define COLS_MIN		  640
+#define ROWS_MIN		  480
 
-#define LEGACY_FRAMEBUFFER_BAR 1
-#define LEGACY_CTRL_BAR	       0
-#define VGPU_LEGACY_RESOURCE_ID 0xFFFFFFFF
+#define LEGACY_FRAMEBUFFER_BAR	  1
+#define LEGACY_CTRL_BAR		  0
+#define VGPU_LEGACY_RESOURCE_ID	  0xFFFFFFFF
 
-#define DMEMSZ		       512
+#define DMEMSZ			  512
 
-#define FB_SIZE		       (128 * 1024UL * 1024UL)
+#define FB_SIZE			  (128 * 1024UL * 1024UL)
 
 struct vgpu_scanout {
 	uint32_t resource_id;
@@ -158,14 +156,10 @@ static int pci_vgpu_cfgread(void *vsc, int offset, int size, uint32_t *retval);
 static int pci_vgpu_cfgwrite(void *vsc, int offset, int size, uint32_t value);
 static void pci_vgpu_neg_features(void *vsc, uint64_t negotiated_features);
 static void pci_vgpu_destroy_scanouts(struct pci_vgpu_softc *sc);
-static bool pci_vgpu_host_display_info(uint32_t *logical_width,
-    uint32_t *logical_height, uint32_t *pixel_width, uint32_t *pixel_height);
-static bool pci_vgpu_host_physical_size(uint32_t *width_mm,
-    uint32_t *height_mm);
 static void pci_vgpu_edid_physical_size(struct pci_vgpu_softc *sc,
     uint32_t *width_mm, uint32_t *height_mm);
-static uint64_t pci_vgpu_legacy_fb_read(struct pci_devinst *pi,
-    uint64_t offset, int size);
+static uint64_t pci_vgpu_legacy_fb_read(struct pci_devinst *pi, uint64_t offset,
+    int size);
 static void pci_vgpu_legacy_fb_write(struct pci_devinst *pi, uint64_t offset,
     int size, uint64_t value);
 
@@ -235,75 +229,10 @@ pci_vgpu_mode_supports_hdpi(uint32_t width, uint32_t height)
 }
 
 static uint32_t
-pci_vgpu_host_scale(void)
-{
-	uint32_t logical_width, logical_height, pixel_width, pixel_height;
-	uint32_t scale;
-
-	if (!pci_vgpu_host_display_info(&logical_width, &logical_height,
-		&pixel_width, &pixel_height)) {
-		return (1);
-	}
-
-	scale = MIN(pixel_width / logical_width, pixel_height / logical_height);
-	return (MAX(scale, 1));
-}
-
-static bool
-pci_vgpu_host_display_info(uint32_t *logical_width, uint32_t *logical_height,
-    uint32_t *pixel_width, uint32_t *pixel_height)
-{
-#ifdef __APPLE__
-	CGDirectDisplayID display;
-	CGDisplayModeRef mode;
-
-	display = CGMainDisplayID();
-	mode = CGDisplayCopyDisplayMode(display);
-	if (mode == NULL)
-		return (false);
-
-	*logical_width = (uint32_t)CGDisplayModeGetWidth(mode);
-	*logical_height = (uint32_t)CGDisplayModeGetHeight(mode);
-	*pixel_width = (uint32_t)CGDisplayModeGetPixelWidth(mode);
-	*pixel_height = (uint32_t)CGDisplayModeGetPixelHeight(mode);
-	CGDisplayModeRelease(mode);
-
-	return (*logical_width > 0 && *logical_height > 0 &&
-	    *pixel_width > 0 && *pixel_height > 0);
-#else
-	(void)logical_width;
-	(void)logical_height;
-	(void)pixel_width;
-	(void)pixel_height;
-	return (false);
-#endif
-}
-
-static bool
-pci_vgpu_host_physical_size(uint32_t *width_mm, uint32_t *height_mm)
-{
-#ifdef __APPLE__
-	CGSize size;
-
-	size = CGDisplayScreenSize(CGMainDisplayID());
-	if (size.width <= 0 || size.height <= 0)
-		return (false);
-
-	*width_mm = (uint32_t)size.width;
-	*height_mm = (uint32_t)size.height;
-	return (*width_mm >= 100 && *height_mm >= 80);
-#else
-	(void)width_mm;
-	(void)height_mm;
-	return (false);
-#endif
-}
-
-static uint32_t
 pci_vgpu_physical_size_for_dpi(uint32_t pixels)
 {
-	return (MAX(pixels * VGPU_EDID_MM_PER_INCH_X10 /
-	    (VGPU_EDID_DPI * 10), 1));
+	return (
+	    MAX(pixels * VGPU_EDID_MM_PER_INCH_X10 / (VGPU_EDID_DPI * 10), 1));
 }
 
 static void
@@ -316,16 +245,18 @@ pci_vgpu_edid_physical_size(struct pci_vgpu_softc *sc, uint32_t *width_mm,
 
 	host_width_mm = 0;
 	host_height_mm = 0;
-	has_host_size = pci_vgpu_host_physical_size(&host_width_mm,
+	has_host_size = host_display_physical_size(&host_width_mm,
 	    &host_height_mm);
 
 	virtual_width_mm = pci_vgpu_physical_size_for_dpi(sc->start_resx);
 	virtual_height_mm = pci_vgpu_physical_size_for_dpi(sc->start_resy);
 
 	if (sc->hdpi_enabled) {
-		*width_mm = has_host_size ? MIN(host_width_mm, virtual_width_mm) :
+		*width_mm = has_host_size ?
+		    MIN(host_width_mm, virtual_width_mm) :
 		    virtual_width_mm;
-		*height_mm = has_host_size ? MIN(host_height_mm, virtual_height_mm) :
+		*height_mm = has_host_size ?
+		    MIN(host_height_mm, virtual_height_mm) :
 		    virtual_height_mm;
 		return;
 	}
@@ -475,12 +406,10 @@ pci_vgpu_create_scanout(struct pci_vgpu_softc *sc, uint32_t resource_id,
 		return (-1);
 	}
 
-	scanout->shm_fd = shm_open(scanout->shm_name,
-	    O_CREAT | O_EXCL | O_RDWR,
+	scanout->shm_fd = shm_open(scanout->shm_name, O_CREAT | O_EXCL | O_RDWR,
 	    S_IRUSR | S_IWUSR);
 	if (scanout->shm_fd == -1) {
-		EPRINTLN("shm_open %s: %s", scanout->shm_name,
-		    strerror(errno));
+		EPRINTLN("shm_open %s: %s", scanout->shm_name, strerror(errno));
 		free(scanout);
 		return (-1);
 	}
@@ -498,8 +427,8 @@ pci_vgpu_create_scanout(struct pci_vgpu_softc *sc, uint32_t resource_id,
 	scanout->base_ptr = mmap(NULL, sc_size, PROT_READ | PROT_WRITE,
 	    MAP_SHARED, scanout->shm_fd, 0);
 	if (scanout->base_ptr == MAP_FAILED) {
-		EPRINTLN("mmap %s, size %u: %s", scanout->shm_name,
-		    sc_size, strerror(errno));
+		EPRINTLN("mmap %s, size %u: %s", scanout->shm_name, sc_size,
+		    strerror(errno));
 		close(scanout->shm_fd);
 		shm_unlink(scanout->shm_name);
 		free(scanout);
@@ -630,8 +559,9 @@ pci_vgpu_resource_attach_backing(struct pci_vgpu_softc *sc,
 	min_req_len = sizeof(*res) + nr_entries * sizeof(*mem);
 	if (req_len < min_req_len) {
 		WPRINTF(("vgpu: short attach backing resource=%d len=%zu "
-		    "required=%zu entries=%u", le32toh(res->resource_id),
-		    req_len, min_req_len, nr_entries));
+			 "required=%zu entries=%u",
+		    le32toh(res->resource_id), req_len, min_req_len,
+		    nr_entries));
 		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
 		memcpy(rsp, &hdr, len);
 		return len;
@@ -659,21 +589,22 @@ pci_vgpu_resource_attach_backing(struct pci_vgpu_softc *sc,
 	// map guest pages into host contiguos memorry
 	mem = (struct virtio_gpu_mem_entry *)(res + 1);
 	for (i = 0; i < nr_entries; i++) {
-		scanout->backing_iov[i].iov_base = vm_map_gpa(
-		    sc->vsc_vs.vs_pi->pi_vmctx, le64toh(mem[i].addr),
-		    le32toh(mem[i].length));
+		scanout->backing_iov[i].iov_base =
+		    vm_map_gpa(sc->vsc_vs.vs_pi->pi_vmctx, le64toh(mem[i].addr),
+			le32toh(mem[i].length));
 		scanout->backing_iov[i].iov_len = le32toh(mem[i].length);
 
 		if (scanout->backing_iov[i].iov_base == NULL) {
 			WPRINTF(("vgpu: failed to map backing resource=%d "
-			    "entry=%u addr=%llx len=%u",
+				 "entry=%u addr=%llx len=%u",
 			    le32toh(res->resource_id), i,
 			    (unsigned long long)le64toh(mem[i].addr),
 			    le32toh(mem[i].length)));
 			free(scanout->backing_iov);
 			scanout->backing_iov = NULL;
 			scanout->iov_cnt = 0;
-			hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+			hdr.type = htole32(
+			    VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
 			memcpy(rsp, &hdr, len);
 			return len;
 		}
@@ -710,24 +641,26 @@ pci_vgpu_set_scanout(struct pci_vgpu_softc *sc, struct virtio_gpu_ctrl_hdr *req,
 		if (!scanout) {
 			EPRINTLN("pci_vgpu: scanout %d not found",
 			    le32toh(res->resource_id));
-			hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+			hdr.type = htole32(
+			    VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
 			memcpy(rsp, &hdr, len);
 			return (len);
 		}
 		if (width > scanout->width || height > scanout->height) {
 			WPRINTF(("vgpu: invalid set_scanout resource=%d "
-			    "rect=%ux%u resource=%ux%u",
+				 "rect=%ux%u resource=%ux%u",
 			    le32toh(res->resource_id), width, height,
 			    scanout->width, scanout->height));
-			hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
+			hdr.type = htole32(
+			    VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
 			memcpy(rsp, &hdr, len);
 			return (len);
 		}
 
 		console_set_scanout(true, width, height, scanout->stride,
 		    scanout->format, scanout->shm_name, scanout->size, false);
-		DPRINTF(("active scanout: %d: %dx%d, %d",
-		    scanout->resource_id, width, height, scanout->iov_cnt));
+		DPRINTF(("active scanout: %d: %dx%d, %d", scanout->resource_id,
+		    width, height, scanout->iov_cnt));
 	} else {
 		console_set_scanout(false, 0, 0, 0, 0, NULL, 0, false);
 		DPRINTF(("active scanout disabled"));
@@ -836,8 +769,8 @@ pci_vgpu_transfer_to_host_2d(struct pci_vgpu_softc *sc,
 	req_width = width;
 	req_height = height;
 	if (x != 0 || y != 0 || width != sc->resx || height != sc->resy) {
-		DPRINTF(("transfer_to_host_2d %d %d %d %d", x, y, width,
-		    height));
+		DPRINTF(
+		    ("transfer_to_host_2d %d %d %d %d", x, y, width, height));
 	}
 
 	pci_vgpu_prepare_response(req, &hdr, VIRTIO_GPU_RESP_OK_NODATA);
@@ -875,7 +808,7 @@ pci_vgpu_transfer_to_host_2d(struct pci_vgpu_softc *sc,
 		width = MIN(width, scanout->width - x);
 		height = MIN(height, scanout->height - y);
 		WPRINTF(("vgpu: clipped transfer outside scanout resource=%d "
-		    "rect=%ux%u+%u+%u clipped=%ux%u scanout=%ux%u",
+			 "rect=%ux%u+%u+%u clipped=%ux%u scanout=%ux%u",
 		    le32toh(res->resource_id), req_width, req_height, x, y,
 		    width, height, scanout->width, scanout->height));
 	}
@@ -886,7 +819,7 @@ pci_vgpu_transfer_to_host_2d(struct pci_vgpu_softc *sc,
 	if ((size_t)x + req_width > SIZE_MAX / 4 ||
 	    (size_t)scanout->width > SIZE_MAX / 4) {
 		WPRINTF(("vgpu: transfer stride overflow resource=%d "
-		    "rect=%ux%u+%u+%u scanout=%ux%u",
+			 "rect=%ux%u+%u+%u scanout=%ux%u",
 		    le32toh(res->resource_id), req_width, req_height, x, y,
 		    scanout->width, scanout->height));
 		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
@@ -901,8 +834,8 @@ pci_vgpu_transfer_to_host_2d(struct pci_vgpu_softc *sc,
 	dst_end = dst_stride * (y + height - 1) + x * 4 + len_to_copy;
 	if (dst_end > scanout->size) {
 		WPRINTF(("vgpu: transfer destination overflow resource=%d "
-		    "end=%zu size=%zu", le32toh(res->resource_id), dst_end,
-		    scanout->size));
+			 "end=%zu size=%zu",
+		    le32toh(res->resource_id), dst_end, scanout->size));
 		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
 		memcpy(rsp, &hdr, len);
 		return (len);
@@ -912,8 +845,8 @@ pci_vgpu_transfer_to_host_2d(struct pci_vgpu_softc *sc,
 	req_offset = le64toh(res->offset);
 	if (req_offset > backing_size) {
 		WPRINTF(("vgpu: transfer source offset overflow resource=%d "
-		    "offset=%zu backing=%zu", le32toh(res->resource_id),
-		    req_offset, backing_size));
+			 "offset=%zu backing=%zu",
+		    le32toh(res->resource_id), req_offset, backing_size));
 		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
 		memcpy(rsp, &hdr, len);
 		return (len);
@@ -926,8 +859,8 @@ pci_vgpu_transfer_to_host_2d(struct pci_vgpu_softc *sc,
 	}
 	if (src_end > backing_size) {
 		WPRINTF(("vgpu: transfer source overflow resource=%d "
-		    "end=%zu backing=%zu", le32toh(res->resource_id), src_end,
-		    backing_size));
+			 "end=%zu backing=%zu",
+		    le32toh(res->resource_id), src_end, backing_size));
 		hdr.type = htole32(VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER);
 		memcpy(rsp, &hdr, len);
 		return (len);
@@ -938,15 +871,13 @@ pci_vgpu_transfer_to_host_2d(struct pci_vgpu_softc *sc,
 			src_off = req_offset + src_stride * h;
 			dst_off = dst_stride * (y + h) + x * 4;
 			iov_copy(scanout->base_ptr + dst_off, len_to_copy,
-			    scanout->backing_iov,
-			    scanout->iov_cnt, src_off);
+			    scanout->backing_iov, scanout->iov_cnt, src_off);
 		}
 	} else {
 		src_off = req_offset;
 		dst_off = y * dst_stride;
 		iov_copy(scanout->base_ptr + dst_off, height * dst_stride,
-		    scanout->backing_iov,
-		    scanout->iov_cnt, src_off);
+		    scanout->backing_iov, scanout->iov_cnt, src_off);
 	}
 	return (len);
 }
@@ -994,9 +925,9 @@ pci_vgpu_get_edid(struct pci_vgpu_softc *sc, struct virtio_gpu_ctrl_hdr *req,
 		logical_height *= MAX(sc->host_scale, 1);
 	}
 	DPRINTF(("vgpu: get_edid preferred=%ux%u logical=%ux%u "
-	    "physical=%ummx%umm hdpi=%d", sc->resx, sc->resy,
-	    logical_width, logical_height, physical_width_mm,
-	    physical_height_mm, sc->hdpi_enabled));
+		 "physical=%ummx%umm hdpi=%d",
+	    sc->resx, sc->resy, logical_width, logical_height,
+	    physical_width_mm, physical_height_mm, sc->hdpi_enabled));
 	size = generate_edid(sc->resx, sc->resy, logical_width, logical_height,
 	    physical_width_mm, physical_height_mm, sc->hdpi_enabled,
 	    sc->max_resx, sc->max_resy, edid.edid);
@@ -1103,14 +1034,17 @@ pci_vgpu_ping_ctrl(void *vsc, struct vqueue_info *vq)
 		if (n <= 0 || n > VQ_MAX_DESC ||
 		    n != req.readable + req.writable || req.readable == 0) {
 			WPRINTF(("vgpu: invalid ctrl chain n=%d readable=%d "
-			    "writable=%d", n, req.readable, req.writable));
+				 "writable=%d",
+			    n, req.readable, req.writable));
 			vq_relchain(vq, req.idx, 0);
 			continue;
 		}
 
 		if (req.writable == 0) {
-			WPRINTF(("vgpu: ctrl command without response descriptor, "
-			    "readable=%d", req.readable));
+			WPRINTF(
+			    ("vgpu: ctrl command without response descriptor, "
+			     "readable=%d",
+				req.readable));
 			vq_relchain(vq, req.idx, 0);
 			continue;
 		}
@@ -1118,7 +1052,7 @@ pci_vgpu_ping_ctrl(void *vsc, struct vqueue_info *vq)
 		rsp_buf_len = count_iov(&iov[req.readable], req.writable);
 		if (rsp_buf_len == 0) {
 			WPRINTF(("vgpu: ctrl command with empty response "
-			    "descriptors, readable=%d writable=%d",
+				 "descriptors, readable=%d writable=%d",
 			    req.readable, req.writable));
 			vq_relchain(vq, req.idx, 0);
 			continue;
@@ -1126,7 +1060,8 @@ pci_vgpu_ping_ctrl(void *vsc, struct vqueue_info *vq)
 		rsp_buf = calloc(1, rsp_buf_len);
 		if (rsp_buf == NULL) {
 			WPRINTF(("vgpu: failed to allocate response buffer "
-			    "len=%zu", rsp_buf_len));
+				 "len=%zu",
+			    rsp_buf_len));
 			vq_relchain(vq, req.idx, 0);
 			continue;
 		}
@@ -1137,7 +1072,8 @@ pci_vgpu_ping_ctrl(void *vsc, struct vqueue_info *vq)
 			    rsp_buf, rsp_buf_len);
 			if (rsp_len > rsp_buf_len) {
 				WPRINTF(("vgpu: response too large len=%zu "
-				    "available=%zu", rsp_len, rsp_buf_len));
+					 "available=%zu",
+				    rsp_len, rsp_buf_len));
 				rsp_len = rsp_buf_len;
 			}
 			buf_to_iov(rsp_buf, rsp_len, &iov[req.readable],
@@ -1175,8 +1111,7 @@ pci_vgpu_update_cursor(struct pci_vgpu_softc *sc,
 	}
 
 	console_set_mouse_scanout(true, le32toh(scanout->width),
-	    le32toh(scanout->height), scanout->stride,
-	    le32toh(scanout->format),
+	    le32toh(scanout->height), scanout->stride, le32toh(scanout->format),
 	    le32toh(req->hot_x), le32toh(req->hot_y), scanout->shm_name);
 	return (0);
 }
@@ -1270,8 +1205,7 @@ resize_event(int x, int y, void *arg)
 	pthread_mutex_lock(&sc->vsc_mtx);
 
 	DPRINTF(("resize_event %d %d", x, y));
-	if (x >= COLS_MIN && x <= COLS_MAX && y >= ROWS_MIN &&
-	    y <= ROWS_MAX) {
+	if (x >= COLS_MIN && x <= COLS_MAX && y >= ROWS_MIN && y <= ROWS_MAX) {
 		if (sc->resx == (uint32_t)x && sc->resy == (uint32_t)y) {
 			DPRINTF(("resize_event ignored duplicate %d %d", x, y));
 			pthread_mutex_unlock(&sc->vsc_mtx);
@@ -1280,7 +1214,7 @@ resize_event(int x, int y, void *arg)
 		sc->resx = x;
 		sc->resy = y;
 		notify = (sc->vsc_config.events_read &
-		    VIRTIO_GPU_EVENT_DISPLAY) == 0;
+			     VIRTIO_GPU_EVENT_DISPLAY) == 0;
 		sc->vsc_config.events_read |= VIRTIO_GPU_EVENT_DISPLAY;
 		if (notify)
 			pci_vgpu_interrupt_config(sc);
@@ -1326,7 +1260,8 @@ pci_vgpu_init(struct pci_devinst *pi, nvlist_t *nvl)
 		    !strcmp(value, "no")) {
 			sc->hardware_mouse_enabled = false;
 		} else {
-			EPRINTLN("vgpu: invalid hardware_mouse value '%s'", value);
+			EPRINTLN("vgpu: invalid hardware_mouse value '%s'",
+			    value);
 			return (-1);
 		}
 	}
@@ -1405,10 +1340,9 @@ pci_vgpu_init(struct pci_devinst *pi, nvlist_t *nvl)
 
 	sc->max_resx = COLS_MAX;
 	sc->max_resy = ROWS_MAX;
-	sc->host_scale = pci_vgpu_host_scale();
-	if (pci_vgpu_host_display_info(&host_logical_width,
-		&host_logical_height, &host_pixel_width,
-		&host_pixel_height)) {
+	sc->host_scale = host_display_scale();
+	if (host_display_info(&host_logical_width, &host_logical_height,
+		&host_pixel_width, &host_pixel_height)) {
 		if (sc->hdpi_enabled) {
 			sc->max_resx = MIN(host_pixel_width, COLS_MAX);
 			sc->max_resy = MIN(host_pixel_height, ROWS_MAX);
@@ -1420,15 +1354,14 @@ pci_vgpu_init(struct pci_devinst *pi, nvlist_t *nvl)
 	if (sc->hdpi_enabled &&
 	    !pci_vgpu_mode_supports_hdpi(sc->start_resx, sc->start_resy)) {
 		EPRINTLN("vgpu: hdpi resolution %ux%u exceeds max %ux%u",
-		    sc->start_resx * 2, sc->start_resy * 2, COLS_MAX,
-		    ROWS_MAX);
+		    sc->start_resx * 2, sc->start_resy * 2, COLS_MAX, ROWS_MAX);
 		return (-1);
 	}
 	pci_vgpu_set_effective_resolution(sc);
 	DPRINTF(("vgpu: hdpi=%d host_scale=%u logical=%ux%u "
-	    "effective=%ux%u max=%ux%u", sc->hdpi_enabled, sc->host_scale,
-	    sc->start_resx, sc->start_resy, sc->resx, sc->resy,
-	    sc->max_resx, sc->max_resy));
+		 "effective=%ux%u max=%ux%u",
+	    sc->hdpi_enabled, sc->host_scale, sc->start_resx, sc->start_resy,
+	    sc->resx, sc->resy, sc->max_resx, sc->max_resy));
 
 	LIST_INIT(&sc->scanouts);
 
@@ -1473,7 +1406,8 @@ pci_vgpu_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 			error = vm_munmap_memseg(pi->pi_vmctx,
 			    sc->legacy_fb_direct_gpa, FB_SIZE);
 			if (error != 0) {
-				EPRINTLN("pci_vgpu: failed to unmap legacy "
+				EPRINTLN(
+				    "pci_vgpu: failed to unmap legacy "
 				    "framebuffer BAR at 0x%llx size 0x%lx: %s",
 				    sc->legacy_fb_direct_gpa, FB_SIZE,
 				    strerror(error));
@@ -1499,7 +1433,8 @@ pci_vgpu_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 	}
 
 	if (scanout == NULL) {
-		EPRINTLN("pci_vgpu: failed to create legacy framebuffer scanout");
+		EPRINTLN(
+		    "pci_vgpu: failed to create legacy framebuffer scanout");
 		assert(0);
 		return;
 	}
@@ -1512,9 +1447,10 @@ pci_vgpu_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 		error = vm_setup_memory_segment(pi->pi_vmctx, address, FB_SIZE,
 		    prot, (uintptr_t *)&scanout->base_ptr);
 		if (error != 0) {
-			EPRINTLN("pci_vgpu: failed to direct-map legacy framebuffer "
-			    "BAR at 0x%llx size 0x%lx: %s", address, FB_SIZE,
-			    strerror(error));
+			EPRINTLN(
+			    "pci_vgpu: failed to direct-map legacy framebuffer "
+			    "BAR at 0x%llx size 0x%lx: %s",
+			    address, FB_SIZE, strerror(error));
 			pci_emul_set_bar_direct_mapped(pi, baridx, 0);
 			sc->legacy_fb_direct_mapped = false;
 		} else {

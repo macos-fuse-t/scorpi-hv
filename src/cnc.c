@@ -194,10 +194,72 @@ cnc_send_response(struct cnc_conn_t *c, int response_id, const char *data)
 	pthread_mutex_unlock(&pss->queue_lock);
 }
 
+static void
+cnc_enqueue_notification_locked(struct per_session_data *pss, const char *data)
+{
+	char notification[BUFFER_SIZE];
+	struct queued_message *msg;
+	int rc;
+
+	cnc_check_queue_size(pss);
+
+	rc = snprintf(notification, BUFFER_SIZE,
+	    "{ \"type\": \"notification\", \"data\": %s }", data);
+	if (rc < 0 || rc >= BUFFER_SIZE) {
+		EPRINTLN("cnc notification is too large");
+		return;
+	}
+
+	msg = malloc(sizeof(struct queued_message));
+	if (!msg) {
+		EPRINTLN("cnc_send_notification: failed to allocate memory");
+		return;
+	}
+
+	msg->length = (size_t)rc;
+	msg->data = malloc(msg->length + LWS_PRE + 1);
+	if (!msg->data) {
+		free(msg);
+		EPRINTLN("cnc_send_notification: failed to allocate memory");
+		return;
+	}
+	memcpy(msg->data + LWS_PRE, notification, msg->length + 1);
+	STAILQ_INSERT_TAIL(&pss->queue, msg, entries);
+	pss->queue_size++;
+
+	lws_callback_on_writable(pss->wsi);
+}
+
+void
+cnc_send_notification_to(struct cnc_conn_t *c, const char *data)
+{
+	struct per_session_data *pss = (struct per_session_data *)c;
+	struct per_session_data *iter;
+	bool found = false;
+
+	if (pss == NULL || data == NULL)
+		return;
+
+	pthread_mutex_lock(&sessions_lock);
+	LIST_FOREACH(iter, &sessions, entries) {
+		if (iter == pss) {
+			found = true;
+			break;
+		}
+	}
+	if (!found) {
+		pthread_mutex_unlock(&sessions_lock);
+		return;
+	}
+	pthread_mutex_lock(&pss->queue_lock);
+	cnc_enqueue_notification_locked(pss, data);
+	pthread_mutex_unlock(&pss->queue_lock);
+	pthread_mutex_unlock(&sessions_lock);
+}
+
 void
 cnc_send_notification(const char *data)
 {
-	struct queued_message *msg;
 	struct per_session_data *pss;
 	const struct lws_protocols *prot;
 
@@ -212,25 +274,7 @@ cnc_send_notification(const char *data)
 			continue;
 		}
 
-		cnc_check_queue_size(pss);
-
-		msg = malloc(sizeof(struct queued_message));
-		if (!msg) {
-			EPRINTLN(
-			    "cnc_send_notification: failed to allocate memory");
-			pthread_mutex_unlock(&pss->queue_lock);
-			continue;
-		}
-
-		char notification[BUFFER_SIZE];
-		snprintf(notification, BUFFER_SIZE,
-		    "{ \"type\": \"notification\", \"data\": %s }", data);
-		msg->length = strlen(notification);
-		msg->data = malloc(msg->length + LWS_PRE + 1);
-		strncpy(msg->data + LWS_PRE, notification, msg->length);
-		STAILQ_INSERT_TAIL(&pss->queue, msg, entries);
-
-		lws_callback_on_writable(pss->wsi);
+		cnc_enqueue_notification_locked(pss, data);
 		pthread_mutex_unlock(&pss->queue_lock);
 	}
 
@@ -294,8 +338,7 @@ cnc_reset_rx_message(struct per_session_data *pss)
 }
 
 static int
-cnc_append_rx_message(struct per_session_data *pss, const char *in,
-    size_t len)
+cnc_append_rx_message(struct per_session_data *pss, const char *in, size_t len)
 {
 	char *data;
 
@@ -349,6 +392,15 @@ cnc_clean_context(struct per_session_data *pss)
 {
 	struct per_session_data *tmp_pss;
 
+	pthread_mutex_lock(&sessions_lock);
+	LIST_FOREACH(tmp_pss, &sessions, entries) {
+		if (tmp_pss->wsi == pss->wsi) {
+			LIST_REMOVE(tmp_pss, entries);
+			break;
+		}
+	}
+	pthread_mutex_unlock(&sessions_lock);
+
 	pthread_mutex_lock(&pss->queue_lock);
 	while (!STAILQ_EMPTY(&pss->queue)) {
 		struct queued_message *msg = STAILQ_FIRST(&pss->queue);
@@ -360,15 +412,6 @@ cnc_clean_context(struct per_session_data *pss)
 	pthread_mutex_unlock(&pss->queue_lock);
 	pthread_mutex_destroy(&pss->queue_lock);
 	cnc_reset_rx_message(pss);
-
-	pthread_mutex_lock(&sessions_lock);
-	LIST_FOREACH(tmp_pss, &sessions, entries) {
-		if (tmp_pss->wsi == pss->wsi) {
-			LIST_REMOVE(tmp_pss, entries);
-			break;
-		}
-	}
-	pthread_mutex_unlock(&sessions_lock);
 }
 
 static int
