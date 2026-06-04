@@ -32,6 +32,7 @@
 #include <sys/sysctl.h>
 #endif
 #include <sys/param.h>
+#include <sys/stat.h>
 #include <pthread.h>
 // #include <sys/sysctl.h>
 // #include <sys/ioctl.h>
@@ -50,6 +51,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <uuid/uuid.h>
 
 #include "libutil.h"
 
@@ -85,6 +87,8 @@ bool mem_range_registered(uint64_t gpa);
 #define	HVF_SYS_REG_CNTHP_TVAL_EL2	HVF_SYS_REG_ENC(3, 4, 14, 2, 0)
 #define	HVF_SYS_REG_CNTVOFF_EL2	HVF_SYS_REG_ENC(3, 4, 14, 0, 3)
 #define	HVF_SYS_REG_CPTR_EL2	HVF_SYS_REG_ENC(3, 4, 1, 1, 2)
+
+extern uuid_t vm_uuid;
 #define	HVF_SYS_REG_ELR_EL2	HVF_SYS_REG_ENC(3, 4, 4, 0, 1)
 #define	HVF_SYS_REG_ESR_EL2	HVF_SYS_REG_ENC(3, 4, 5, 2, 0)
 #define	HVF_SYS_REG_FAR_EL2	HVF_SYS_REG_ENC(3, 4, 6, 0, 0)
@@ -689,6 +693,55 @@ setup_memory_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 	return (error);
 }
 
+static void
+vm_system_memory_shm_name(char *buf, size_t len, const char *suffix)
+{
+	char uuid[37];
+
+	uuid_unparse(vm_uuid, uuid);
+	snprintf(buf, len, "/scorpi-%s-ram-%s", uuid, suffix);
+}
+
+static int
+setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
+    size_t len, uint64_t prot, uintptr_t *addr, const char *suffix)
+{
+	char name[64];
+	uintptr_t mapped_addr;
+	void *object;
+	int error;
+	int fd;
+
+	vm_system_memory_shm_name(name, sizeof(name), suffix);
+	fd = shm_open(name, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+	if (fd == -1)
+		return (errno);
+
+	if (ftruncate(fd, len) == -1) {
+		error = errno;
+		close(fd);
+		return (error);
+	}
+
+	object = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	error = errno;
+	close(fd);
+	if (object == MAP_FAILED)
+		return (error);
+
+	memset(object, 0, len);
+	mapped_addr = (uintptr_t)object;
+	error = setup_memory_segment(ctx, gpa, len, prot | PROT_DONT_ALLOCATE,
+	    &mapped_addr);
+	if (error != 0) {
+		munmap(object, len);
+		return (error);
+	}
+	if (addr != NULL)
+		*addr = mapped_addr;
+	return (0);
+}
+
 int
 vm_setup_bootrom_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
     uintptr_t *addr)
@@ -763,8 +816,9 @@ vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 		addr = (vms == VM_MMAP_ALL) ?
 		    &ctx->memsegs[VM_MEMSEG_HIGH].addr :
 		    NULL;
-		if ((error = setup_memory_segment(ctx, VM_HIGHMEM_BASE,
-			 ctx->memsegs[VM_MEMSEG_HIGH].size, protFlags, addr))) {
+		if ((error = setup_shared_system_memory_segment(ctx,
+			 VM_HIGHMEM_BASE, ctx->memsegs[VM_MEMSEG_HIGH].size,
+			 protFlags, addr, "high"))) {
 			return (error);
 		}
 	}
@@ -773,8 +827,9 @@ vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 		addr = (vms == VM_MMAP_ALL) ?
 		    &ctx->memsegs[VM_MEMSEG_LOW].addr :
 		    NULL;
-		if ((error = setup_memory_segment(ctx, 0,
-			 ctx->memsegs[VM_MEMSEG_LOW].size, protFlags, addr))) {
+		if ((error = setup_shared_system_memory_segment(ctx, 0,
+			 ctx->memsegs[VM_MEMSEG_LOW].size, protFlags, addr,
+			 "low"))) {
 			return (error);
 		}
 	}

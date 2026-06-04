@@ -7,6 +7,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/param.h>
+#include <sys/stat.h>
 #include <sys/uio.h>
 #include <support/endian.h>
 
@@ -23,6 +24,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <uuid/uuid.h>
 
 #undef CPU_AND
 #undef CPU_CLR
@@ -78,6 +80,8 @@
 #define	HV_SIGNATURE_EDX		0x76482074U
 #define	HV_CPUID_FEATURES		0x40000003
 #define	HV_CPUID_ENLIGHTENMENTS		0x40000004
+
+extern uuid_t vm_uuid;
 #define	HV_CPUID_NESTED_FEATURES	0x4000000a
 #define	HV_FEATURE_TIME_REF_COUNT	(1U << 1)
 #define	HV_FEATURE_SYNIC		(1U << 2)
@@ -1182,6 +1186,55 @@ vm_setup_bootrom_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 	    addr));
 }
 
+static void
+vm_system_memory_shm_name(char *buf, size_t len, const char *suffix)
+{
+	char uuid[37];
+
+	uuid_unparse(vm_uuid, uuid);
+	snprintf(buf, len, "/scorpi-%s-ram-%s", uuid, suffix);
+}
+
+static int
+vm_setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
+    size_t len, uint64_t prot, uintptr_t *addr, const char *suffix)
+{
+	char name[64];
+	uintptr_t mapped_addr;
+	void *object;
+	int error;
+	int fd;
+
+	vm_system_memory_shm_name(name, sizeof(name), suffix);
+	fd = shm_open(name, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+	if (fd == -1)
+		return (errno);
+
+	if (ftruncate(fd, len) == -1) {
+		error = errno;
+		close(fd);
+		return (error);
+	}
+
+	object = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	error = errno;
+	close(fd);
+	if (object == MAP_FAILED)
+		return (error);
+
+	memset(object, 0, len);
+	mapped_addr = (uintptr_t)object;
+	error = vm_setup_memory_segment(ctx, gpa, len,
+	    prot | PROT_DONT_ALLOCATE, &mapped_addr);
+	if (error != 0) {
+		munmap(object, len);
+		return (error);
+	}
+	if (addr != NULL)
+		*addr = mapped_addr;
+	return (0);
+}
+
 int
 vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 {
@@ -1199,18 +1252,19 @@ vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 	if (ctx->memsegs[VM_MEMSEG_LOW].size > 0) {
 		addr = vms == VM_MMAP_ALL ? &ctx->memsegs[VM_MEMSEG_LOW].addr :
 		    NULL;
-		error = vm_setup_memory_segment(ctx, 0,
+		error = vm_setup_shared_system_memory_segment(ctx, 0,
 		    ctx->memsegs[VM_MEMSEG_LOW].size, PROT_READ | PROT_WRITE,
-		    addr);
+		    addr, "low");
 		if (error != 0)
 			return (error);
 	}
 	if (ctx->memsegs[VM_MEMSEG_HIGH].size > 0) {
 		addr = vms == VM_MMAP_ALL ? &ctx->memsegs[VM_MEMSEG_HIGH].addr :
 		    NULL;
-		error = vm_setup_memory_segment(ctx, VM_HIGHMEM_BASE,
+		error = vm_setup_shared_system_memory_segment(ctx,
+		    VM_HIGHMEM_BASE,
 		    ctx->memsegs[VM_MEMSEG_HIGH].size,
-		    PROT_READ | PROT_WRITE, addr);
+		    PROT_READ | PROT_WRITE, addr, "high");
 		if (error != 0)
 			return (error);
 	}

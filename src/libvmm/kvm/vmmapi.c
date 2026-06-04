@@ -6,6 +6,7 @@
 
 #include <sys/mman.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 
 #include <assert.h>
@@ -16,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <uuid/uuid.h>
 
 #include "debug.h"
 #include "libutil.h"
@@ -33,6 +35,8 @@
 #define	VM_LOWMEM_LIMIT	0
 #endif
 #define	VM_HIGHMEM_BASE	(4 * GB)
+
+extern uuid_t vm_uuid;
 
 static int
 scorpi_kvm_unimplemented(const char *func)
@@ -447,6 +451,55 @@ vm_setup_memory_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 	return (vm_setup_memory_segment_internal(ctx, gpa, len, prot, addr));
 }
 
+static void
+vm_system_memory_shm_name(char *buf, size_t len, const char *suffix)
+{
+	char uuid[37];
+
+	uuid_unparse(vm_uuid, uuid);
+	snprintf(buf, len, "/scorpi-%s-ram-%s", uuid, suffix);
+}
+
+static int
+vm_setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
+    size_t len, uint64_t prot, uintptr_t *addr, const char *suffix)
+{
+	char name[64];
+	uintptr_t mapped_addr;
+	void *object;
+	int error;
+	int fd;
+
+	vm_system_memory_shm_name(name, sizeof(name), suffix);
+	fd = shm_open(name, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+	if (fd == -1)
+		return (errno);
+
+	if (ftruncate(fd, len) == -1) {
+		error = errno;
+		close(fd);
+		return (error);
+	}
+
+	object = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	error = errno;
+	close(fd);
+	if (object == MAP_FAILED)
+		return (error);
+
+	memset(object, 0, len);
+	mapped_addr = (uintptr_t)object;
+	error = vm_setup_memory_segment_internal(ctx, gpa, len,
+	    prot | PROT_DONT_ALLOCATE, &mapped_addr);
+	if (error != 0) {
+		munmap(object, len);
+		return (error);
+	}
+	if (addr != NULL)
+		*addr = mapped_addr;
+	return (0);
+}
+
 int
 vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 {
@@ -465,8 +518,9 @@ vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 	if (ctx->memsegs[VM_MEMSEG_HIGH].size > 0) {
 		addr = (vms == VM_MMAP_ALL) ?
 		    &ctx->memsegs[VM_MEMSEG_HIGH].addr : NULL;
-		error = vm_setup_memory_segment_internal(ctx, VM_HIGHMEM_BASE,
-		    ctx->memsegs[VM_MEMSEG_HIGH].size, prot, addr);
+		error = vm_setup_shared_system_memory_segment(ctx,
+		    VM_HIGHMEM_BASE, ctx->memsegs[VM_MEMSEG_HIGH].size,
+		    prot, addr, "high");
 		if (error != 0)
 			return (error);
 	}
@@ -474,8 +528,8 @@ vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 	if (ctx->memsegs[VM_MEMSEG_LOW].size > 0) {
 		addr = (vms == VM_MMAP_ALL) ?
 		    &ctx->memsegs[VM_MEMSEG_LOW].addr : NULL;
-		error = vm_setup_memory_segment_internal(ctx, 0,
-		    ctx->memsegs[VM_MEMSEG_LOW].size, prot, addr);
+		error = vm_setup_shared_system_memory_segment(ctx, 0,
+		    ctx->memsegs[VM_MEMSEG_LOW].size, prot, addr, "low");
 		if (error != 0)
 			return (error);
 	}

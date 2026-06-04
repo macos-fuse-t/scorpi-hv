@@ -336,12 +336,13 @@ eventual DX12 path. It does not execute DirectX yet.
    - exported guest memory region metadata;
    - reset generation.
    Current status: the new `virtio-host` frontend publishes feature bits, reset
-   generation, and queue metadata for its external backend. Guest memory region
-   export metadata is not populated yet.
+   generation, queue metadata, and low/high guest RAM metadata. Guest RAM is
+   backed by stable VM-UUID POSIX shm names:
+   `/scorpi-<vm-uuid>-ram-low` and `/scorpi-<vm-uuid>-ram-high`.
 5. [partial] Add a renderer-side transport object in `scorpi-gpu-renderer` that stores the
    transport description received over CNC.
-   Current status: the renderer requests `virtio_device_describe` and records
-   whether the transport is ready.
+   Current status: the renderer requests `virtio_device_describe`, records
+   whether the transport is ready, and opens/maps exported guest RAM regions.
 6. [pending] Add renderer-side virtqueue helpers:
    - translate guest physical address to mapped host pointer;
    - read descriptor table;
