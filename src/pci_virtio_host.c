@@ -117,7 +117,7 @@ pci_vhost_interrupt(void *opaque, uint32_t queue_index)
 
 	if (queue_index >= (uint32_t)sc->vsc_consts.vc_nvq)
 		return;
-	vq_interrupt(&sc->vsc_vs, &sc->queues[queue_index]);
+	vq_endchains(&sc->queues[queue_index], 1);
 }
 
 static void

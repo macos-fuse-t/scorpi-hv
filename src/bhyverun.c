@@ -999,6 +999,7 @@ bhyve_run_configured_vm(void)
 	console_init();
 	virtio_external_backend_init();
 	cnc_start_srv();
+	virtio_external_backend_wait_bound_connected();
 
 #ifdef BHYVE_SNAPSHOT
 	if (restore_file != NULL) {

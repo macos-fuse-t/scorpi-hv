@@ -12,6 +12,7 @@ typedef void (*virtio_external_reset_cb)(void *opaque);
 
 void virtio_external_backend_init(void);
 bool virtio_external_backend_registered(const char *backend_id);
+void virtio_external_backend_wait_bound_connected(void);
 int virtio_external_backend_set_transport(const char *backend_id,
     const struct scorpi_virtio_external_transport_desc *transport);
 int virtio_external_backend_bind_device(const char *backend_id,
