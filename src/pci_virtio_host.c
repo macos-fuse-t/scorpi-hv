@@ -14,24 +14,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <uuid/uuid.h>
 
 #include "config.h"
 #include "debug.h"
 #include "bhyverun.h"
+#include "external_vm_memory.h"
 #include "pci_emul.h"
 #include "virtio.h"
 #include "virtio_external_backend.h"
 #include "virtio_gpu.h"
-#include "vmmapi.h"
 
 #define VHOST_DEFAULT_BACKEND_ID "gpu0"
 #define VHOST_DEFAULT_DEVICE_NAME "virtio-gpu"
 #define VHOST_DEFAULT_QUEUE_SIZE 1024
 #define VHOST_GPU_QUEUE_COUNT 2
 #define VHOST_GPU_CTRLQ 0
-
-extern uuid_t vm_uuid;
 
 struct pci_vhost_softc {
 	struct virtio_softc vsc_vs;
@@ -116,46 +113,6 @@ pci_vhost_interrupt(void *opaque, uint32_t queue_index)
 }
 
 static void
-pci_vhost_memory_region_name(char *buf, size_t len, const char *suffix)
-{
-	char uuid[37];
-
-	uuid_unparse(vm_uuid, uuid);
-	snprintf(buf, len, "/scorpi-%s-ram-%s", uuid, suffix);
-}
-
-static void
-pci_vhost_add_memory_region(struct virtio_external_transport_desc *transport,
-    uint64_t guest_phys_addr, uint64_t size, const char *suffix)
-{
-	struct virtio_external_memory_region_desc *region;
-
-	if (size == 0 ||
-	    transport->memory_region_count >= VIRTIO_EXTERNAL_MAX_MEMORY_REGIONS)
-		return;
-
-	region = &transport->memory_regions[transport->memory_region_count++];
-	region->index = transport->memory_region_count - 1;
-	region->guest_phys_addr = guest_phys_addr;
-	region->size = size;
-	region->shm_offset = 0;
-	pci_vhost_memory_region_name(region->shm_name,
-	    sizeof(region->shm_name), suffix);
-}
-
-static void
-pci_vhost_fill_memory_regions(struct pci_vhost_softc *sc,
-    struct virtio_external_transport_desc *transport)
-{
-	struct vmctx *ctx = sc->vsc_vs.vs_pi->pi_vmctx;
-
-	pci_vhost_add_memory_region(transport, 0, vm_get_lowmem_size(ctx),
-	    "low");
-	pci_vhost_add_memory_region(transport, vm_get_highmem_base(ctx),
-	    vm_get_highmem_size(ctx), "high");
-}
-
-static void
 pci_vhost_bind_callbacks(struct pci_vhost_softc *sc)
 {
 	struct virtio_external_transport_desc transport;
@@ -178,7 +135,8 @@ pci_vhost_bind_callbacks(struct pci_vhost_softc *sc)
 		transport.queues[i].used_addr = pci_vhost_queue_used_gpa(vq);
 		transport.queues[i].ready = vq_ring_ready(vq) != 0;
 	}
-	pci_vhost_fill_memory_regions(sc, &transport);
+	external_vm_memory_fill_transport(sc->vsc_vs.vs_pi->pi_vmctx,
+	    &transport);
 	transport.ready = transport.queues[VHOST_GPU_CTRLQ].ready;
 
 	(void)virtio_external_backend_bind_device(sc->backend_id, &transport,

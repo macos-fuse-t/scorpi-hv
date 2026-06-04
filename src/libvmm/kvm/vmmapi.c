@@ -17,9 +17,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <uuid/uuid.h>
 
 #include "debug.h"
+#include "external_vm_memory.h"
 #include "libutil.h"
 #include "mem.h"
 #include "vmmapi.h"
@@ -35,8 +35,6 @@
 #define	VM_LOWMEM_LIMIT	0
 #endif
 #define	VM_HIGHMEM_BASE	(4 * GB)
-
-extern uuid_t vm_uuid;
 
 static int
 scorpi_kvm_unimplemented(const char *func)
@@ -451,15 +449,6 @@ vm_setup_memory_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 	return (vm_setup_memory_segment_internal(ctx, gpa, len, prot, addr));
 }
 
-static void
-vm_system_memory_shm_name(char *buf, size_t len, const char *suffix)
-{
-	char uuid[37];
-
-	uuid_unparse(vm_uuid, uuid);
-	snprintf(buf, len, "/scorpi-%s-ram-%s", uuid, suffix);
-}
-
 static int
 vm_setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
     size_t len, uint64_t prot, uintptr_t *addr, const char *suffix)
@@ -470,7 +459,7 @@ vm_setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
 	int error;
 	int fd;
 
-	vm_system_memory_shm_name(name, sizeof(name), suffix);
+	external_vm_memory_shm_name(name, sizeof(name), suffix);
 	fd = shm_open(name, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
 	if (fd == -1)
 		return (errno);

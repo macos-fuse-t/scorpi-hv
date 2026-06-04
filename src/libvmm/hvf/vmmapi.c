@@ -51,7 +51,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <uuid/uuid.h>
 
 #include "libutil.h"
 
@@ -63,6 +62,7 @@
 
 #include "arch.h"
 #include "debug.h"
+#include "external_vm_memory.h"
 #include "internal.h"
 #include "vmmapi.h"
 
@@ -88,7 +88,6 @@ bool mem_range_registered(uint64_t gpa);
 #define	HVF_SYS_REG_CNTVOFF_EL2	HVF_SYS_REG_ENC(3, 4, 14, 0, 3)
 #define	HVF_SYS_REG_CPTR_EL2	HVF_SYS_REG_ENC(3, 4, 1, 1, 2)
 
-extern uuid_t vm_uuid;
 #define	HVF_SYS_REG_ELR_EL2	HVF_SYS_REG_ENC(3, 4, 4, 0, 1)
 #define	HVF_SYS_REG_ESR_EL2	HVF_SYS_REG_ENC(3, 4, 5, 2, 0)
 #define	HVF_SYS_REG_FAR_EL2	HVF_SYS_REG_ENC(3, 4, 6, 0, 0)
@@ -693,15 +692,6 @@ setup_memory_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 	return (error);
 }
 
-static void
-vm_system_memory_shm_name(char *buf, size_t len, const char *suffix)
-{
-	char uuid[37];
-
-	uuid_unparse(vm_uuid, uuid);
-	snprintf(buf, len, "/scorpi-%s-ram-%s", uuid, suffix);
-}
-
 static int
 setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
     size_t len, uint64_t prot, uintptr_t *addr, const char *suffix)
@@ -712,7 +702,7 @@ setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
 	int error;
 	int fd;
 
-	vm_system_memory_shm_name(name, sizeof(name), suffix);
+	external_vm_memory_shm_name(name, sizeof(name), suffix);
 	fd = shm_open(name, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
 	if (fd == -1)
 		return (errno);
