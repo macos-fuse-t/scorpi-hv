@@ -64,11 +64,8 @@
 #include "net_utils.h"
 #include "pci_emul.h"
 #include "virtio.h"
-#include "virtio_external_backend.h"
 #include "virtio_gpu.h"
 #include "vmmapi.h"
-
-#define VGPU_EXTERNAL_BACKEND_ID "gpu0"
 
 static int vgpu_debug = 0;
 #define DPRINTF(params) \
@@ -150,7 +147,6 @@ struct pci_vgpu_softc {
 	bool fb_enabled; /* enable legacy framebuffer */
 	bool legacy_fb_direct_mapped;
 	uint64_t legacy_fb_direct_gpa;
-	uint32_t external_reset_generation;
 
 	LIST_HEAD(scanouts, vgpu_scanout) scanouts;
 };
@@ -158,7 +154,6 @@ struct pci_vgpu_softc {
 extern uuid_t vm_uuid;
 
 static void pci_vgpu_reset(void *vsc);
-static void pci_vgpu_publish_external_transport(struct pci_vgpu_softc *sc);
 static int pci_vgpu_cfgread(void *vsc, int offset, int size, uint32_t *retval);
 static int pci_vgpu_cfgwrite(void *vsc, int offset, int size, uint32_t value);
 static void pci_vgpu_neg_features(void *vsc, uint64_t negotiated_features);
@@ -197,80 +192,7 @@ pci_vgpu_neg_features(void *vsc, uint64_t negotiated_features)
 	struct pci_vgpu_softc *sc = vsc;
 
 	sc->vsc_features = negotiated_features;
-	pci_vgpu_publish_external_transport(sc);
 	DPRINTF(("vgpu: pci_vgpu_neg_features 0x%llx", negotiated_features));
-}
-
-static uint64_t
-pci_vgpu_queue_desc_gpa(const struct vqueue_info *vq)
-{
-	if (vq->vq_desc_gpa != 0)
-		return (vq->vq_desc_gpa);
-	if (vq->vq_pfn != 0)
-		return ((uint64_t)vq->vq_pfn << VRING_PFN);
-	return (0);
-}
-
-static uint64_t
-pci_vgpu_queue_avail_gpa(const struct vqueue_info *vq)
-{
-	uint64_t desc_gpa;
-
-	if (vq->vq_avail_gpa != 0)
-		return (vq->vq_avail_gpa);
-	desc_gpa = pci_vgpu_queue_desc_gpa(vq);
-	if (desc_gpa == 0)
-		return (0);
-	return (desc_gpa + (uint64_t)vq->vq_qsize *
-	    sizeof(struct vring_desc));
-}
-
-static uint64_t
-pci_vgpu_queue_used_gpa(const struct vqueue_info *vq)
-{
-	uint64_t avail_gpa;
-
-	if (vq->vq_used_gpa != 0)
-		return (vq->vq_used_gpa);
-	avail_gpa = pci_vgpu_queue_avail_gpa(vq);
-	if (avail_gpa == 0)
-		return (0);
-	return (roundup2(avail_gpa + (uint64_t)(2 + vq->vq_qsize + 1) *
-	    sizeof(uint16_t), VRING_ALIGN));
-}
-
-static void
-pci_vgpu_fill_external_queue(struct virtio_external_queue_desc *dst,
-    const struct vqueue_info *src)
-{
-	dst->index = src->vq_num;
-	dst->size = src->vq_qsize;
-	dst->desc_addr = pci_vgpu_queue_desc_gpa(src);
-	dst->avail_addr = pci_vgpu_queue_avail_gpa(src);
-	dst->used_addr = pci_vgpu_queue_used_gpa(src);
-	dst->ready = vq_ring_ready((struct vqueue_info *)src) != 0;
-}
-
-static void
-pci_vgpu_publish_external_transport(struct pci_vgpu_softc *sc)
-{
-	struct virtio_external_transport_desc transport;
-
-	memset(&transport, 0, sizeof(transport));
-	snprintf(transport.backend_id, sizeof(transport.backend_id), "%s",
-	    VGPU_EXTERNAL_BACKEND_ID);
-	snprintf(transport.device_name, sizeof(transport.device_name), "%s",
-	    "virtio-gpu");
-	transport.features = sc->vsc_features;
-	transport.reset_generation = sc->external_reset_generation;
-	transport.queue_count = VGPU_MAXQ - 1;
-	for (uint32_t i = 0; i < transport.queue_count; i++)
-		pci_vgpu_fill_external_queue(&transport.queues[i],
-		    &sc->vsc_queues[i]);
-	transport.ready = transport.queues[VGPU_CTRL].ready;
-
-	(void)virtio_external_backend_set_transport(VGPU_EXTERNAL_BACKEND_ID,
-	    &transport);
 }
 
 static int
@@ -438,13 +360,11 @@ pci_vgpu_reset(void *vsc)
 	struct pci_vgpu_softc *sc = vsc;
 
 	DPRINTF(("vgpu: device reset requested !"));
-	sc->external_reset_generation++;
 	console_set_scanout(false, 0, 0, 0, 0, NULL, 0, false);
 	pci_vgpu_destroy_scanouts(sc);
 
 	pci_vgpu_set_effective_resolution(sc);
 	vi_reset_dev(&sc->vsc_vs);
-	pci_vgpu_publish_external_transport(sc);
 }
 
 static void
@@ -1170,7 +1090,6 @@ pci_vgpu_ping_ctrl(void *vsc, struct vqueue_info *vq)
 	uint8_t *rsp_buf;
 
 	// DPRINTF(("vgpu: pci_vgpu_ping_ctrl"));
-	pci_vgpu_publish_external_transport(sc);
 	pthread_mutex_lock(&sc->vsc_mtx);
 	// vq_kick_disable(vq);
 
@@ -1327,7 +1246,6 @@ pci_vgpu_ping_cursor(void *vsc, struct vqueue_info *vq)
 	size_t rsp_len;
 	struct virtio_gpu_ctrl_hdr *cmd;
 
-	pci_vgpu_publish_external_transport(sc);
 	pthread_mutex_lock(&sc->vsc_mtx);
 	// vq_kick_disable(vq);
 
@@ -1457,7 +1375,6 @@ pci_vgpu_init(struct pci_devinst *pi, nvlist_t *nvl)
 
 	vi_softc_linkup(&sc->vsc_vs, &sc->vsc_consts, sc, pi, sc->vsc_queues);
 	sc->vsc_vs.vs_mtx = &sc->vsc_mtx;
-	pci_vgpu_publish_external_transport(sc);
 
 	/* use BAR 3 to map MSI-X table and PBA, if we're using MSI-X */
 	if (vi_intr_init(&sc->vsc_vs, 3, msix_supported())) {

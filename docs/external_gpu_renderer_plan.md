@@ -172,15 +172,20 @@ Create the reusable setup/control layer for external virtio backends:
 The first implementation uses CNC WebSocket setup/control messages. It does not
 move submit payloads through JSON.
 
-### MS3B: Virtio-GPU External Backend Mode
+### MS3B: Generic Virtio-Host Frontend
 
-Plug the existing virtio-gpu PCI device into the generic external backend
-framework. Do not create a second virtio-gpu PCI device.
+Add a separate `virtio-host` PCI device implementation in `scorpi-hv`.
+Do not modify the validated `pci_virtio_gpu.c` path for external backend work.
 
-The existing virtio-gpu device can run in either mode:
+The VM config selects one path:
 
-- internal backend: current validated `scorpi-hv` 2D/display path;
-- external backend: renderer-owned accelerated queues.
+- `virtio-gpu`: current validated internal `scorpi-hv` 2D/display device;
+- `virtio-host,device=virtio-gpu,backend=gpu0`: generic external virtio
+  frontend that presents virtio-gpu identity while `scorpi-gpu-renderer`
+  implements the virtio-gpu backend.
+
+Do not enable both for the same Windows VM unless intentionally testing two
+display adapters.
 
 ### MS3C: Renderer-Owned Virtqueue Transport
 
@@ -330,9 +335,9 @@ eventual DX12 path. It does not execute DirectX yet.
    - queue index, size, descriptor address, avail address, and used address;
    - exported guest memory region metadata;
    - reset generation.
-   Current status: virtio-gpu publishes feature bits, reset generation, and
-   control/cursor queue metadata. Guest memory region export metadata is not
-   populated yet.
+   Current status: the new `virtio-host` frontend publishes feature bits, reset
+   generation, and queue metadata for its external backend. Guest memory region
+   export metadata is not populated yet.
 5. [partial] Add a renderer-side transport object in `scorpi-gpu-renderer` that stores the
    transport description received over CNC.
    Current status: the renderer requests `virtio_device_describe` and records
@@ -344,9 +349,11 @@ eventual DX12 path. It does not execute DirectX yet.
    - walk descriptor chains;
    - write response data;
    - publish used entries.
-7. [pending] Change accelerated virtio-gpu queue handling so `scorpi-hv` only sends a kick
+7. [partial] Add `virtio-host` queue handling so `scorpi-hv` only sends a kick
    notification for renderer-owned queues. It must not parse or copy command
    payloads for those queues.
+   Current status: `virtio-host` sends generic `virtio_queue_kick`
+   notifications.
 8. [pending] Add a renderer completion path where `scorpi-gpu-renderer` asks `scorpi-hv`
    to inject the virtio interrupt after updating the used ring.
 9. [pending] Validate with one minimal renderer-owned virtio command:

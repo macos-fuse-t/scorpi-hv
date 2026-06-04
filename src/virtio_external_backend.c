@@ -26,6 +26,9 @@ struct virtio_external_backend {
 	cnc_conn_t conn;
 	bool connected;
 	struct virtio_external_transport_desc transport;
+	virtio_external_interrupt_cb interrupt_cb;
+	virtio_external_reset_cb reset_cb;
+	void *device_opaque;
 	LIST_ENTRY(virtio_external_backend) entries;
 };
 
@@ -112,6 +115,32 @@ done:
 	return (rc);
 }
 
+int
+virtio_external_backend_bind_device(const char *backend_id,
+    const struct virtio_external_transport_desc *transport,
+    virtio_external_interrupt_cb interrupt_cb,
+    virtio_external_reset_cb reset_cb, void *opaque)
+{
+	struct virtio_external_backend *backend;
+	int rc;
+
+	rc = virtio_external_backend_set_transport(backend_id, transport);
+	if (rc != 0)
+		return (rc);
+
+	pthread_mutex_lock(&backends_lock);
+	backend = virtio_external_backend_find_locked(backend_id);
+	if (backend == NULL) {
+		pthread_mutex_unlock(&backends_lock);
+		return (-1);
+	}
+	backend->interrupt_cb = interrupt_cb;
+	backend->reset_cb = reset_cb;
+	backend->device_opaque = opaque;
+	pthread_mutex_unlock(&backends_lock);
+	return (0);
+}
+
 void
 virtio_external_backend_clear_transport(const char *backend_id)
 {
@@ -122,6 +151,38 @@ virtio_external_backend_clear_transport(const char *backend_id)
 	if (backend != NULL)
 		memset(&backend->transport, 0, sizeof(backend->transport));
 	pthread_mutex_unlock(&backends_lock);
+}
+
+int
+virtio_external_backend_notify_queue_kick(const char *backend_id,
+    uint32_t queue_index)
+{
+	struct virtio_external_backend *backend;
+	char notification[VIRTIO_EXT_RESPONSE_MAX];
+
+	if (backend_id == NULL)
+		return (-1);
+
+	pthread_mutex_lock(&backends_lock);
+	backend = virtio_external_backend_find_locked(backend_id);
+	if (backend == NULL) {
+		pthread_mutex_unlock(&backends_lock);
+		return (-1);
+	}
+
+	snprintf(notification, sizeof(notification),
+	    "{ \"event\": \"virtio_queue_kick\", \"data\": {"
+	    "\"backend_id\": \"%s\","
+	    "\"device_name\": \"%s\","
+	    "\"queue_index\": %u,"
+	    "\"reset_generation\": %u"
+	    "} }",
+	    backend->backend_id, backend->device_name, queue_index,
+	    backend->transport.reset_generation);
+	pthread_mutex_unlock(&backends_lock);
+
+	cnc_send_notification(notification);
+	return (0);
 }
 
 static void
@@ -337,6 +398,7 @@ virtio_device_describe(cnc_conn_t c, int req_id, int argc, char *argv[],
     void *param)
 {
 	struct virtio_external_backend *backend;
+	struct virtio_external_backend snapshot;
 
 	(void)param;
 	if (argc < 1) {
@@ -358,8 +420,9 @@ virtio_device_describe(cnc_conn_t c, int req_id, int argc, char *argv[],
 		    "{\"accepted\":false,\"reason\":\"not_registered\"}");
 		return;
 	}
-	virtio_external_send_transport_desc(c, req_id, backend);
+	snapshot = *backend;
 	pthread_mutex_unlock(&backends_lock);
+	virtio_external_send_transport_desc(c, req_id, &snapshot);
 }
 
 static void
@@ -376,20 +439,72 @@ static void
 virtio_queue_interrupt(cnc_conn_t c, int req_id, int argc, char *argv[],
     void *param)
 {
-	(void)argc;
-	(void)argv;
+	struct virtio_external_backend *backend;
+	virtio_external_interrupt_cb interrupt_cb;
+	void *opaque;
+	uint32_t queue_index;
+
 	(void)param;
-	virtio_external_backend_send_not_ready(c, req_id);
+	if (argc < 2) {
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"bad_args\"}");
+		return;
+	}
+	if (!virtio_external_valid_name(argv[0])) {
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"bad_name\"}");
+		return;
+	}
+
+	queue_index = (uint32_t)strtoul(argv[1], NULL, 10);
+	pthread_mutex_lock(&backends_lock);
+	backend = virtio_external_backend_find_locked(argv[0]);
+	if (backend == NULL || backend->interrupt_cb == NULL) {
+		pthread_mutex_unlock(&backends_lock);
+		virtio_external_backend_send_not_ready(c, req_id);
+		return;
+	}
+	interrupt_cb = backend->interrupt_cb;
+	opaque = backend->device_opaque;
+	pthread_mutex_unlock(&backends_lock);
+
+	interrupt_cb(opaque, queue_index);
+	cnc_send_response(c, req_id, "{\"accepted\":true}");
 }
 
 static void
 virtio_device_reset(cnc_conn_t c, int req_id, int argc, char *argv[],
     void *param)
 {
-	(void)argc;
-	(void)argv;
+	struct virtio_external_backend *backend;
+	virtio_external_reset_cb reset_cb;
+	void *opaque;
+
 	(void)param;
-	virtio_external_backend_send_not_ready(c, req_id);
+	if (argc < 1) {
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"bad_args\"}");
+		return;
+	}
+	if (!virtio_external_valid_name(argv[0])) {
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"bad_name\"}");
+		return;
+	}
+
+	pthread_mutex_lock(&backends_lock);
+	backend = virtio_external_backend_find_locked(argv[0]);
+	if (backend == NULL || backend->reset_cb == NULL) {
+		pthread_mutex_unlock(&backends_lock);
+		virtio_external_backend_send_not_ready(c, req_id);
+		return;
+	}
+	reset_cb = backend->reset_cb;
+	opaque = backend->device_opaque;
+	pthread_mutex_unlock(&backends_lock);
+
+	reset_cb(opaque);
+	cnc_send_response(c, req_id, "{\"accepted\":true}");
 }
 
 void
