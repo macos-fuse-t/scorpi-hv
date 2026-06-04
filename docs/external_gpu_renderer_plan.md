@@ -330,8 +330,9 @@ eventual DX12 path. It does not execute DirectX yet.
    - queue index, size, descriptor address, avail address, and used address;
    - exported guest memory region metadata;
    - reset generation.
-   Current status: the generic object and `virtio_device_describe` response
-   shape exist, but virtio-gpu does not populate queue or memory data yet.
+   Current status: virtio-gpu publishes feature bits, reset generation, and
+   control/cursor queue metadata. Guest memory region export metadata is not
+   populated yet.
 5. [partial] Add a renderer-side transport object in `scorpi-gpu-renderer` that stores the
    transport description received over CNC.
    Current status: the renderer requests `virtio_device_describe` and records
