@@ -2751,7 +2751,7 @@ pci_xhci_dev_intr(struct usb_hci *hci, int epctx)
 
 	DPRINTF(("xhci device interrupt on endpoint %d", epid));
 
-	pci_xhci_device_doorbell(sc, hci->hci_port, epid, 0);
+	pci_xhci_device_doorbell(sc, hci->hci_address, epid, 0);
 
 done:
 	DEV_UNLOCK(sc);
