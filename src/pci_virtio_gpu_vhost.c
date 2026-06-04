@@ -54,8 +54,6 @@
 #define VHOST_GPU_TRANSPORT_FEATURES \
 	(VIRTIO_RING_F_INDIRECT_DESC | VIRTIO_F_VERSION_1)
 #define VHOST_GPU_DEVICE_FEATURES (1ULL << VIRTIO_GPU_F_EDID)
-#define VHOST_GPU_HOSTCAPS \
-	(VHOST_GPU_TRANSPORT_FEATURES | VHOST_GPU_DEVICE_FEATURES)
 
 struct pci_vhost_softc {
 	struct virtio_softc vsc_vs;
@@ -153,13 +151,23 @@ static struct virtio_consts vhost_consts = {
 	.vc_cfgread = pci_vhost_cfgread,
 	.vc_cfgwrite = pci_vhost_cfgwrite,
 	.vc_apply_features = pci_vhost_neg_features,
-	.vc_hv_caps = VHOST_GPU_HOSTCAPS,
+	.vc_hv_caps = VHOST_GPU_TRANSPORT_FEATURES,
 };
 
 static void
 pci_vhost_device_features(void *opaque, uint64_t device_features)
 {
-	(void)opaque;
+	struct pci_vhost_softc *sc = opaque;
+
+	pthread_mutex_lock(&sc->vsc_mtx);
+	if (pci_vhost_features_negotiated(&sc->vhost)) {
+		pthread_mutex_unlock(&sc->vsc_mtx);
+		return;
+	}
+	sc->vsc_consts.vc_hv_caps = VHOST_GPU_TRANSPORT_FEATURES |
+	    (device_features & VHOST_GPU_DEVICE_FEATURES);
+	pthread_mutex_unlock(&sc->vsc_mtx);
+
 	if ((device_features & VHOST_GPU_DEVICE_FEATURES) !=
 	    VHOST_GPU_DEVICE_FEATURES) {
 		EPRINTLN(
