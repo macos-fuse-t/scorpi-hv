@@ -10,8 +10,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "pci_virtio_vhost.h"
 #include "pci_emul.h"
+#include "pci_virtio_vhost.h"
 #include "vhost_vmmem.h"
 #include "virtio.h"
 #include "virtio_vhost_transport.h"
@@ -97,6 +97,13 @@ pci_vhost_set_features(struct pci_vhost_state *state, uint64_t features)
 }
 
 void
+pci_vhost_set_backend_features_cb(struct pci_vhost_state *state,
+    pci_vhost_backend_features_cb backend_features_cb)
+{
+	state->backend_features_cb = backend_features_cb;
+}
+
+void
 pci_vhost_advance_reset_generation(struct pci_vhost_state *state)
 {
 	state->reset_generation++;
@@ -131,7 +138,8 @@ pci_vhost_bind_transport(struct pci_vhost_state *state, struct vmctx *ctx,
 		transport.ready = transport.queues[info->ready_queue].ready;
 
 	return (virtio_vhost_transport_bind_device(state->backend_id,
-	    &transport, pci_vhost_interrupt, pci_vhost_reset, state));
+	    &transport, pci_vhost_interrupt, pci_vhost_reset,
+	    state->backend_features_cb, state));
 }
 
 int

@@ -51,6 +51,9 @@
 #define VHOST_LEGACY_CTRL_SIZE	  512
 #define VHOST_LEGACY_FB_SIZE	  (128 * 1024UL * 1024UL)
 #define VHOST_LEGACY_RESOURCE_ID  0xFFFFFFFF
+#define VHOST_GPU_TRANSPORT_FEATURES \
+	(VIRTIO_RING_F_INDIRECT_DESC | VIRTIO_F_VERSION_1)
+#define VHOST_GPU_BACKEND_FEATURES (1ULL << VIRTIO_GPU_F_EDID)
 
 struct pci_vhost_softc {
 	struct virtio_softc vsc_vs;
@@ -79,8 +82,7 @@ struct pci_vhost_softc {
 	LIST_ENTRY(pci_vhost_softc) entries;
 };
 
-static LIST_HEAD(pci_vhost_gpu_devices,
-    pci_vhost_softc) pci_vhost_gpu_devices =
+static LIST_HEAD(pci_vhost_gpu_devices, pci_vhost_softc) pci_vhost_gpu_devices =
     LIST_HEAD_INITIALIZER(pci_vhost_gpu_devices);
 static pthread_mutex_t pci_vhost_gpu_devices_mtx = PTHREAD_MUTEX_INITIALIZER;
 
@@ -149,9 +151,19 @@ static struct virtio_consts vhost_consts = {
 	.vc_cfgread = pci_vhost_cfgread,
 	.vc_cfgwrite = pci_vhost_cfgwrite,
 	.vc_apply_features = pci_vhost_neg_features,
-	.vc_hv_caps = VIRTIO_RING_F_INDIRECT_DESC | VIRTIO_F_VERSION_1 |
-	    (1ULL << VIRTIO_GPU_F_EDID),
+	.vc_hv_caps = VHOST_GPU_TRANSPORT_FEATURES,
 };
+
+static void
+pci_vhost_backend_features(void *opaque, uint64_t backend_features)
+{
+	struct pci_vhost_softc *sc = opaque;
+
+	pthread_mutex_lock(&sc->vsc_mtx);
+	sc->vsc_consts.vc_hv_caps = VHOST_GPU_TRANSPORT_FEATURES |
+	    (backend_features & VHOST_GPU_BACKEND_FEATURES);
+	pthread_mutex_unlock(&sc->vsc_mtx);
+}
 
 static void
 pci_vhost_set_legacy_scanout(struct pci_vhost_softc *sc)
@@ -668,6 +680,8 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	pci_vhost_state_init(&sc->vhost, &sc->vsc_vs, sc->queues,
 	    VHOST_GPU_QUEUE_COUNT, backend_id, device_name, pci_vhost_reset,
 	    sc);
+	pci_vhost_set_backend_features_cb(&sc->vhost,
+	    pci_vhost_backend_features);
 
 	pci_set_cfgdata16(pi, PCIR_DEVICE, VIRTIO_DEV_GPU);
 	pci_set_cfgdata16(pi, PCIR_VENDOR, VIRTIO_VENDOR);
@@ -705,7 +719,8 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	if (socket_path != NULL &&
 	    virtio_vhost_transport_set_backend_socket(sc->vhost.backend_id,
 		socket_path) != 0) {
-		EPRINTLN("virtio-gpu-vhost: failed to configure backend socket %s",
+		EPRINTLN(
+		    "virtio-gpu-vhost: failed to configure backend socket %s",
 		    socket_path);
 		return (-1);
 	}
