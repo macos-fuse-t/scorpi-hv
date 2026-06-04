@@ -43,7 +43,7 @@
 #include "debug.h"
 #include "mjson.h"
 
-#define BUFFER_SIZE	     1024
+#define BUFFER_SIZE	     (64 * 1024)
 #define MAX_REQUEST_SIZE     (64 * 1024)
 #define MAX_PENDING_MESSAGES 50
 #define MAX_STRLEN	     128

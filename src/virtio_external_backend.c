@@ -17,7 +17,7 @@
 #include "debug.h"
 #include "virtio_external_backend.h"
 
-#define VIRTIO_EXT_RESPONSE_MAX 1024
+#define VIRTIO_EXT_RESPONSE_MAX (64 * 1024)
 
 struct virtio_external_backend {
 	char backend_id[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];

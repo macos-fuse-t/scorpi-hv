@@ -995,6 +995,9 @@ bhyve_run_configured_vm(void)
 		return (EX_OSERR);
 #endif
 
+	virtio_external_backend_init();
+	cnc_start_srv();
+
 #ifdef BHYVE_SNAPSHOT
 	if (restore_file != NULL) {
 		destroy_restore_state(&rstate);
@@ -1011,9 +1014,6 @@ bhyve_run_configured_vm(void)
 			vm_resume_all_cpus(ctx);
 		else
 			vm_resume_cpu(bsp);
-
-	virtio_external_backend_init();
-	cnc_start_srv();
 
 	/*
 	 * Head off to the main event dispatch loop
