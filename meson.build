@@ -144,6 +144,7 @@ runtime_core_sources = files(
     'src/pci_ahci.c',
     'src/block_if.c',
     'src/virtio.c',
+    'src/virtio_external_backend.c',
     'src/pci_virtio_block.c',
     'src/pci_virtio_net.c',
     'src/pci_virtio_rnd.c',

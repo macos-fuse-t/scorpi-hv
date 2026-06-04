@@ -311,43 +311,45 @@ Status: started.
 
 ## MS3 Concrete Tasks
 
-Status: planned. This milestone is the first transport milestone for the
+Status: started. This milestone is the first transport milestone for the
 eventual DX12 path. It does not execute DirectX yet.
 
-1. Define the generic CNC WebSocket setup/control actions:
+1. [done] Define the generic CNC WebSocket setup/control actions:
    - `virtio_backend_register`
    - `virtio_device_describe`
    - `virtio_queue_kick`
    - `virtio_queue_interrupt`
    - `virtio_device_reset`
    - `virtio_backend_disconnect`
-2. Add a renderer registration state in `scorpi-hv` without spawning the
+2. [done] Add a renderer registration state in `scorpi-hv` without spawning the
    renderer.
-3. Add a transport description object in `scorpi-hv` containing:
+3. [done] Make `scorpi-gpu-renderer` register and disconnect over the generic
+   external virtio setup/control surface.
+4. [pending] Add a transport description object in `scorpi-hv` containing:
    - negotiated virtio-gpu features;
    - queue index, size, descriptor address, avail address, and used address;
    - exported guest memory region metadata;
    - reset generation.
-4. Add a renderer-side transport object in `scorpi-gpu-renderer` that stores the
+5. [pending] Add a renderer-side transport object in `scorpi-gpu-renderer` that stores the
    transport description received over CNC.
-5. Add renderer-side virtqueue helpers:
+6. [pending] Add renderer-side virtqueue helpers:
    - translate guest physical address to mapped host pointer;
    - read descriptor table;
    - read avail ring;
    - walk descriptor chains;
    - write response data;
    - publish used entries.
-6. Change accelerated virtio-gpu queue handling so `scorpi-hv` only sends a kick
+7. [pending] Change accelerated virtio-gpu queue handling so `scorpi-hv` only sends a kick
    notification for renderer-owned queues. It must not parse or copy command
    payloads for those queues.
-7. Add a renderer completion path where `scorpi-gpu-renderer` asks `scorpi-hv`
+8. [pending] Add a renderer completion path where `scorpi-gpu-renderer` asks `scorpi-hv`
    to inject the virtio interrupt after updating the used ring.
-8. Validate with one minimal renderer-owned virtio command:
+9. [pending] Validate with one minimal renderer-owned virtio command:
    - guest posts command;
    - HV sends kick only;
    - renderer reads the command directly from the queue;
    - renderer writes a valid virtio-gpu response;
    - renderer requests interrupt;
    - guest receives completion.
-9. Only after this works, add renderer-side handling for contexts, blob
+10. [pending] Only after this works, add renderer-side handling for contexts, blob
    resources, `SUBMIT_3D`, and fences.

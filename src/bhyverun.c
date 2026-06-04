@@ -91,6 +91,7 @@
 #include "tpm_device.h"
 #include "vmexit.h"
 #include "vmgenc.h"
+#include "virtio_external_backend.h"
 
 #define MB (1024UL * 1024)
 #define GB (1024UL * MB)
@@ -1011,6 +1012,7 @@ bhyve_run_configured_vm(void)
 		else
 			vm_resume_cpu(bsp);
 
+	virtio_external_backend_init();
 	cnc_start_srv();
 
 	/*
