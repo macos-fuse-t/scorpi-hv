@@ -110,6 +110,7 @@ bool mem_range_registered(uint64_t gpa);
 
 #define MB (1024 * 1024UL)
 #define GB (1024 * 1024 * 1024UL)
+#define VM_SHARED_MEMORY_CHUNK_SIZE GB
 
 #ifdef __amd64__
 #define VM_LOWMEM_LIMIT (3 * GB)
@@ -313,8 +314,39 @@ vm_open(const char *name)
 }
 
 void
-vm_close(struct vmctx *vm)
+vm_close(struct vmctx *ctx)
 {
+	char name[64];
+
+	if (ctx == NULL)
+		return;
+
+	for (int i = 0; i < MAX_VCPUS; i++) {
+		if (ctx->vcpus[i] == NULL)
+			continue;
+		if (ctx->vcpus[i]->vcpu != 0)
+			vm_vcpu_deinit(ctx->vcpus[i]);
+		vm_vcpu_close(ctx->vcpus[i]);
+		ctx->vcpus[i] = NULL;
+	}
+
+	for (int i = 0; i < ctx->num_mem_ranges; i++) {
+		struct mem_range *seg = &ctx->mem_ranges[i];
+
+		if (seg->active)
+			hv_vm_unmap(seg->gpa, seg->len);
+		if (seg->owned) {
+			free(seg->object);
+		} else if (seg->shm_suffix[0] != '\0') {
+			munmap(seg->object, seg->len);
+			external_vmmem_shm_name(name, sizeof(name),
+			    seg->shm_suffix);
+			shm_unlink(name);
+		}
+	}
+	hv_vm_destroy();
+	free(ctx->name);
+	free(ctx);
 }
 
 void
@@ -568,14 +600,18 @@ vm_map_range(struct mem_range *seg, bool visible)
 	hv_return_t ret;
 
 	if (!visible)
-		return (hv_vm_unmap(seg->gpa, seg->len) == HV_SUCCESS ? 0 :
-		    EINVAL);
+		return (
+		    hv_vm_unmap(seg->gpa, seg->len) == HV_SUCCESS ? 0 : EINVAL);
 
 	hvProt = (seg->prot & PROT_READ) ? HV_MEMORY_READ : 0;
 	hvProt |= (seg->prot & PROT_WRITE) ? HV_MEMORY_WRITE : 0;
 	hvProt |= (seg->prot & PROT_EXEC) ? HV_MEMORY_EXEC : 0;
 
 	ret = hv_vm_map(seg->object, seg->gpa, seg->len, hvProt);
+	if (ret != HV_SUCCESS)
+		EPRINTLN("hv_vm_map() failed: ret=%d gpa=0x%llx len=0x%zx "
+			 "prot=0x%x",
+		    ret, (unsigned long long)seg->gpa, seg->len, hvProt);
 	return (ret == HV_SUCCESS ? 0 : EINVAL);
 }
 
@@ -696,40 +732,95 @@ static int
 setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
     size_t len, uint64_t prot, uintptr_t *addr, const char *suffix)
 {
+	char chunk_suffix[64];
 	char name[64];
-	uintptr_t mapped_addr;
+	size_t chunk_len;
+	size_t offset;
+	void *base;
 	void *object;
 	int error;
 	int fd;
+	int old_range_count;
+	int range_start_count;
+	unsigned int chunk_index;
 
-	external_vmmem_shm_name(name, sizeof(name), suffix);
-	fd = shm_open(name, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
-	if (fd == -1)
+	base = mmap(NULL, len, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (base == MAP_FAILED)
 		return (errno);
 
-	if (ftruncate(fd, len) == -1) {
+	range_start_count = ctx->num_mem_ranges;
+	chunk_index = 0;
+	for (offset = 0; offset < len; offset += chunk_len) {
+		uintptr_t mapped_addr;
+
+		chunk_len = MIN(VM_SHARED_MEMORY_CHUNK_SIZE, len - offset);
+		if (snprintf(chunk_suffix, sizeof(chunk_suffix), "%s%u", suffix,
+			chunk_index) >= (int)sizeof(chunk_suffix)) {
+			error = ENAMETOOLONG;
+			goto fail;
+		}
+
+		external_vmmem_shm_name(name, sizeof(name), chunk_suffix);
+		if (shm_unlink(name) == -1 && errno != ENOENT) {
+			error = errno;
+			goto fail;
+		}
+		fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR,
+		    S_IRUSR | S_IWUSR);
+		if (fd == -1) {
+			error = errno;
+			goto fail;
+		}
+
+		if (ftruncate(fd, chunk_len) == -1) {
+			error = errno;
+			close(fd);
+			goto fail;
+		}
+
+		object = mmap((void *)((uintptr_t)base + offset), chunk_len,
+		    PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
 		error = errno;
 		close(fd);
-		return (error);
-	}
+		if (object == MAP_FAILED)
+			goto fail;
 
-	object = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	error = errno;
-	close(fd);
-	if (object == MAP_FAILED)
-		return (error);
-
-	memset(object, 0, len);
-	mapped_addr = (uintptr_t)object;
-	error = setup_memory_segment(ctx, gpa, len, prot | PROT_DONT_ALLOCATE,
-	    &mapped_addr);
-	if (error != 0) {
-		munmap(object, len);
-		return (error);
+		memset(object, 0, chunk_len);
+		mapped_addr = (uintptr_t)object;
+		old_range_count = ctx->num_mem_ranges;
+		error = setup_memory_segment(ctx, gpa + offset, chunk_len,
+		    prot | PROT_DONT_ALLOCATE, &mapped_addr);
+		if (error != 0)
+			goto fail;
+		if (ctx->num_mem_ranges > old_range_count) {
+			strlcpy(ctx->mem_ranges[old_range_count].shm_suffix,
+			    chunk_suffix,
+			    sizeof(ctx->mem_ranges[old_range_count].shm_suffix));
+		}
+		chunk_index++;
 	}
 	if (addr != NULL)
-		*addr = mapped_addr;
+		*addr = (uintptr_t)base;
 	return (0);
+
+fail:
+	for (int i = range_start_count; i < ctx->num_mem_ranges; i++) {
+		if (ctx->mem_ranges[i].active)
+			hv_vm_unmap(ctx->mem_ranges[i].gpa,
+			    ctx->mem_ranges[i].len);
+		memset(&ctx->mem_ranges[i], 0, sizeof(ctx->mem_ranges[i]));
+	}
+	ctx->num_mem_ranges = range_start_count;
+	munmap(base, len);
+	for (unsigned int i = 0; i <= chunk_index; i++) {
+		if (snprintf(chunk_suffix, sizeof(chunk_suffix), "%s%u", suffix,
+			i) < (int)sizeof(chunk_suffix)) {
+			external_vmmem_shm_name(name, sizeof(name),
+			    chunk_suffix);
+			shm_unlink(name);
+		}
+	}
+	return (error);
 }
 
 int
@@ -887,6 +978,32 @@ size_t
 vm_get_highmem_size(struct vmctx *ctx)
 {
 	return (ctx->memsegs[VM_MEMSEG_HIGH].size);
+}
+
+int
+vm_get_external_memory_region(struct vmctx *ctx, unsigned int index,
+    vm_paddr_t *gpa, size_t *len, char *suffix, size_t suffix_len)
+{
+	unsigned int match;
+
+	match = 0;
+	for (int i = 0; i < ctx->num_mem_ranges; i++) {
+		struct mem_range *seg = &ctx->mem_ranges[i];
+
+		if (seg->shm_suffix[0] == '\0')
+			continue;
+		if (match++ != index)
+			continue;
+		if (gpa != NULL)
+			*gpa = seg->gpa;
+		if (len != NULL)
+			*len = seg->len;
+		if (suffix != NULL && suffix_len > 0)
+			strlcpy(suffix, seg->shm_suffix, suffix_len);
+		return (0);
+	}
+
+	return (ENOENT);
 }
 
 int

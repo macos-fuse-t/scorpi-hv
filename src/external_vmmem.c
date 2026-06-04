@@ -51,7 +51,14 @@ void
 external_vmmem_fill_transport(struct vmctx *ctx,
     struct scorpi_virtio_external_transport_desc *transport)
 {
-	external_vmmem_add_region(transport, 0, vm_get_lowmem_size(ctx), "low");
-	external_vmmem_add_region(transport, vm_get_highmem_base(ctx),
-	    vm_get_highmem_size(ctx), "high");
+	char suffix[SCORPI_VIRTIO_EXTERNAL_NAME_MAX];
+	vm_paddr_t gpa;
+	size_t size;
+
+	for (unsigned int i = 0;
+	     vm_get_external_memory_region(ctx, i, &gpa, &size, suffix,
+		 sizeof(suffix)) == 0;
+	     i++) {
+		external_vmmem_add_region(transport, gpa, size, suffix);
+	}
 }

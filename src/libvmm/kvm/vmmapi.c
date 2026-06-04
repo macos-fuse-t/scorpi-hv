@@ -571,6 +571,33 @@ vm_get_highmem_size(struct vmctx *ctx)
 	return (ctx->memsegs[VM_MEMSEG_HIGH].size);
 }
 
+int
+vm_get_external_memory_region(struct vmctx *ctx, unsigned int index,
+    vm_paddr_t *gpa, size_t *len, char *suffix, size_t suffix_len)
+{
+	if (index == 0 && ctx->memsegs[VM_MEMSEG_LOW].size > 0) {
+		if (gpa != NULL)
+			*gpa = 0;
+		if (len != NULL)
+			*len = ctx->memsegs[VM_MEMSEG_LOW].size;
+		if (suffix != NULL && suffix_len > 0)
+			snprintf(suffix, suffix_len, "low");
+		return (0);
+	}
+	if (ctx->memsegs[VM_MEMSEG_LOW].size == 0)
+		index++;
+	if (index == 1 && ctx->memsegs[VM_MEMSEG_HIGH].size > 0) {
+		if (gpa != NULL)
+			*gpa = VM_HIGHMEM_BASE;
+		if (len != NULL)
+			*len = ctx->memsegs[VM_MEMSEG_HIGH].size;
+		if (suffix != NULL && suffix_len > 0)
+			snprintf(suffix, suffix_len, "high");
+		return (0);
+	}
+	return (ENOENT);
+}
+
 const char *
 vm_get_name(struct vmctx *ctx)
 {

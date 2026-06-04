@@ -45,6 +45,7 @@ struct mem_range {
 	uint64_t prot;
 	bool active;
 	bool owned;
+	char shm_suffix[64];
 };
 
 #define MAX_VCPUS		64
