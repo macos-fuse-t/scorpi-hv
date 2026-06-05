@@ -36,6 +36,10 @@ install_headers(
   subdir: 'support',
 )
 install_headers(
+  '../../include/scorpi/vhost_user.h',
+  subdir: 'scorpi',
+)
+install_headers(
   '../../include/scorpi/protocol/virtio_gpu.h',
   '../../include/scorpi/protocol/virtio_ring.h',
   '../../include/scorpi/protocol/virtio_vhost.h',

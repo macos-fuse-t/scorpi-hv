@@ -4,9 +4,11 @@
  * Copyright (c) 2026 Alex Fishman <alex@fuse-t.org>
  */
 
+#include <sys/mman.h>
 #include <sys/queue.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -15,6 +17,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+
+#include <scorpi/vhost_user.h>
 
 #include "cnc.h"
 #include "debug.h"
@@ -31,6 +36,8 @@ struct virtio_vhost_transport {
 	char protocol[SCORPI_VIRTIO_VHOST_NAME_MAX];
 	char socket_path[VIRTIO_VHOST_SOCKET_PATH_MAX];
 	cnc_conn_t conn;
+	int fd;
+	pthread_mutex_t io_mtx;
 	bool connected;
 	bool connection_started;
 	bool device_features_valid;
@@ -64,6 +71,218 @@ virtio_vhost_transport_find_locked(const char *backend_id)
 			return (backend);
 	}
 	return (NULL);
+}
+
+static void
+virtio_vhost_transport_close_fd(struct virtio_vhost_transport *backend)
+{
+	if (backend->fd >= 0) {
+		close(backend->fd);
+		backend->fd = -1;
+	}
+}
+
+static int
+virtio_vhost_transport_recv_reply(int fd, uint32_t request,
+    struct scorpi_vhost_msg *reply)
+{
+	int fds[VHOST_USER_MAX_FDS];
+	size_t fd_count = 0;
+	ssize_t nread;
+
+	for (size_t i = 0; i < VHOST_USER_MAX_FDS; i++)
+		fds[i] = -1;
+	nread = vhost_user_recv_msg(fd, reply, fds, VHOST_USER_MAX_FDS,
+	    &fd_count);
+	for (size_t i = 0; i < fd_count; i++) {
+		if (fds[i] >= 0)
+			close(fds[i]);
+	}
+	if (nread <= 0)
+		return (-1);
+	if (reply->header.request != request ||
+	    (reply->header.flags & SCORPI_VHOST_FLAG_REPLY) == 0)
+		return (-1);
+	return (0);
+}
+
+static int
+virtio_vhost_transport_send_request_fds(int fd, struct scorpi_vhost_msg *msg,
+    const int *fds, size_t fd_count, struct scorpi_vhost_msg *reply)
+{
+	msg->header.flags |= SCORPI_VHOST_FLAG_NEED_REPLY;
+	if (vhost_user_send_msg(fd, msg, fds, fd_count) < 0)
+		return (-1);
+	return (
+	    virtio_vhost_transport_recv_reply(fd, msg->header.request, reply));
+}
+
+static int
+virtio_vhost_transport_send_request(int fd, struct scorpi_vhost_msg *msg,
+    struct scorpi_vhost_msg *reply)
+{
+	return (
+	    virtio_vhost_transport_send_request_fds(fd, msg, NULL, 0, reply));
+}
+
+static int
+virtio_vhost_transport_query_features(int fd, uint64_t *features)
+{
+	struct scorpi_vhost_msg request;
+	struct scorpi_vhost_msg reply;
+
+	vhost_user_msg_init(&request, SCORPI_VHOST_MSG_HELLO,
+	    sizeof(request.payload.hello));
+	request.payload.hello.frontend_features = 0;
+	if (virtio_vhost_transport_send_request(fd, &request, &reply) != 0)
+		return (-1);
+
+	vhost_user_msg_init(&request, SCORPI_VHOST_MSG_FEATURES, 0);
+	if (virtio_vhost_transport_send_request(fd, &request, &reply) != 0)
+		return (-1);
+	if (reply.header.size != sizeof(reply.payload.u64))
+		return (-1);
+	*features = reply.payload.u64;
+	return (0);
+}
+
+static int
+virtio_vhost_transport_send_u64(int fd, uint32_t request, uint64_t value)
+{
+	struct scorpi_vhost_msg msg;
+	struct scorpi_vhost_msg reply;
+
+	vhost_user_msg_init(&msg, request, sizeof(msg.payload.u64));
+	msg.payload.u64 = value;
+	return (virtio_vhost_transport_send_request(fd, &msg, &reply));
+}
+
+static int
+virtio_vhost_transport_send_queue_state(int fd, uint32_t request,
+    uint32_t index, uint32_t num)
+{
+	struct scorpi_vhost_msg msg;
+	struct scorpi_vhost_msg reply;
+
+	vhost_user_msg_init(&msg, request, sizeof(msg.payload.queue_state));
+	msg.payload.queue_state.index = index;
+	msg.payload.queue_state.num = num;
+	return (virtio_vhost_transport_send_request(fd, &msg, &reply));
+}
+
+static void
+virtio_vhost_transport_close_fds(int *fds, size_t fd_count)
+{
+	for (size_t i = 0; i < fd_count; i++) {
+		if (fds[i] >= 0) {
+			close(fds[i]);
+			fds[i] = -1;
+		}
+	}
+}
+
+static int
+virtio_vhost_transport_open_memory_fds(
+    const struct scorpi_virtio_vhost_transport_desc *transport, int *fds,
+    size_t *fd_count)
+{
+	for (uint32_t i = 0; i < transport->memory_region_count; i++) {
+		if (i >= VHOST_USER_MAX_FDS)
+			return (-1);
+		fds[i] = shm_open(transport->memory_regions[i].shm_name, O_RDWR,
+		    0);
+		if (fds[i] < 0) {
+			EPRINTLN("virtio vhost: shm_open %s: %s",
+			    transport->memory_regions[i].shm_name,
+			    strerror(errno));
+			*fd_count = i;
+			virtio_vhost_transport_close_fds(fds, *fd_count);
+			return (-1);
+		}
+	}
+	*fd_count = transport->memory_region_count;
+	return (0);
+}
+
+static int
+virtio_vhost_transport_send_memory_table(int fd,
+    const struct scorpi_virtio_vhost_transport_desc *transport)
+{
+	struct scorpi_vhost_msg msg;
+	struct scorpi_vhost_msg reply;
+	int fds[VHOST_USER_MAX_FDS];
+	size_t fd_count = 0;
+	int rc;
+
+	if (transport->memory_region_count > SCORPI_VHOST_MAX_MEMORY_REGIONS ||
+	    transport->memory_region_count > VHOST_USER_MAX_FDS)
+		return (-1);
+
+	for (size_t i = 0; i < VHOST_USER_MAX_FDS; i++)
+		fds[i] = -1;
+	if (virtio_vhost_transport_open_memory_fds(transport, fds, &fd_count) !=
+	    0)
+		return (-1);
+
+	vhost_user_msg_init(&msg, SCORPI_VHOST_MSG_SET_MEM_TABLE,
+	    sizeof(msg.payload.memory));
+	msg.payload.memory.nregions = transport->memory_region_count;
+	for (uint32_t i = 0; i < transport->memory_region_count; i++) {
+		msg.payload.memory.regions[i].guest_phys_addr =
+		    transport->memory_regions[i].guest_phys_addr;
+		msg.payload.memory.regions[i].memory_size =
+		    transport->memory_regions[i].size;
+		msg.payload.memory.regions[i].userspace_addr =
+		    transport->memory_regions[i].guest_phys_addr;
+		msg.payload.memory.regions[i].mmap_offset =
+		    transport->memory_regions[i].shm_offset;
+	}
+	rc = virtio_vhost_transport_send_request_fds(fd, &msg, fds, fd_count,
+	    &reply);
+	virtio_vhost_transport_close_fds(fds, fd_count);
+	return (rc);
+}
+
+static int
+virtio_vhost_transport_send_queue_setup(int fd,
+    const struct scorpi_virtio_vhost_queue_desc *queue)
+{
+	struct scorpi_vhost_msg msg;
+	struct scorpi_vhost_msg reply;
+
+	if (virtio_vhost_transport_send_queue_state(fd,
+		SCORPI_VHOST_MSG_SET_QUEUE_NUM, queue->index, queue->size) != 0)
+		return (-1);
+
+	vhost_user_msg_init(&msg, SCORPI_VHOST_MSG_SET_QUEUE_ADDR,
+	    sizeof(msg.payload.queue_addr));
+	msg.payload.queue_addr.index = queue->index;
+	msg.payload.queue_addr.desc_user_addr = queue->desc_addr;
+	msg.payload.queue_addr.avail_user_addr = queue->avail_addr;
+	msg.payload.queue_addr.used_user_addr = queue->used_addr;
+	if (virtio_vhost_transport_send_request(fd, &msg, &reply) != 0)
+		return (-1);
+
+	return (virtio_vhost_transport_send_queue_state(fd,
+	    SCORPI_VHOST_MSG_SET_QUEUE_ENABLE, queue->index,
+	    queue->ready ? 1 : 0));
+}
+
+static int
+virtio_vhost_transport_send_transport_setup(int fd,
+    const struct scorpi_virtio_vhost_transport_desc *transport)
+{
+	if (virtio_vhost_transport_send_u64(fd, SCORPI_VHOST_MSG_SET_FEATURES,
+		transport->features) != 0)
+		return (-1);
+	if (virtio_vhost_transport_send_memory_table(fd, transport) != 0)
+		return (-1);
+	for (uint32_t i = 0; i < transport->queue_count; i++) {
+		if (virtio_vhost_transport_send_queue_setup(fd,
+			&transport->queues[i]) != 0)
+			return (-1);
+	}
+	return (0);
 }
 
 static bool
@@ -141,6 +360,12 @@ int
 virtio_vhost_transport_connect_backend(const char *backend_id,
     const char *socket_path)
 {
+	struct virtio_vhost_transport *backend;
+	virtio_vhost_device_features_cb device_features_cb = NULL;
+	void *device_opaque = NULL;
+	uint64_t device_features;
+	int fd;
+
 	if (backend_id == NULL || socket_path == NULL)
 		return (-1);
 	if (!virtio_vhost_transport_valid_name(backend_id) ||
@@ -152,7 +377,51 @@ virtio_vhost_transport_connect_backend(const char *backend_id,
 	virtio_vhost_transport_init();
 	PRINTLN("connecting virtio vhost backend %s at %s", backend_id,
 	    socket_path);
-	return (cnc_connect_client(socket_path));
+	fd = vhost_user_connect(socket_path);
+	if (fd < 0) {
+		EPRINTLN("failed to connect virtio vhost backend %s at %s: %s",
+		    backend_id, socket_path, strerror(errno));
+		return (-1);
+	}
+	if (virtio_vhost_transport_query_features(fd, &device_features) != 0) {
+		EPRINTLN("failed to query virtio vhost backend %s features: %s",
+		    backend_id, strerror(errno));
+		close(fd);
+		return (-1);
+	}
+
+	pthread_mutex_lock(&backends_lock);
+	backend = virtio_vhost_transport_find_locked(backend_id);
+	if (backend == NULL) {
+		pthread_mutex_unlock(&backends_lock);
+		close(fd);
+		return (-1);
+	}
+	virtio_vhost_transport_close_fd(backend);
+	backend->fd = fd;
+	backend->connected = true;
+	backend->device_features = device_features;
+	backend->device_features_valid = true;
+	backend->device_features_applied = backend->device_features_cb == NULL;
+	device_features_cb = backend->device_features_cb;
+	device_opaque = backend->device_opaque;
+	pthread_cond_broadcast(&backends_cond);
+	pthread_mutex_unlock(&backends_lock);
+
+	if (device_features_cb != NULL) {
+		device_features_cb(device_opaque, device_features);
+		pthread_mutex_lock(&backends_lock);
+		backend = virtio_vhost_transport_find_locked(backend_id);
+		if (backend != NULL) {
+			backend->device_features_applied = true;
+			pthread_cond_broadcast(&backends_cond);
+		}
+		pthread_mutex_unlock(&backends_lock);
+	}
+
+	PRINTLN("virtio vhost backend %s connected: features=0x%llx",
+	    backend_id, (unsigned long long)device_features);
+	return (0);
 }
 
 int
@@ -272,6 +541,8 @@ virtio_vhost_transport_set_transport(const char *backend_id,
 		}
 		snprintf(backend->backend_id, sizeof(backend->backend_id), "%s",
 		    backend_id);
+		backend->fd = -1;
+		pthread_mutex_init(&backend->io_mtx, NULL);
 		LIST_INSERT_HEAD(&backends, backend, entries);
 	}
 	backend->transport = *transport;
@@ -357,106 +628,58 @@ virtio_vhost_transport_notify_queue_kick(const char *backend_id,
     uint32_t queue_index)
 {
 	struct virtio_vhost_transport *backend;
-	cnc_conn_t conn;
-	char notification[VIRTIO_VHOST_RESPONSE_MAX];
-	size_t used;
-	int rc;
+	struct scorpi_virtio_vhost_transport_desc transport;
+	struct scorpi_vhost_msg msg;
+	struct scorpi_vhost_msg reply;
+	pthread_mutex_t *io_mtx;
+	int fd;
 
 	if (backend_id == NULL)
 		return (-1);
 
 	pthread_mutex_lock(&backends_lock);
 	backend = virtio_vhost_transport_find_locked(backend_id);
-	if (backend == NULL || !backend->connected || backend->conn == NULL) {
+	if (backend == NULL || !backend->connected || backend->fd < 0) {
 		pthread_mutex_unlock(&backends_lock);
 		return (-1);
 	}
-	conn = backend->conn;
-
-	rc = snprintf(notification, sizeof(notification),
-	    "{ \"event\": \"%s\", \"data\": {"
-	    "\"backend_id\": \"%s\","
-	    "\"device_name\": \"%s\","
-	    "\"queue_index\": %u,"
-	    "\"reset_generation\": %u,"
-	    "\"queues\":[",
-	    SCORPI_VIRTIO_VHOST_EVENT_QUEUE_KICK, backend->backend_id,
-	    backend->device_name, queue_index,
-	    backend->transport.reset_generation);
-	if (rc < 0 || (size_t)rc >= sizeof(notification))
-		goto too_large;
-	used = (size_t)rc;
-
-	for (uint32_t i = 0; i < backend->transport.queue_count; i++)
-		used = virtio_vhost_transport_append_queue_json(notification,
-		    sizeof(notification), used, &backend->transport.queues[i]);
-	if (used >= sizeof(notification))
-		goto too_large;
-
-	rc = snprintf(notification + used, sizeof(notification) - used,
-	    "],\"memory_regions\":[");
-	if (rc < 0 || (size_t)rc >= sizeof(notification) - used)
-		goto too_large;
-	used += (size_t)rc;
-
-	for (uint32_t i = 0; i < backend->transport.memory_region_count; i++)
-		used = virtio_vhost_transport_append_memory_json(notification,
-		    sizeof(notification), used,
-		    &backend->transport.memory_regions[i]);
-	if (used >= sizeof(notification))
-		goto too_large;
-
-	rc = snprintf(notification + used, sizeof(notification) - used, "]} }");
-	if (rc < 0 || (size_t)rc >= sizeof(notification) - used)
-		goto too_large;
+	fd = dup(backend->fd);
+	if (fd < 0) {
+		pthread_mutex_unlock(&backends_lock);
+		return (-1);
+	}
+	io_mtx = &backend->io_mtx;
+	transport = backend->transport;
 	pthread_mutex_unlock(&backends_lock);
 
-	cnc_send_notification_to(conn, notification);
+	pthread_mutex_lock(io_mtx);
+	if (virtio_vhost_transport_send_transport_setup(fd, &transport) != 0) {
+		pthread_mutex_unlock(io_mtx);
+		close(fd);
+		return (-1);
+	}
+
+	vhost_user_msg_init(&msg, SCORPI_VHOST_MSG_QUEUE_KICK,
+	    sizeof(msg.payload.queue_state));
+	msg.payload.queue_state.index = queue_index;
+	msg.payload.queue_state.num = 0;
+	if (virtio_vhost_transport_send_request(fd, &msg, &reply) != 0) {
+		pthread_mutex_unlock(io_mtx);
+		close(fd);
+		return (-1);
+	}
+	pthread_mutex_unlock(io_mtx);
+	close(fd);
 	return (0);
-
-too_large:
-	pthread_mutex_unlock(&backends_lock);
-	return (-1);
 }
 
 int
 virtio_vhost_transport_notify_display_resize(const char *backend_id,
     uint32_t width, uint32_t height)
 {
-	struct virtio_vhost_transport *backend;
-	cnc_conn_t conn;
-	char notification[VIRTIO_VHOST_RESPONSE_MAX];
-	int rc;
-
-	if (backend_id == NULL)
-		return (-1);
-
-	pthread_mutex_lock(&backends_lock);
-	backend = virtio_vhost_transport_find_locked(backend_id);
-	if (backend == NULL || !backend->connected || backend->conn == NULL) {
-		pthread_mutex_unlock(&backends_lock);
-		return (-1);
-	}
-	conn = backend->conn;
-
-	rc = snprintf(notification, sizeof(notification),
-	    "{ \"event\": \"%s\", \"data\": {"
-	    "\"backend_id\": \"%s\","
-	    "\"device_name\": \"%s\","
-	    "\"width\": %u,"
-	    "\"height\": %u,"
-	    "\"reset_generation\": %u"
-	    "} }",
-	    SCORPI_VIRTIO_VHOST_EVENT_GPU_RESIZE, backend->backend_id,
-	    backend->device_name, width, height,
-	    backend->transport.reset_generation);
-	if (rc < 0 || (size_t)rc >= sizeof(notification)) {
-		pthread_mutex_unlock(&backends_lock);
-		return (-1);
-	}
-	pthread_mutex_unlock(&backends_lock);
-
-	cnc_send_notification_to(conn, notification);
+	(void)backend_id;
+	(void)width;
+	(void)height;
 	return (0);
 }
 
@@ -548,6 +771,8 @@ virtio_vhost_register(cnc_conn_t c, int req_id, int argc, char *argv[],
 	snprintf(backend->device_name, sizeof(backend->device_name), "%s",
 	    argv[1]);
 	snprintf(backend->protocol, sizeof(backend->protocol), "%s", argv[2]);
+	backend->fd = -1;
+	pthread_mutex_init(&backend->io_mtx, NULL);
 	backend->conn = c;
 	backend->connected = true;
 	backend->device_features = device_features;

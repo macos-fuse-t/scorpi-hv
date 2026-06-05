@@ -7,7 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "vhost_user.h"
+#include <scorpi/vhost_user.h>
 
 #ifndef SUN_LEN
 #define SUN_LEN(su) (sizeof(*(su)))
@@ -118,8 +118,8 @@ vhost_user_msg_init(struct scorpi_vhost_msg *msg, uint32_t request,
 }
 
 ssize_t
-vhost_user_send_msg(int fd, const struct scorpi_vhost_msg *msg,
-    const int *fds, size_t fd_count)
+vhost_user_send_msg(int fd, const struct scorpi_vhost_msg *msg, const int *fds,
+    size_t fd_count)
 {
 	size_t len;
 
@@ -147,8 +147,7 @@ vhost_user_recv_msg(int fd, struct scorpi_vhost_msg *msg, int *fds,
 		return (-1);
 	}
 	memset(msg, 0, sizeof(*msg));
-	rc = vhost_user_recv_fds(fd, msg, sizeof(*msg), fds, max_fds,
-	    fd_count);
+	rc = vhost_user_recv_fds(fd, msg, sizeof(*msg), fds, max_fds, fd_count);
 	if (rc <= 0)
 		return (rc);
 	if ((size_t)rc < SCORPI_VHOST_HEADER_SIZE) {
