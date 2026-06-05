@@ -23,12 +23,19 @@
 
 #include "cnc.h"
 #include "debug.h"
+#include "mevent.h"
 #include "virtio_vhost_transport.h"
 
 #define VIRTIO_VHOST_RESPONSE_MAX	  (64 * 1024)
 #define VIRTIO_VHOST_SOCKET_PATH_MAX	  PATH_MAX
 #define VIRTIO_VHOST_CONNECT_BATCH_MAX	  16
 #define VIRTIO_VHOST_REGISTER_TIMEOUT_SEC 10
+#define VIRTIO_VHOST_NOTIFY_BYTE	  1
+
+struct virtio_vhost_call_event {
+	struct virtio_vhost_transport *backend;
+	uint32_t queue_index;
+};
 
 struct virtio_vhost_transport {
 	char backend_id[SCORPI_VIRTIO_VHOST_NAME_MAX];
@@ -38,6 +45,14 @@ struct virtio_vhost_transport {
 	cnc_conn_t conn;
 	int fd;
 	pthread_mutex_t io_mtx;
+	int kick_read_fds[SCORPI_VIRTIO_VHOST_MAX_QUEUES];
+	int kick_write_fds[SCORPI_VIRTIO_VHOST_MAX_QUEUES];
+	int call_read_fds[SCORPI_VIRTIO_VHOST_MAX_QUEUES];
+	int call_write_fds[SCORPI_VIRTIO_VHOST_MAX_QUEUES];
+	struct mevent *call_events[SCORPI_VIRTIO_VHOST_MAX_QUEUES];
+	struct virtio_vhost_call_event
+	    call_event_params[SCORPI_VIRTIO_VHOST_MAX_QUEUES];
+	bool notify_fds_sent[SCORPI_VIRTIO_VHOST_MAX_QUEUES];
 	bool connected;
 	bool connection_started;
 	bool device_features_valid;
@@ -60,6 +75,8 @@ static size_t virtio_vhost_transport_append_queue_json(char *buf, size_t len,
     size_t used, const struct scorpi_virtio_vhost_queue_desc *queue);
 static size_t virtio_vhost_transport_append_memory_json(char *buf, size_t len,
     size_t used, const struct scorpi_virtio_vhost_memory_region_desc *region);
+static void virtio_vhost_transport_call_event(int fd, enum ev_type type,
+    void *param);
 
 static struct virtio_vhost_transport *
 virtio_vhost_transport_find_locked(const char *backend_id)
@@ -80,6 +97,66 @@ virtio_vhost_transport_close_fd(struct virtio_vhost_transport *backend)
 		close(backend->fd);
 		backend->fd = -1;
 	}
+}
+
+static int
+virtio_vhost_transport_set_nonblock(int fd)
+{
+	int flags;
+
+	flags = fcntl(fd, F_GETFL, 0);
+	if (flags < 0)
+		return (-1);
+	return (fcntl(fd, F_SETFL, flags | O_NONBLOCK));
+}
+
+static void
+virtio_vhost_transport_close_int(int *fdp)
+{
+	if (*fdp >= 0) {
+		close(*fdp);
+		*fdp = -1;
+	}
+}
+
+static void
+virtio_vhost_transport_close_queue_notify_fds(
+    struct virtio_vhost_transport *backend, size_t queue_index)
+{
+	if (backend->call_events[queue_index] != NULL) {
+		mevent_delete_close(backend->call_events[queue_index]);
+		backend->call_events[queue_index] = NULL;
+		backend->call_read_fds[queue_index] = -1;
+	}
+	virtio_vhost_transport_close_int(&backend->kick_read_fds[queue_index]);
+	virtio_vhost_transport_close_int(&backend->kick_write_fds[queue_index]);
+	virtio_vhost_transport_close_int(&backend->call_read_fds[queue_index]);
+	virtio_vhost_transport_close_int(&backend->call_write_fds[queue_index]);
+	backend->notify_fds_sent[queue_index] = false;
+}
+
+static void
+virtio_vhost_transport_close_notify_fds(struct virtio_vhost_transport *backend)
+{
+	for (size_t i = 0; i < SCORPI_VIRTIO_VHOST_MAX_QUEUES; i++) {
+		virtio_vhost_transport_close_queue_notify_fds(backend, i);
+	}
+}
+
+static int
+virtio_vhost_transport_init_backend(struct virtio_vhost_transport *backend)
+{
+	backend->fd = -1;
+	for (size_t i = 0; i < SCORPI_VIRTIO_VHOST_MAX_QUEUES; i++) {
+		backend->kick_read_fds[i] = -1;
+		backend->kick_write_fds[i] = -1;
+		backend->call_read_fds[i] = -1;
+		backend->call_write_fds[i] = -1;
+		backend->call_event_params[i].backend = backend;
+		backend->call_event_params[i].queue_index = (uint32_t)i;
+	}
+	pthread_mutex_init(&backend->io_mtx, NULL);
+	return (0);
 }
 
 static int
@@ -170,6 +247,19 @@ virtio_vhost_transport_send_queue_state(int fd, uint32_t request,
 	return (virtio_vhost_transport_send_request(fd, &msg, &reply));
 }
 
+static int
+virtio_vhost_transport_send_queue_fd(int fd, uint32_t request,
+    uint32_t queue_index, int send_fd)
+{
+	struct scorpi_vhost_msg msg;
+	struct scorpi_vhost_msg reply;
+
+	vhost_user_msg_init(&msg, request, sizeof(msg.payload.u64));
+	msg.payload.u64 = queue_index;
+	return (virtio_vhost_transport_send_request_fds(fd, &msg, &send_fd, 1,
+	    &reply));
+}
+
 static void
 virtio_vhost_transport_close_fds(int *fds, size_t fd_count)
 {
@@ -202,6 +292,45 @@ virtio_vhost_transport_open_memory_fds(
 	}
 	*fd_count = transport->memory_region_count;
 	return (0);
+}
+
+static void
+virtio_vhost_transport_drain_notify_fd(int fd)
+{
+	uint8_t buf[64];
+
+	for (;;) {
+		ssize_t nread;
+
+		nread = read(fd, buf, sizeof(buf));
+		if (nread > 0)
+			continue;
+		if (nread < 0 && errno == EINTR)
+			continue;
+		if (nread < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+			EPRINTLN("virtio vhost: failed to drain notify fd: %s",
+			    strerror(errno));
+		break;
+	}
+}
+
+static void
+virtio_vhost_transport_call_event(int fd, enum ev_type type, void *param)
+{
+	struct virtio_vhost_call_event *event = param;
+	struct virtio_vhost_transport *backend = event->backend;
+	virtio_vhost_interrupt_cb interrupt_cb;
+	void *opaque;
+
+	(void)type;
+	virtio_vhost_transport_drain_notify_fd(fd);
+
+	pthread_mutex_lock(&backends_lock);
+	interrupt_cb = backend->interrupt_cb;
+	opaque = backend->device_opaque;
+	pthread_mutex_unlock(&backends_lock);
+	if (interrupt_cb != NULL)
+		interrupt_cb(opaque, event->queue_index);
 }
 
 static int
@@ -244,8 +373,114 @@ virtio_vhost_transport_send_memory_table(int fd,
 }
 
 static int
-virtio_vhost_transport_send_queue_setup(int fd,
-    const struct scorpi_virtio_vhost_queue_desc *queue)
+virtio_vhost_transport_ensure_notify_fds_locked(
+    struct virtio_vhost_transport *backend, uint32_t queue_index)
+{
+	int kick_fds[2] = { -1, -1 };
+	int call_fds[2] = { -1, -1 };
+
+	if (queue_index >= SCORPI_VIRTIO_VHOST_MAX_QUEUES)
+		return (-1);
+	if (backend->kick_write_fds[queue_index] >= 0 &&
+	    backend->call_read_fds[queue_index] >= 0)
+		return (0);
+
+	virtio_vhost_transport_close_int(&backend->kick_read_fds[queue_index]);
+	virtio_vhost_transport_close_int(&backend->kick_write_fds[queue_index]);
+	virtio_vhost_transport_close_int(&backend->call_read_fds[queue_index]);
+	virtio_vhost_transport_close_int(&backend->call_write_fds[queue_index]);
+	backend->notify_fds_sent[queue_index] = false;
+
+	if (vhost_user_make_notify_fds(kick_fds) != 0 ||
+	    vhost_user_make_notify_fds(call_fds) != 0)
+		goto fail;
+	if (virtio_vhost_transport_set_nonblock(kick_fds[0]) != 0 ||
+	    virtio_vhost_transport_set_nonblock(kick_fds[1]) != 0 ||
+	    virtio_vhost_transport_set_nonblock(call_fds[0]) != 0 ||
+	    virtio_vhost_transport_set_nonblock(call_fds[1]) != 0)
+		goto fail;
+
+	backend->kick_read_fds[queue_index] = kick_fds[0];
+	backend->kick_write_fds[queue_index] = kick_fds[1];
+	backend->call_read_fds[queue_index] = call_fds[0];
+	backend->call_write_fds[queue_index] = call_fds[1];
+	backend->call_events[queue_index] = mevent_add(call_fds[0], EVF_READ,
+	    virtio_vhost_transport_call_event,
+	    &backend->call_event_params[queue_index]);
+	if (backend->call_events[queue_index] == NULL)
+		goto fail_registered;
+	return (0);
+
+fail_registered:
+	backend->kick_read_fds[queue_index] = -1;
+	backend->kick_write_fds[queue_index] = -1;
+	backend->call_read_fds[queue_index] = -1;
+	backend->call_write_fds[queue_index] = -1;
+fail:
+	virtio_vhost_transport_close_int(&kick_fds[0]);
+	virtio_vhost_transport_close_int(&kick_fds[1]);
+	virtio_vhost_transport_close_int(&call_fds[0]);
+	virtio_vhost_transport_close_int(&call_fds[1]);
+	return (-1);
+}
+
+static int
+virtio_vhost_transport_send_queue_notify_fds(
+    struct virtio_vhost_transport *backend, int fd, uint32_t queue_index)
+{
+	int kick_fd;
+	int call_fd;
+
+	pthread_mutex_lock(&backends_lock);
+	if (virtio_vhost_transport_ensure_notify_fds_locked(backend,
+		queue_index) != 0) {
+		pthread_mutex_unlock(&backends_lock);
+		return (-1);
+	}
+	if (backend->notify_fds_sent[queue_index]) {
+		pthread_mutex_unlock(&backends_lock);
+		return (0);
+	}
+	kick_fd = backend->kick_read_fds[queue_index];
+	call_fd = backend->call_write_fds[queue_index];
+	pthread_mutex_unlock(&backends_lock);
+
+	if (virtio_vhost_transport_send_queue_fd(fd,
+		SCORPI_VHOST_MSG_SET_QUEUE_KICK, queue_index, kick_fd) != 0) {
+		pthread_mutex_lock(&backends_lock);
+		virtio_vhost_transport_close_queue_notify_fds(backend,
+		    queue_index);
+		pthread_mutex_unlock(&backends_lock);
+		return (-1);
+	}
+
+	pthread_mutex_lock(&backends_lock);
+	if (backend->kick_read_fds[queue_index] == kick_fd)
+		virtio_vhost_transport_close_int(
+		    &backend->kick_read_fds[queue_index]);
+	pthread_mutex_unlock(&backends_lock);
+
+	if (virtio_vhost_transport_send_queue_fd(fd,
+		SCORPI_VHOST_MSG_SET_QUEUE_CALL, queue_index, call_fd) != 0) {
+		pthread_mutex_lock(&backends_lock);
+		virtio_vhost_transport_close_queue_notify_fds(backend,
+		    queue_index);
+		pthread_mutex_unlock(&backends_lock);
+		return (-1);
+	}
+
+	pthread_mutex_lock(&backends_lock);
+	if (backend->call_write_fds[queue_index] == call_fd)
+		virtio_vhost_transport_close_int(
+		    &backend->call_write_fds[queue_index]);
+	backend->notify_fds_sent[queue_index] = true;
+	pthread_mutex_unlock(&backends_lock);
+	return (0);
+}
+
+static int
+virtio_vhost_transport_send_queue_setup(struct virtio_vhost_transport *backend,
+    int fd, const struct scorpi_virtio_vhost_queue_desc *queue)
 {
 	struct scorpi_vhost_msg msg;
 	struct scorpi_vhost_msg reply;
@@ -263,13 +498,19 @@ virtio_vhost_transport_send_queue_setup(int fd,
 	if (virtio_vhost_transport_send_request(fd, &msg, &reply) != 0)
 		return (-1);
 
+	if (queue->ready &&
+	    virtio_vhost_transport_send_queue_notify_fds(backend, fd,
+		queue->index) != 0)
+		return (-1);
+
 	return (virtio_vhost_transport_send_queue_state(fd,
 	    SCORPI_VHOST_MSG_SET_QUEUE_ENABLE, queue->index,
 	    queue->ready ? 1 : 0));
 }
 
 static int
-virtio_vhost_transport_send_transport_setup(int fd,
+virtio_vhost_transport_send_transport_setup(
+    struct virtio_vhost_transport *backend, int fd,
     const struct scorpi_virtio_vhost_transport_desc *transport)
 {
 	if (virtio_vhost_transport_send_u64(fd, SCORPI_VHOST_MSG_SET_FEATURES,
@@ -278,7 +519,7 @@ virtio_vhost_transport_send_transport_setup(int fd,
 	if (virtio_vhost_transport_send_memory_table(fd, transport) != 0)
 		return (-1);
 	for (uint32_t i = 0; i < transport->queue_count; i++) {
-		if (virtio_vhost_transport_send_queue_setup(fd,
+		if (virtio_vhost_transport_send_queue_setup(backend, fd,
 			&transport->queues[i]) != 0)
 			return (-1);
 	}
@@ -398,6 +639,7 @@ virtio_vhost_transport_connect_backend(const char *backend_id,
 		return (-1);
 	}
 	virtio_vhost_transport_close_fd(backend);
+	virtio_vhost_transport_close_notify_fds(backend);
 	backend->fd = fd;
 	backend->connected = true;
 	backend->device_features = device_features;
@@ -541,8 +783,11 @@ virtio_vhost_transport_set_transport(const char *backend_id,
 		}
 		snprintf(backend->backend_id, sizeof(backend->backend_id), "%s",
 		    backend_id);
-		backend->fd = -1;
-		pthread_mutex_init(&backend->io_mtx, NULL);
+		if (virtio_vhost_transport_init_backend(backend) != 0) {
+			free(backend);
+			rc = -1;
+			goto done;
+		}
 		LIST_INSERT_HEAD(&backends, backend, entries);
 	}
 	backend->transport = *transport;
@@ -629,9 +874,9 @@ virtio_vhost_transport_notify_queue_kick(const char *backend_id,
 {
 	struct virtio_vhost_transport *backend;
 	struct scorpi_virtio_vhost_transport_desc transport;
-	struct scorpi_vhost_msg msg;
-	struct scorpi_vhost_msg reply;
 	pthread_mutex_t *io_mtx;
+	uint8_t value = VIRTIO_VHOST_NOTIFY_BYTE;
+	int kick_fd;
 	int fd;
 
 	if (backend_id == NULL)
@@ -653,17 +898,22 @@ virtio_vhost_transport_notify_queue_kick(const char *backend_id,
 	pthread_mutex_unlock(&backends_lock);
 
 	pthread_mutex_lock(io_mtx);
-	if (virtio_vhost_transport_send_transport_setup(fd, &transport) != 0) {
+	if (virtio_vhost_transport_send_transport_setup(backend, fd,
+		&transport) != 0) {
 		pthread_mutex_unlock(io_mtx);
 		close(fd);
 		return (-1);
 	}
 
-	vhost_user_msg_init(&msg, SCORPI_VHOST_MSG_QUEUE_KICK,
-	    sizeof(msg.payload.queue_state));
-	msg.payload.queue_state.index = queue_index;
-	msg.payload.queue_state.num = 0;
-	if (virtio_vhost_transport_send_request(fd, &msg, &reply) != 0) {
+	pthread_mutex_lock(&backends_lock);
+	if (queue_index >= SCORPI_VIRTIO_VHOST_MAX_QUEUES)
+		kick_fd = -1;
+	else
+		kick_fd = backend->kick_write_fds[queue_index];
+	pthread_mutex_unlock(&backends_lock);
+	if (kick_fd < 0 ||
+	    (write(kick_fd, &value, sizeof(value)) < 0 && errno != EAGAIN &&
+		errno != EWOULDBLOCK)) {
 		pthread_mutex_unlock(io_mtx);
 		close(fd);
 		return (-1);
@@ -771,8 +1021,13 @@ virtio_vhost_register(cnc_conn_t c, int req_id, int argc, char *argv[],
 	snprintf(backend->device_name, sizeof(backend->device_name), "%s",
 	    argv[1]);
 	snprintf(backend->protocol, sizeof(backend->protocol), "%s", argv[2]);
-	backend->fd = -1;
-	pthread_mutex_init(&backend->io_mtx, NULL);
+	if (virtio_vhost_transport_init_backend(backend) != 0) {
+		free(backend);
+		pthread_mutex_unlock(&backends_lock);
+		cnc_send_response(c, req_id,
+		    "{\"accepted\":false,\"reason\":\"notify_fds\"}");
+		return;
+	}
 	backend->conn = c;
 	backend->connected = true;
 	backend->device_features = device_features;
