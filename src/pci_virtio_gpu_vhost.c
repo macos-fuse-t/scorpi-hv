@@ -26,7 +26,6 @@
 #include "config.h"
 #include "console.h"
 #include "debug.h"
-#include "host_display.h"
 #include "pci_emul.h"
 #include "pci_virtio_vhost.h"
 #include "virtio.h"
@@ -67,9 +66,6 @@ struct pci_vhost_softc {
 	uint32_t resy;
 	uint32_t start_resx;
 	uint32_t start_resy;
-	uint32_t max_resx;
-	uint32_t max_resy;
-	uint32_t host_scale;
 	bool hdpi_enabled;
 	struct vqueue_info queues[VHOST_GPU_QUEUE_COUNT];
 
@@ -133,14 +129,11 @@ pci_vhost_parse_bool(const char *name, const char *value, bool *out)
 static void
 pci_vhost_set_effective_resolution(struct pci_vhost_softc *sc)
 {
-	uint32_t factor;
-
 	sc->resx = sc->start_resx;
 	sc->resy = sc->start_resy;
 	if (sc->hdpi_enabled) {
-		factor = MAX(sc->host_scale, 1);
-		sc->resx *= factor;
-		sc->resy *= factor;
+		sc->resx *= 2;
+		sc->resy *= 2;
 	}
 }
 
@@ -477,18 +470,6 @@ pci_vhost_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 }
 
 static void
-pci_vhost_interrupt_config(struct pci_vhost_softc *sc)
-{
-	uint16_t msix_idx;
-
-	msix_idx = sc->vsc_vs.vs_msix_cfg_idx;
-	if (msix_idx == VIRTIO_MSI_NO_VECTOR)
-		msix_idx = sc->queues[VHOST_GPU_CTRLQ].vq_msix_idx;
-
-	vi_interrupt(&sc->vsc_vs, VIRTIO_PCI_ISR_CONFIG, msix_idx);
-}
-
-static void
 pci_vhost_gpu_transport_info(struct pci_vhost_softc *sc,
     struct pci_vhost_transport_info *info)
 {
@@ -565,33 +546,6 @@ pci_vhost_queue_notify(void *vsc, struct vqueue_info *vq)
 	    sc->vsc_vs.vs_pi->pi_vmctx, &info, vq->vq_num);
 }
 
-static void
-pci_vhost_resize_event(int x, int y, void *arg)
-{
-	struct pci_vhost_softc *sc = arg;
-	bool notify;
-
-	pthread_mutex_lock(&sc->vsc_mtx);
-	if (x >= VHOST_GPU_COLS_MIN && x <= VHOST_GPU_COLS_MAX &&
-	    y >= VHOST_GPU_ROWS_MIN && y <= VHOST_GPU_ROWS_MAX) {
-		if (sc->resx == (uint32_t)x && sc->resy == (uint32_t)y) {
-			pthread_mutex_unlock(&sc->vsc_mtx);
-			return;
-		}
-
-		sc->resx = (uint32_t)x;
-		sc->resy = (uint32_t)y;
-		notify = (sc->gpu_config.events_read &
-			     VIRTIO_GPU_EVENT_DISPLAY) == 0;
-		sc->gpu_config.events_read |= VIRTIO_GPU_EVENT_DISPLAY;
-		if (notify)
-			pci_vhost_interrupt_config(sc);
-		(void)virtio_vhost_transport_notify_display_resize(
-		    sc->vhost.backend_id, sc->resx, sc->resy);
-	}
-	pthread_mutex_unlock(&sc->vsc_mtx);
-}
-
 static int
 pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 {
@@ -600,10 +554,6 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	const char *device_name;
 	const char *socket_path;
 	pthread_mutexattr_t attr;
-	uint32_t host_logical_width;
-	uint32_t host_logical_height;
-	uint32_t host_pixel_width;
-	uint32_t host_pixel_height;
 	int err;
 	const char *value;
 
@@ -656,23 +606,6 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 		    VHOST_GPU_COLS_MIN, VHOST_GPU_ROWS_MIN);
 		free(sc);
 		return (-1);
-	}
-	sc->max_resx = VHOST_GPU_COLS_MAX;
-	sc->max_resy = VHOST_GPU_ROWS_MAX;
-	sc->host_scale = host_display_scale();
-	if (host_display_info(&host_logical_width, &host_logical_height,
-		&host_pixel_width, &host_pixel_height)) {
-		if (sc->hdpi_enabled) {
-			sc->max_resx = MIN(host_pixel_width,
-			    VHOST_GPU_COLS_MAX);
-			sc->max_resy = MIN(host_pixel_height,
-			    VHOST_GPU_ROWS_MAX);
-		} else {
-			sc->max_resx = MIN(host_logical_width,
-			    VHOST_GPU_COLS_MAX);
-			sc->max_resy = MIN(host_logical_height,
-			    VHOST_GPU_ROWS_MAX);
-		}
 	}
 	if (sc->hdpi_enabled &&
 	    !pci_vhost_mode_supports_hdpi(sc->start_resx, sc->start_resy)) {
@@ -744,7 +677,6 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	}
 	console_set_hdpi(sc->hdpi_enabled);
 	console_set_hardware_mouse(false);
-	console_resize_register(pci_vhost_resize_event, sc);
 	return (0);
 }
 

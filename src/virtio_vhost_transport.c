@@ -1052,16 +1052,6 @@ virtio_vhost_transport_notify_queue_kick(const char *backend_id,
 	return (0);
 }
 
-int
-virtio_vhost_transport_notify_display_resize(const char *backend_id,
-    uint32_t width, uint32_t height)
-{
-	(void)backend_id;
-	(void)width;
-	(void)height;
-	return (0);
-}
-
 static void
 virtio_vhost_transport_send_not_ready(cnc_conn_t c, int req_id)
 {

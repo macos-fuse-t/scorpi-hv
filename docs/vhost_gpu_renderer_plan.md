@@ -50,10 +50,14 @@ payloads on renderer-owned queues.
 - virtqueue descriptor walking and used-ring updates;
 - virtio-gpu command handling;
 - EDID, display info, scanout, cursor, and resource state;
+- host display probing and renderer scanout sizing;
 - future D3D12 semantic packet decoding and Metal/Vulkan execution.
 
 ScorpiViewer remains a display/input client. It should not know virtio-gpu,
 D3D12, Metal, Vulkan, or Scorpi vhost.
+Viewer window resizing must not drive vhost GPU display configuration. The
+renderer publishes scanout metadata and dirty rectangles to `scorpi-hv`, and
+`scorpi-hv` only exposes that published scanout to ScorpiViewer.
 
 ## Transport Decision
 

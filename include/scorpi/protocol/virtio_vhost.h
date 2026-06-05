@@ -16,7 +16,6 @@
 #define SCORPI_VIRTIO_VHOST_CMD_RESET "virtio_vhost_reset"
 #define SCORPI_VIRTIO_VHOST_CMD_DISCONNECT "virtio_vhost_disconnect"
 #define SCORPI_VIRTIO_VHOST_EVENT_QUEUE_KICK "virtio_vhost_queue_kick"
-#define SCORPI_VIRTIO_VHOST_EVENT_GPU_RESIZE "virtio_vhost_gpu_resize"
 
 struct scorpi_virtio_vhost_queue_desc {
 	uint32_t index;
