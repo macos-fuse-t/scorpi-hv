@@ -145,6 +145,7 @@ runtime_core_sources = files(
     'src/block_if.c',
     'src/virtio.c',
     'src/virtio_vhost_transport.c',
+    'src/vhost_user.c',
     'src/vhost_vmmem.c',
     'src/host_display.c',
     'src/pci_virtio_vhost.c',

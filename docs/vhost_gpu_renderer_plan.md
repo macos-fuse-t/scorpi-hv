@@ -1,405 +1,223 @@
 # Vhost GPU Renderer Plan
 
-Date: 2026-06-04
+Date: 2026-06-05
 
-This plan separates GPU rendering from `scorpi-hv`. The hypervisor remains the
-guest-visible virtio-gpu device and session broker, but Metal, Vulkan, shader
-translation, command validation, pipeline caches, and presentation backends live
-in a separate renderer process.
+This plan separates GPU rendering from `scorpi-hv` while preserving virtio as
+the guest-visible command transport. The production transport between
+`scorpi-hv` and renderer backends uses vhost-style semantics over Unix domain
+sockets: memory table export, vring setup, kick/call fds, and backend-owned
+virtqueue processing.
+
+The Scorpi wire format is not QEMU-compatible. We use the vhost architecture
+and operating model, but keep a Scorpi-owned protocol so payloads fit our VM
+memory model, macOS notification fallback, and future multi-device requirements.
 
 ## Target Architecture
 
 ```text
 Windows guest
-  -> Scorpi Windows KMD/UMD
   -> virtio-gpu PCI device exposed by scorpi-hv
-  -> scorpi-hv virtio PCI frontend and transport setup
-  -> renderer-owned virtqueue backend
+  -> generic Scorpi vhost frontend in scorpi-hv
+       -> guest memory export
+       -> vring address setup
+       -> kick/call fd wiring
+       -> interrupt injection
+  -> Scorpi vhost Unix domain socket
   -> scorpi-gpu-renderer process
-       -> direct virtio-gpu queue reader
-       -> D3D12 semantic frontend
+       -> Scorpi vhost backend server
+       -> direct virtqueue descriptor reader
+       -> virtio-gpu and future D3D12 command frontend
        -> macOS Metal backend
        -> Linux Vulkan backend
-  -> display/export requests over Scorpi CNC WebSocket
-  -> events brokered by scorpi-hv
-  -> ScorpiViewer
+  -> ScorpiViewer display/control path
 ```
 
-`scorpi-hv` must not link Metal, Vulkan, DXIL conversion, or backend renderer
-code. It owns:
+`scorpi-hv` owns:
 
-- PCI device configuration, feature negotiation, and virtqueue setup;
-- guest memory export, reset/lifecycle, kick notification, and interrupt
-  injection;
-- CNC actions for renderer display publication;
-- display-event brokering to ScorpiViewer;
-- input and resize routing.
+- virtio PCI/MMIO frontend behavior;
+- feature negotiation and device config exposure;
+- guest memory export to backend processes;
+- vring setup, queue kick forwarding, and call interrupt handling;
+- VM reset, backend disconnect, and process-independent lifecycle handling.
 
-`scorpi-hv` must not parse, copy, or forward accelerated virtio-gpu command
-payloads on the hot path. After transport setup, renderer-owned queues are
-consumed by `scorpi-gpu-renderer` directly.
+`scorpi-hv` must not parse, copy, or forward virtio-gpu or D3D12 command
+payloads on renderer-owned queues.
 
 `scorpi-gpu-renderer` owns:
 
-- virtqueue descriptor walking for renderer-owned virtio-gpu queues;
-- accelerated virtio-gpu backend state;
-- capsets, contexts, blob resources, command submission, and fences;
-- D3D12 semantic packet decoding and validation;
-- Metal and Vulkan backend implementations;
-- renderer-owned displayable images;
-- shader conversion and pipeline caches.
+- Scorpi vhost backend server socket;
+- guest memory mapping from Scorpi vhost memory table fds;
+- virtqueue descriptor walking and used-ring updates;
+- virtio-gpu command handling;
+- EDID, display info, scanout, cursor, and resource state;
+- future D3D12 semantic packet decoding and Metal/Vulkan execution.
 
 ScorpiViewer remains a display/input client. It should not know virtio-gpu,
-D3D12, Metal, or Vulkan.
+D3D12, Metal, Vulkan, or Scorpi vhost.
 
-## Best-Practice References
+## Transport Decision
 
-The split follows the same broad separation used by mature virtual GPU stacks:
+Current WebSocket/CNC queue transport is useful for bring-up and debugging, but
+it is not the production virtio transport. WebSocket may remain for viewer
+control and debug surfaces. Virtio queue ownership moves to the Scorpi vhost
+transport.
 
-- QEMU `vhost-user`/`vhost-user-gpu`: a VMM-side stub communicates with an
-  vhost device backend over a socket and shared memory.
-- virglrenderer/Venus: virtio-gpu transport with explicit capsets, contexts,
-  blob resources, host-visible memory, and command-stream validation.
-- crosvm rutabaga/gfxstream: a renderer abstraction with selectable backends
-  behind a virtio-gpu handling layer.
+Production transport properties:
 
-Scorpi should use these as architectural references, not as an immediate
-requirement to implement the full standard `vhost-user-gpu` protocol.
+- AF_UNIX stream socket for Scorpi vhost control messages;
+- `SCM_RIGHTS` fd passing for guest memory, kick fds, call fds, and future
+  device-specific fds;
+- fd-based notifications by default;
+- optional in-band notifications only as fallback/debug;
+- no JSON on the virtio datapath.
 
-Scorpi does not add a custom HV-renderer socket protocol. The renderer and HV
-use the existing CNC WebSocket message format. The renderer owns the vhost Unix
-socket and waits for a connection; `scorpi-hv` initiates that connection when a
-`virtio-gpu-vhost` device is configured with a `socket:` path. This keeps
-process lifecycle outside HV while still making backend readiness explicit at VM
-startup.
+## Reference Assessment
 
-The WebSocket control surface is used for renderer registration, device
-description, GPU-specific config, queue metadata, memory-region metadata, kick
-notifications, interrupt requests, and reset/disconnect events.
+The OpenEBS `vhost-user` repository is useful as a compact reference for:
 
-The WebSocket control surface is not the GPU command path. DirectX/virtio-gpu
-command payloads are read by `scorpi-gpu-renderer` from mapped guest memory and
-virtqueue descriptors.
+- fixed-size message headers with typed payloads;
+- `sendmsg`/`recvmsg` plus `SCM_RIGHTS` fd passing;
+- setup ordering: features, memory table, queue size/base, queue fds, queue
+  addresses;
+- fd-driven notification instead of JSON or copied command payloads.
 
-## Final Vhost Direction
+Do not import it wholesale. Its vring code allocates backend-owned shared
+vrings, uses Linux `eventfd`, and is tied to DPDK/SPDK storage assumptions.
+Scorpi must instead export VM guest RAM from `scorpi-hv`, let the renderer map
+that RAM, and have the renderer walk guest-owned virtio rings directly.
 
-The long-term architecture is a generic vhost virtio backend framework, not
-a GPU-only one-off path.
+## Generic Device Model
+
+The HV side should be a reusable Scorpi vhost frontend:
 
 ```text
 scorpi-hv
-  -> virtio PCI frontend
-  -> generic vhost virtio backend setup/control
-       -> vhost virtio-gpu backend: scorpi-gpu-renderer
-       -> vhost virtio-fs backend: future scorpi-fs-backend
-       -> other vhost virtio backends later
+  pci_virtio_vhost.c
+    generic Scorpi vhost mechanics
+    memory table export
+    vring setup
+    kick/call fd wiring
+    reset/disconnect
+
+  pci_virtio_gpu_vhost.c
+    virtio-gpu identity
+    config space
+    feature mask
+    queue count
+    scanout/viewer compatibility
+
+  pci_virtio_fs_vhost.c
+    future virtio-fs adapter
 ```
 
-The generic layer owns only shared virtio mechanics:
+Backends should be separate processes:
 
-- backend registration;
-- device instance identity;
-- feature bits;
-- guest memory region metadata;
-- virtqueue metadata;
-- queue kick notifications;
-- interrupt requests;
-- reset/disconnect;
-- health/state.
+```text
+scorpi-gpu-renderer
+scorpi-fs-backend       future
+other Scorpi vhost backends
+```
 
-Device-specific semantics stay out of that layer. GPU capsets, scanouts, blob
-resources, `SUBMIT_3D`, D3D12, Metal, and Vulkan remain in
-`scorpi-gpu-renderer`. Future virtio-fs semantics remain in a future filesystem
-backend.
+## Queue Notification Flow
 
-Generic CNC setup/control actions use device-agnostic names:
+Guest-to-backend kick:
 
-- `virtio_vhost_register`
-- `virtio_vhost_describe`
-- `virtio_vhost_queue_kick`
-- `virtio_vhost_queue_interrupt`
-- `virtio_vhost_reset`
-- `virtio_vhost_disconnect`
+```text
+guest writes descriptors
+guest updates avail ring
+guest notifies virtio queue
+scorpi-hv writes queue kick fd
+renderer drains kick fd
+renderer walks descriptors from mapped guest RAM
+```
 
-The generic transport descriptor must not carry GPU display state. GPU display
-configuration and resize state remain GPU-specific:
+Backend-to-guest completion:
 
-- `virtio_vhost_gpu_config`
-- `virtio_vhost_gpu_resize`
+```text
+renderer writes response buffers
+renderer updates used ring
+renderer writes queue call fd
+scorpi-hv drains call fd
+scorpi-hv injects virtio interrupt/MSI-X
+guest driver observes completion
+```
 
-GPU display publication remains separate and display-specific:
-
-- `renderer_set_scanout`
-- `renderer_update_scanout`
-- `renderer_unset_scanout`
+On macOS, notification fds are implemented with `pipe` or `socketpair` instead
+of Linux `eventfd`. The abstraction must hide that difference from the vhost
+frontend/backend code.
 
 ## Milestones
 
-### MS1: Vhost Renderer Skeleton
+### MS1: Shared Scorpi vhost foundation
 
-Goal: prove process separation and ScorpiViewer display brokering.
+Deliverables:
 
-Deliverable:
+- public Scorpi vhost protocol header in `include/scorpi/protocol`;
+- UDS connect/listen helpers;
+- `SCM_RIGHTS` send/receive helpers;
+- portable notify-fd abstraction for macOS/Linux;
+- installed protocol header via `meson install`.
 
-```text
-scorpi-gpu-renderer is started separately
-  -> renderer creates a CNC WebSocket server on its vhost socket
-  -> scorpi-hv starts the VM and connects to that socket
-  -> renderer creates a POSIX shm test scanout
-  -> renderer calls renderer_set_scanout and renderer_update_scanout actions
-  -> scorpi-hv forwards those as current ScorpiViewer CNC notifications
-  -> ScorpiViewer displays renderer-owned output
-```
+### MS2: Renderer Scorpi vhost skeleton
 
-Non-goals:
+Deliverables:
 
-- no DirectX;
-- no Metal/Vulkan rendering;
-- no renderer-owned virtqueue transport;
-- no blob resources;
-- no Windows driver changes.
+- renderer listens on `--listen <socket>`;
+- accepts a Scorpi vhost connection;
+- completes feature negotiation;
+- accepts memory table and vring setup messages;
+- logs queue and memory setup;
+- no virtio-gpu behavior change yet.
 
-### MS2: Host Renderer Test Frame
+### MS3: HV generic Scorpi vhost frontend
 
-Replace the software test pattern with a backend-rendered frame:
+Deliverables:
 
-- macOS: Metal clear/triangle into a renderer-owned target;
-- Linux: Vulkan clear/triangle into a renderer-owned target;
-- export to the same display path used in MS1.
+- `pci_virtio_vhost.c` sends Scorpi vhost setup messages;
+- exports VM memory once per backend connection;
+- creates kick/call notify fds per queue;
+- registers call fds in the HV event loop;
+- forwards queue notify as fd kicks;
+- injects queue interrupts when call fd fires.
 
-### MS3A: Generic Vhost Virtio Framework
+### MS4: Move virtio-gpu-vhost queues to Scorpi vhost
 
-Create the reusable setup/control layer for vhost virtio backends:
+Deliverables:
 
-- backend registration;
-- device description;
-- memory-region metadata;
-- virtqueue metadata;
-- kick notification;
-- interrupt request;
-- reset/disconnect handling.
+- renderer processes existing virtio-gpu queue code from Scorpi vhost vrings;
+- WebSocket/CNC virtqueue metadata/kick/interrupt path removed from GPU vhost;
+- parity for display info, EDID, resource create/attach, transfer, flush, and
+  cursor commands.
 
-The first implementation uses CNC WebSocket setup/control messages. It does not
-move submit payloads through JSON.
+### MS5: Cleanup and multi-device readiness
 
-### MS3B: Generic Vhost Frontend
+Deliverables:
 
-Add a separate `virtio-gpu-vhost` PCI device implementation in `scorpi-hv`.
-Do not modify the validated `pci_virtio_gpu.c` path for vhost backend work.
+- Scorpi vhost config documented in VM YAML;
+- memory export shared across multiple vhost devices where possible;
+- robust reset/disconnect/shutdown behavior;
+- WebSocket retained only for viewer/control/debug paths;
+- future `virtio-fs` backend can reuse the generic frontend.
 
-Implementation split:
+### MS6: D3D12/Metal acceleration path
 
-- `pci_virtio_vhost.c`: shared HV-side vhost frontend mechanics:
-  virtqueue metadata, memory export description, queue kicks, interrupt
-  dispatch, reset dispatch, and transport binding.
-- `pci_virtio_gpu_vhost.c`: virtio-gpu adapter: PCI identity, GPU config,
-  display resize state, legacy framebuffer compatibility, HDPI, and scanout
-  brokering.
-- Future adapters such as `pci_virtio_fs_vhost.c` should reuse
-  `pci_virtio_vhost.c` instead of duplicating queue and memory transport code.
+Deliverables:
 
-The VM config selects one path:
+- virtio-gpu capsets/contexts/blob resources;
+- D3D12 command packet frontend;
+- Metal backend execution;
+- fences and presentation path;
+- Linux Vulkan backend later.
 
-- `virtio-gpu`: current validated internal `scorpi-hv` 2D/display device;
-- `virtio-gpu-vhost,backend_device=virtio-gpu,backend=gpu0,socket=<path>`:
-  generic vhost virtio frontend that presents virtio-gpu identity while
-  `scorpi-gpu-renderer` implements the virtio-gpu backend.
+## First Implementation Tasks
 
-Do not enable both for the same Windows VM unless intentionally testing two
-display adapters.
-
-### MS3C: Renderer-Owned Virtqueue Transport
-
-Move accelerated virtio-gpu queue ownership out of `scorpi-hv`:
-
-- WebSocket control messages for renderer registration and transport setup;
-- guest memory region export/metadata;
-- virtqueue address/size/feature metadata;
-- renderer-side descriptor walking and used-ring updates;
-- HV-to-renderer kick notification;
-- renderer-to-HV interrupt request;
-- device reset and backend-disconnect handling.
-
-Hot-path rule:
-
-```text
-guest virtqueue memory
-  -> scorpi-gpu-renderer reads descriptor/avail rings directly
-  -> scorpi-gpu-renderer reads command/resource payloads directly
-  -> scorpi-gpu-renderer writes responses and used ring directly
-  -> scorpi-gpu-renderer asks scorpi-hv to inject a virtio interrupt
-```
-
-`scorpi-hv` must not call into a submit forwarding path for renderer-owned
-queues. Its role is setup and signaling.
-
-### MS4: Accelerated Virtio-GPU Objects
-
-Implement renderer-side:
-
-- capset query;
-- context create/destroy;
-- blob resource create/map/unmap;
-- resource attach/detach;
-- submit;
-- fences;
-- blob scanout.
-
-### MS5: D3D12 Semantic Frontend
-
-Add the Scorpi D3D12 packet decoder and validator:
-
-- resource/heaps;
-- root signatures;
-- descriptors;
-- shaders;
-- PSOs;
-- command lists;
-- barriers;
-- draws/copies/clears;
-- present;
-- fence signaling.
-
-### MS6: Windows Guest Native DX12 Prototype
-
-Extend the Windows KMD/UMD path until a native D3D12 triangle presents through
-the vhost renderer.
-
-### MS7: Hardening
-
-Add:
-
-- renderer crash recovery and GPU-lost behavior;
-- command replay/dump tooling;
-- shader cache inspection;
-- security validation limits;
-- performance tracing;
-- HLK-oriented test coverage.
-
-## MS1 Concrete Tasks
-
-Status: in progress. Process separation and display brokering are the active
-scope; the renderer is launched separately and `scorpi-hv` does not spawn it.
-
-1. [done] Create `/Users/alexf/work/scorpi-gpu-renderer` as a buildable daemon.
-2. [done] Reuse the existing CNC WebSocket protocol. Add renderer-originated CNC
-   actions:
-   - `renderer_set_scanout`
-   - `renderer_update_scanout`
-   - `renderer_unset_scanout`
-3. [done] Add renderer CLI:
-
-```sh
-scorpi-gpu-renderer \
-  --backend metal \
-  --listen <vhost-socket>
-```
-
-4. [done] Make `scorpi-hv` register renderer display broker actions on the existing
-   CNC command surface. Do not make `scorpi-hv` spawn the renderer.
-5. [done] Start `scorpi-gpu-renderer` separately with a renderer-owned vhost
-   socket path.
-6. [done] Make the renderer serve the existing CNC WebSocket protocol using
-   libwebsockets, with `scorpi-hv` connecting as the client.
-7. [done] Make the renderer allocate a POSIX shm test scanout.
-8. [done] Make the renderer send `renderer_set_scanout`.
-9. [done] Make `scorpi-hv` translate that to `console_set_scanout`.
-10. [done] Make the renderer send `renderer_update_scanout`.
-11. [done] Make `scorpi-hv` translate that to ScorpiViewer's `update_scanout`
-    notification.
-12. [done] Add clean shutdown using `renderer_unset_scanout`.
-13. [done] Keep all MS1 behavior vhost driven so the validated display-only
-    driver path is unchanged unless the renderer publishes a scanout.
-
-Remaining MS1 validation:
-
-- launch `scorpi-gpu-renderer` separately with `--listen <vhost-socket>`;
-- run `scorpi-hv` with a `virtio-gpu-vhost` device whose `socket:` points to
-  that renderer-owned socket;
-- verify ScorpiViewer receives the renderer-owned shared-memory scanout;
-- verify Ctrl-C or SIGTERM from the renderer clears the scanout through
-  `renderer_unset_scanout`.
-
-## MS2 Concrete Tasks
-
-Status: started.
-
-1. [done] Add a renderer backend abstraction in `scorpi-gpu-renderer`.
-2. [done] Keep the existing software test pattern as `stub`/`software`.
-3. [done] Add macOS Metal backend compilation to Meson.
-4. [done] Render an offscreen Metal BGRA frame into a renderer-owned target.
-5. [done] Copy the Metal frame into the existing POSIX shm scanout.
-6. [pending] Validate `--backend metal` against live `scorpi-hv` and
-   ScorpiViewer.
-7. [pending] Add a Linux Vulkan backend equivalent.
-8. [pending] Replace the one-shot frame with a timed redraw/update loop if the
-   viewer path needs repeated frame publication.
-
-## MS3 Concrete Tasks
-
-Status: started. This milestone is the first transport milestone for the
-eventual DX12 path. It does not execute DirectX yet.
-
-1. [done] Define the generic CNC WebSocket setup/control actions:
-   - `virtio_vhost_register`
-   - `virtio_vhost_describe`
-   - `virtio_vhost_queue_kick`
-   - `virtio_vhost_queue_interrupt`
-   - `virtio_vhost_reset`
-   - `virtio_vhost_disconnect`
-2. [done] Add a renderer registration state in `scorpi-hv` without spawning the
-   renderer.
-3. [done] Make `scorpi-gpu-renderer` register and disconnect over the generic
-   vhost virtio setup/control surface.
-4. [done] Add a transport description object in `scorpi-hv` containing:
-   - negotiated virtio-gpu features;
-   - queue index, size, descriptor address, avail address, and used address;
-   - exported guest memory region metadata;
-   - reset generation.
-   Current status: the new `virtio-gpu-vhost` frontend publishes feature bits, reset
-   generation, queue metadata, and low/high guest RAM metadata. Guest RAM is
-   backed by stable POSIX shm names generated by `vhost_vmmem_shm_name()`.
-5. [done] Add a renderer-side transport object in `scorpi-gpu-renderer` that stores the
-   transport description received over CNC.
-   Current status: the renderer requests `virtio_vhost_describe`, records
-   whether the transport is ready, and opens/maps exported guest RAM regions.
-6. [done] Add renderer-side virtqueue helpers:
-   - translate guest physical address to mapped host pointer;
-   - read descriptor table;
-   - read avail ring;
-   - walk descriptor chains;
-   - write response data;
-   - publish used entries.
-7. [done] Add `virtio-gpu-vhost` queue handling so `scorpi-hv` only sends a kick
-   notification for renderer-owned queues. It must not parse or copy command
-   payloads for those queues.
-   Current status: `virtio-gpu-vhost` sends generic `virtio_vhost_queue_kick`
-   notifications.
-8. [done] Add a renderer completion path where `scorpi-gpu-renderer` asks `scorpi-hv`
-   to inject the virtio interrupt after updating the used ring.
-9. [done] Validate with renderer-owned virtio-gpu 2D commands:
-   - guest posts command;
-   - HV sends kick only;
-   - renderer reads the command directly from the queue;
-   - renderer writes a valid virtio-gpu response;
-   - renderer requests interrupt;
-   - guest receives completion.
-10. [pending] Only after this works, add renderer-side handling for contexts, blob
-   resources, `SUBMIT_3D`, and fences.
-
-## Current Run Shape
-
-Start the renderer first:
-
-```sh
-/Users/alexf/work/scorpi-gpu-renderer/build/scorpi-gpu-renderer \
-  --backend metal \
-  --listen /tmp/scorpi-vm1-gpu.sock
-```
-
-Then start the VM:
-
-```sh
-/Users/alexf/work/scorpi-hv/build-macos-arm64/scorpi-hv \
-  -f /Users/alexf/work/scorpi-hv/win2.yaml
-```
+1. Add `include/scorpi/protocol/vhost_user.h`.
+2. Add local Scorpi vhost socket/fd helper API.
+3. Build and install the new public header with `scorpi_kit`.
+4. Add renderer-side Scorpi vhost server skeleton.
+5. Add HV-side feature negotiation against the renderer.
+6. Add memory table export via Scorpi vhost.
+7. Add vring setup messages.
+8. Add kick/call fd notification loop.
+9. Port `virtio-gpu-vhost` command processing to Scorpi vhost queues.
+10. Remove WebSocket queue transport for GPU vhost.
