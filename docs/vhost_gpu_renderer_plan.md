@@ -61,10 +61,9 @@ renderer publishes scanout metadata and dirty rectangles to `scorpi-hv`, and
 
 ## Transport Decision
 
-Current WebSocket/CNC queue transport is useful for bring-up and debugging, but
-it is not the production virtio transport. WebSocket may remain for viewer
-control and debug surfaces. Virtio queue ownership moves to the Scorpi vhost
-transport.
+The WebSocket/CNC queue transport was a bring-up path and is no longer used for
+renderer virtqueues. WebSocket may remain for viewer control and debug surfaces.
+Virtio queue ownership lives in the Scorpi vhost transport.
 
 Production transport properties:
 
@@ -74,6 +73,51 @@ Production transport properties:
 - fd-based notifications by default;
 - optional in-band notifications only as fallback/debug;
 - no JSON on the virtio datapath.
+
+## Run And Configure
+
+`scorpi-gpu-renderer` is launched separately and must own the backend socket.
+`scorpi-hv` connects to that socket when the VM starts; it does not spawn the
+renderer and it does not send host display dimensions. The renderer probes host
+display limits, publishes EDID/display modes, creates scanout shared memory, and
+notifies `scorpi-hv` about scanout and dirty-rectangle updates.
+
+Start the renderer first:
+
+```sh
+cd /Users/alexf/work/scorpi-gpu-renderer
+./build/scorpi-gpu-renderer \
+  --backend metal \
+  --listen /tmp/scorpi-vm1-gpu.sock
+```
+
+Then start the VM:
+
+```sh
+cd /Users/alexf/work/scorpi-hv
+./build-macos-arm64/scorpi-hv -f ./win2.yaml
+```
+
+The VM config uses a vhost GPU device entry like:
+
+```yaml
+- device: virtio-gpu-vhost
+  backend: gpu0
+  backend_device: virtio-gpu
+  socket: /tmp/scorpi-vm1-gpu.sock
+  hdpi: true
+```
+
+Runtime ownership:
+
+- renderer owns the socket listener, host display probing, EDID, display modes,
+  scanout allocation, virtio-gpu command processing, and future D3D12-to-Metal
+  execution;
+- `scorpi-hv` owns the guest-visible virtio PCI device, feature negotiation,
+  guest memory export, vring setup, kick/call fd wiring, and interrupt
+  injection;
+- ScorpiViewer reads the scanout exposed by `scorpi-hv` and remains independent
+  of vhost, virtio-gpu, Metal, Vulkan, and D3D12 internals.
 
 ## Reference Assessment
 

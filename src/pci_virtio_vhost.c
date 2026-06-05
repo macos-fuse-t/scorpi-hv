@@ -116,31 +116,15 @@ pci_vhost_interrupt(void *opaque, uint32_t queue_index)
 	pthread_mutex_unlock(state->vs->vs_mtx);
 }
 
-static void
-pci_vhost_reset(void *opaque)
-{
-	struct pci_vhost_state *state = opaque;
-
-	if (state == NULL || state->vs == NULL || state->vs->vs_mtx == NULL)
-		return;
-
-	pthread_mutex_lock(state->vs->vs_mtx);
-	if (state->reset_cb != NULL)
-		state->reset_cb(state->reset_opaque);
-	pthread_mutex_unlock(state->vs->vs_mtx);
-}
-
 void
 pci_vhost_state_init(struct pci_vhost_state *state, struct virtio_softc *vs,
     struct vqueue_info *queues, uint32_t queue_count, const char *backend_id,
-    const char *device_name, pci_vhost_reset_cb reset_cb, void *reset_opaque)
+    const char *device_name)
 {
 	memset(state, 0, sizeof(*state));
 	state->vs = vs;
 	state->queues = queues;
 	state->queue_count = queue_count;
-	state->reset_cb = reset_cb;
-	state->reset_opaque = reset_opaque;
 	snprintf(state->backend_id, sizeof(state->backend_id), "%s",
 	    backend_id);
 	snprintf(state->device_name, sizeof(state->device_name), "%s",
@@ -239,11 +223,10 @@ pci_vhost_bind_transport(struct pci_vhost_state *state, struct vmctx *ctx,
 		transport.ready = transport.queues[info->ready_queue].ready;
 
 	return (virtio_vhost_transport_bind_device(state->backend_id,
-	    &transport, pci_vhost_interrupt, pci_vhost_reset,
+	    &transport, pci_vhost_interrupt,
 	    state->device_features_cb == NULL ? NULL :
 						pci_vhost_device_features,
-	    state->event_cb == NULL ? NULL : pci_vhost_event,
-	    state));
+	    state->event_cb == NULL ? NULL : pci_vhost_event, state));
 }
 
 int

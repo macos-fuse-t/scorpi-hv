@@ -99,6 +99,9 @@ static void pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
     const struct scorpi_vhost_scanout *scanout);
 static void pci_vhost_apply_renderer_dirty_rect(
     const struct scorpi_vhost_dirty_rect *rect);
+static void pci_vhost_blank_legacy_fb(struct pci_vhost_softc *sc);
+static void pci_vhost_unmap_legacy_fb(struct pci_vhost_softc *sc);
+static void pci_vhost_destroy_legacy_fb(struct pci_vhost_softc *sc);
 
 static bool
 pci_vhost_mode_supports_hdpi(uint32_t width, uint32_t height)
@@ -198,13 +201,32 @@ pci_vhost_set_legacy_scanout(struct pci_vhost_softc *sc)
 {
 	uint32_t stride;
 
-	if (sc->legacy_fb_base == NULL)
+	if (sc->legacy_fb_base == NULL) {
+		console_set_scanout(false, 0, 0, 0, 0, NULL, 0, false);
 		return;
+	}
 
 	stride = roundup2(sc->resx * 4, 32);
 	console_set_scanout(true, sc->resx, sc->resy, stride,
 	    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, sc->legacy_fb_shm_name,
 	    sc->legacy_fb_size, true);
+	console_update_scanout_rect(0, 0, sc->resx, sc->resy);
+}
+
+static void
+pci_vhost_blank_legacy_fb(struct pci_vhost_softc *sc)
+{
+	size_t bytes;
+	uint32_t stride;
+
+	if (sc->legacy_fb_base == NULL || sc->legacy_fb_size == 0)
+		return;
+
+	stride = roundup2(sc->resx * 4, 32);
+	bytes = (size_t)stride * sc->resy;
+	if (bytes > sc->legacy_fb_size)
+		bytes = sc->legacy_fb_size;
+	memset(sc->legacy_fb_base, 0, bytes);
 }
 
 static void
@@ -217,6 +239,7 @@ pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
 	if ((scanout->flags & SCORPI_VHOST_SCANOUT_F_ENABLED) == 0 ||
 	    scanout->width == 0 || scanout->height == 0) {
 		sc->renderer_scanout_active = false;
+		pci_vhost_blank_legacy_fb(sc);
 		pci_vhost_set_legacy_scanout(sc);
 		return;
 	}
@@ -228,7 +251,7 @@ pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
 	sc->renderer_scanout_shm_size = (size_t)scanout->shm_size;
 	stride = scanout->stride != 0 ? scanout->stride : scanout->width * 4;
 	format = scanout->format != 0 ? scanout->format :
-	    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;
+					VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;
 	PRINTLN(
 	    "virtio-gpu-vhost: renderer scanout shm=%s active=%ux%u backing=%ux%u stride=%u size=%zu",
 	    sc->renderer_scanout_shm_name, scanout->width, scanout->height,
@@ -242,8 +265,7 @@ pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
 }
 
 static void
-pci_vhost_apply_renderer_dirty_rect(
-    const struct scorpi_vhost_dirty_rect *rect)
+pci_vhost_apply_renderer_dirty_rect(const struct scorpi_vhost_dirty_rect *rect)
 {
 	if (rect->width == 0 || rect->height == 0)
 		return;
@@ -282,9 +304,7 @@ pci_vhost_create_legacy_fb(struct pci_vhost_softc *sc)
 	if (ftruncate(sc->legacy_fb_shm_fd, sc->legacy_fb_size) == -1) {
 		EPRINTLN("virtio-gpu-vhost: ftruncate %s: %s",
 		    sc->legacy_fb_shm_name, strerror(errno));
-		close(sc->legacy_fb_shm_fd);
-		shm_unlink(sc->legacy_fb_shm_name);
-		sc->legacy_fb_shm_fd = -1;
+		pci_vhost_destroy_legacy_fb(sc);
 		return (-1);
 	}
 
@@ -293,15 +313,51 @@ pci_vhost_create_legacy_fb(struct pci_vhost_softc *sc)
 	if (sc->legacy_fb_base == MAP_FAILED) {
 		EPRINTLN("virtio-gpu-vhost: mmap %s: %s",
 		    sc->legacy_fb_shm_name, strerror(errno));
-		close(sc->legacy_fb_shm_fd);
-		shm_unlink(sc->legacy_fb_shm_name);
-		sc->legacy_fb_shm_fd = -1;
 		sc->legacy_fb_base = NULL;
+		pci_vhost_destroy_legacy_fb(sc);
 		return (-1);
 	}
 
-	memset(sc->legacy_fb_base, 0, sc->legacy_fb_size);
 	return (0);
+}
+
+static void
+pci_vhost_unmap_legacy_fb(struct pci_vhost_softc *sc)
+{
+	if (sc->legacy_fb_direct_mapped) {
+		int error;
+
+		error = vm_munmap_memseg(sc->vsc_vs.vs_pi->pi_vmctx,
+		    sc->legacy_fb_direct_gpa, VHOST_LEGACY_FB_SIZE);
+		if (error != 0) {
+			EPRINTLN(
+			    "virtio-gpu-vhost: failed to unmap legacy framebuffer "
+			    "BAR at 0x%llx size 0x%lx: %s",
+			    sc->legacy_fb_direct_gpa, VHOST_LEGACY_FB_SIZE,
+			    strerror(error));
+		}
+		sc->legacy_fb_direct_mapped = false;
+		sc->legacy_fb_direct_gpa = 0;
+	}
+}
+
+static void
+pci_vhost_destroy_legacy_fb(struct pci_vhost_softc *sc)
+{
+	pci_vhost_unmap_legacy_fb(sc);
+	if (sc->legacy_fb_base != NULL) {
+		munmap(sc->legacy_fb_base, sc->legacy_fb_size);
+		sc->legacy_fb_base = NULL;
+	}
+	if (sc->legacy_fb_shm_fd >= 0) {
+		close(sc->legacy_fb_shm_fd);
+		sc->legacy_fb_shm_fd = -1;
+	}
+	if (sc->legacy_fb_shm_name[0] != '\0') {
+		shm_unlink(sc->legacy_fb_shm_name);
+		sc->legacy_fb_shm_name[0] = '\0';
+	}
+	sc->legacy_fb_size = 0;
 }
 
 static uint64_t
@@ -419,6 +475,7 @@ pci_vhost_baraddr(struct pci_devinst *pi, int baridx, int enabled,
     uint64_t address)
 {
 	struct pci_vhost_softc *sc = pi->pi_arg;
+	bool created;
 	int error;
 	int prot;
 
@@ -426,29 +483,19 @@ pci_vhost_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 		return;
 
 	if (!enabled) {
-		if (sc->legacy_fb_direct_mapped) {
-			error = vm_munmap_memseg(pi->pi_vmctx,
-			    sc->legacy_fb_direct_gpa, VHOST_LEGACY_FB_SIZE);
-			if (error != 0) {
-				EPRINTLN(
-				    "virtio-gpu-vhost: failed to unmap legacy "
-				    "framebuffer BAR at 0x%llx size 0x%lx: %s",
-				    sc->legacy_fb_direct_gpa,
-				    VHOST_LEGACY_FB_SIZE, strerror(error));
-			}
-			sc->legacy_fb_direct_mapped = false;
-			sc->legacy_fb_direct_gpa = 0;
-		}
+		pci_vhost_unmap_legacy_fb(sc);
 		return;
 	}
 
+	created = sc->legacy_fb_base == NULL;
 	if (pci_vhost_create_legacy_fb(sc) != 0) {
 		EPRINTLN(
 		    "virtio-gpu-vhost: failed to create legacy framebuffer");
 		return;
 	}
 
-	if ((pi->pi_bar[baridx].flags & PCIBAR_F_DIRECT_MAPPED) != 0) {
+	if ((pi->pi_bar[baridx].flags & PCIBAR_F_DIRECT_MAPPED) != 0 &&
+	    !sc->legacy_fb_direct_mapped) {
 		prot = PROT_READ | PROT_WRITE | PROT_DONT_ALLOCATE;
 		error = vm_setup_memory_segment(pi->pi_vmctx, address,
 		    VHOST_LEGACY_FB_SIZE, prot,
@@ -459,13 +506,14 @@ pci_vhost_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 			    "framebuffer BAR at 0x%llx size 0x%lx: %s",
 			    address, VHOST_LEGACY_FB_SIZE, strerror(error));
 			pci_emul_set_bar_direct_mapped(pi, baridx, 0);
-			sc->legacy_fb_direct_mapped = false;
 		} else {
 			sc->legacy_fb_direct_mapped = true;
 			sc->legacy_fb_direct_gpa = address;
 		}
 	}
 
+	if (created)
+		memset(sc->legacy_fb_base, 0, sc->legacy_fb_size);
 	pci_vhost_set_legacy_scanout(sc);
 }
 
@@ -495,6 +543,7 @@ pci_vhost_reset(void *vsc)
 	pci_vhost_clear_features(&sc->vhost);
 	pci_vhost_advance_reset_generation(&sc->vhost);
 	sc->renderer_scanout_active = false;
+	pci_vhost_blank_legacy_fb(sc);
 	pci_vhost_set_legacy_scanout(sc);
 	vi_reset_dev(&sc->vsc_vs);
 	pci_vhost_bind_callbacks(sc);
@@ -629,8 +678,7 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 		sc->queues[i].vq_notify = pci_vhost_queue_notify;
 	}
 	pci_vhost_state_init(&sc->vhost, &sc->vsc_vs, sc->queues,
-	    VHOST_GPU_QUEUE_COUNT, backend_id, device_name, pci_vhost_reset,
-	    sc);
+	    VHOST_GPU_QUEUE_COUNT, backend_id, device_name);
 	pci_vhost_set_device_features_cb(&sc->vhost, pci_vhost_device_features,
 	    sc);
 	pci_vhost_set_event_cb(&sc->vhost, pci_vhost_backend_event, sc);

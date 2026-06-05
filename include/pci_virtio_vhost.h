@@ -10,7 +10,6 @@ struct virtio_softc;
 struct vqueue_info;
 struct vmctx;
 
-typedef void (*pci_vhost_reset_cb)(void *opaque);
 typedef void (*pci_vhost_device_features_cb)(void *opaque,
     uint64_t device_features);
 typedef void (*pci_vhost_event_cb)(void *opaque,
@@ -25,10 +24,8 @@ struct pci_vhost_state {
 	uint64_t features;
 	bool features_negotiated;
 	uint32_t reset_generation;
-	pci_vhost_reset_cb reset_cb;
 	pci_vhost_device_features_cb device_features_cb;
 	pci_vhost_event_cb event_cb;
-	void *reset_opaque;
 	void *device_features_opaque;
 	void *event_opaque;
 };
@@ -39,8 +36,7 @@ struct pci_vhost_transport_info {
 
 void pci_vhost_state_init(struct pci_vhost_state *state,
     struct virtio_softc *vs, struct vqueue_info *queues, uint32_t queue_count,
-    const char *backend_id, const char *device_name, pci_vhost_reset_cb reset_cb,
-    void *reset_opaque);
+    const char *backend_id, const char *device_name);
 void pci_vhost_set_features(struct pci_vhost_state *state, uint64_t features);
 void pci_vhost_clear_features(struct pci_vhost_state *state);
 bool pci_vhost_features_negotiated(const struct pci_vhost_state *state);

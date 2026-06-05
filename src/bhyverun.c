@@ -997,7 +997,6 @@ bhyve_run_configured_vm(void)
 #endif
 
 	console_init();
-	virtio_vhost_transport_init();
 	cnc_start_srv();
 	if (virtio_vhost_transport_connect_configured_backends() != 0) {
 		EPRINTLN("Failed to connect configured virtio vhost backends");
