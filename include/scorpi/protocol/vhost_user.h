@@ -1,6 +1,9 @@
 #pragma once
 
+#include <ctype.h>
+#include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /*
  * Scorpi vhost transport.
@@ -16,6 +19,7 @@
 #define SCORPI_VHOST_MAX_MEMORY_REGIONS 16
 #define SCORPI_VHOST_MAX_QUEUES 16
 #define SCORPI_VHOST_MAX_CONFIG_SIZE 256
+#define SCORPI_VHOST_SCANOUT_NAME_MAX 31
 
 enum scorpi_vhost_msg_type {
 	SCORPI_VHOST_MSG_NONE = 0,
@@ -37,6 +41,8 @@ enum scorpi_vhost_msg_type {
 	SCORPI_VHOST_MSG_QUEUE_KICK = 16,
 	SCORPI_VHOST_MSG_QUEUE_CALL = 17,
 	SCORPI_VHOST_MSG_ERROR = 18,
+	SCORPI_VHOST_MSG_SCANOUT = 19,
+	SCORPI_VHOST_MSG_DIRTY_RECT = 20,
 };
 
 struct scorpi_vhost_header {
@@ -47,9 +53,6 @@ struct scorpi_vhost_header {
 	uint32_t flags;
 	uint32_t size;
 };
-
-#define SCORPI_VHOST_HEADER_SIZE \
-	((uint32_t)sizeof(struct scorpi_vhost_header))
 
 struct scorpi_vhost_hello {
 	uint64_t device_id;
@@ -93,6 +96,28 @@ struct scorpi_vhost_config {
 	uint8_t region[SCORPI_VHOST_MAX_CONFIG_SIZE];
 };
 
+#define SCORPI_VHOST_SCANOUT_F_ENABLED 0x1u
+
+struct scorpi_vhost_scanout {
+	uint32_t flags;
+	uint32_t width;
+	uint32_t height;
+	uint32_t stride;
+	uint32_t format;
+	uint32_t backing_width;
+	uint32_t backing_height;
+	uint32_t reserved;
+	uint64_t shm_size;
+	char shm_name[SCORPI_VHOST_SCANOUT_NAME_MAX + 1];
+};
+
+struct scorpi_vhost_dirty_rect {
+	uint32_t x;
+	uint32_t y;
+	uint32_t width;
+	uint32_t height;
+};
+
 struct scorpi_vhost_msg {
 	struct scorpi_vhost_header header;
 	union {
@@ -102,5 +127,56 @@ struct scorpi_vhost_msg {
 		struct scorpi_vhost_queue_addr queue_addr;
 		struct scorpi_vhost_memory memory;
 		struct scorpi_vhost_config config;
+		struct scorpi_vhost_scanout scanout;
+		struct scorpi_vhost_dirty_rect dirty_rect;
 	} payload;
 };
+
+#define SCORPI_VHOST_HEADER_SIZE \
+	((uint32_t)offsetof(struct scorpi_vhost_msg, payload))
+
+static inline int
+scorpi_vhost_scanout_name_from_socket(const char *socket_path, char *out,
+    size_t out_len)
+{
+	const char *base;
+	size_t base_len;
+	size_t pos;
+	size_t written = 0;
+
+	if (socket_path == NULL || out == NULL || out_len == 0)
+		return (-1);
+
+	base = strrchr(socket_path, '/');
+	base = base == NULL ? socket_path : base + 1;
+	base_len = strlen(base);
+	if (base_len == 0)
+		return (-1);
+	if (base_len > 5 && strcmp(base + base_len - 5, ".sock") == 0)
+		base_len -= 5;
+
+	if (out_len > SCORPI_VHOST_SCANOUT_NAME_MAX)
+		out_len = SCORPI_VHOST_SCANOUT_NAME_MAX;
+	if (out_len < sizeof("/sr-a-0"))
+		return (-1);
+
+	memcpy(out, "/sr-", sizeof("/sr-") - 1);
+	pos = sizeof("/sr-") - 1;
+	for (size_t i = 0; i < base_len && pos + sizeof("-0") < out_len; i++) {
+		unsigned char ch = (unsigned char)base[i];
+
+		if (isalnum(ch) || ch == '-' || ch == '_') {
+			out[pos++] = (char)ch;
+			written++;
+		} else {
+			out[pos++] = '_';
+			written++;
+		}
+	}
+	if (written == 0)
+		return (-1);
+	out[pos++] = '-';
+	out[pos++] = '0';
+	out[pos] = '\0';
+	return (0);
+}

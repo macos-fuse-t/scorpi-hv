@@ -2,6 +2,7 @@
 #include <sys/un.h>
 
 #include <errno.h>
+#include <poll.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -117,6 +118,49 @@ vhost_user_msg_init(struct scorpi_vhost_msg *msg, uint32_t request,
 	msg->header.size = payload_size;
 }
 
+static ssize_t
+vhost_user_read_exact(int fd, void *buf, size_t len)
+{
+	uint8_t *bytes = buf;
+	size_t have = 0;
+
+	while (have < len) {
+		ssize_t rc;
+
+		rc = read(fd, bytes + have, len - have);
+		if (rc == 0) {
+			errno = ECONNRESET;
+			return (-1);
+		}
+		if (rc < 0) {
+			if (errno == EINTR)
+				continue;
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				struct pollfd pfd;
+				int prc;
+
+				pfd.fd = fd;
+				pfd.events = POLLIN;
+				pfd.revents = 0;
+				do {
+					prc = poll(&pfd, 1, -1);
+				} while (prc < 0 && errno == EINTR);
+				if (prc <= 0)
+					return (-1);
+				if ((pfd.revents &
+					(POLLERR | POLLHUP | POLLNVAL)) != 0) {
+					errno = ECONNRESET;
+					return (-1);
+				}
+				continue;
+			}
+			return (-1);
+		}
+		have += (size_t)rc;
+	}
+	return ((ssize_t)have);
+}
+
 ssize_t
 vhost_user_send_msg(int fd, const struct scorpi_vhost_msg *msg, const int *fds,
     size_t fd_count)
@@ -137,9 +181,7 @@ ssize_t
 vhost_user_recv_msg(int fd, struct scorpi_vhost_msg *msg, int *fds,
     size_t max_fds, size_t *fd_count)
 {
-	uint8_t *bytes;
 	size_t expected;
-	size_t have;
 	ssize_t rc;
 
 	if (msg == NULL) {
@@ -147,13 +189,14 @@ vhost_user_recv_msg(int fd, struct scorpi_vhost_msg *msg, int *fds,
 		return (-1);
 	}
 	memset(msg, 0, sizeof(*msg));
-	rc = vhost_user_recv_fds(fd, msg, sizeof(*msg), fds, max_fds, fd_count);
+	rc = vhost_user_recv_fds(fd, msg, SCORPI_VHOST_HEADER_SIZE, fds,
+	    max_fds, fd_count);
 	if (rc <= 0)
 		return (rc);
-	if ((size_t)rc < SCORPI_VHOST_HEADER_SIZE) {
-		errno = EPROTO;
+	if ((size_t)rc < SCORPI_VHOST_HEADER_SIZE &&
+	    vhost_user_read_exact(fd, ((uint8_t *)msg) + rc,
+		SCORPI_VHOST_HEADER_SIZE - (size_t)rc) < 0)
 		return (-1);
-	}
 	if (msg->header.magic != SCORPI_VHOST_MAGIC ||
 	    msg->header.version != SCORPI_VHOST_VERSION ||
 	    msg->header.header_size != SCORPI_VHOST_HEADER_SIZE ||
@@ -163,22 +206,12 @@ vhost_user_recv_msg(int fd, struct scorpi_vhost_msg *msg, int *fds,
 	}
 
 	expected = SCORPI_VHOST_HEADER_SIZE + msg->header.size;
-	have = (size_t)rc;
-	bytes = (uint8_t *)msg;
-	while (have < expected) {
-		rc = read(fd, bytes + have, expected - have);
-		if (rc == 0) {
-			errno = ECONNRESET;
-			return (-1);
-		}
-		if (rc < 0) {
-			if (errno == EINTR || errno == EAGAIN)
-				continue;
-			return (-1);
-		}
-		have += (size_t)rc;
-	}
-	return ((ssize_t)have);
+	if (msg->header.size != 0 &&
+	    vhost_user_read_exact(fd,
+		((uint8_t *)msg) + SCORPI_VHOST_HEADER_SIZE,
+		msg->header.size) < 0)
+		return (-1);
+	return ((ssize_t)expected);
 }
 
 ssize_t

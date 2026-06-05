@@ -26,32 +26,76 @@ pci_vhost_queue_desc_gpa(const struct vqueue_info *vq)
 	return (0);
 }
 
+static uint16_t
+pci_vhost_queue_size_from_gpa(const struct vqueue_info *vq)
+{
+	uint64_t desc_gpa;
+	uint64_t avail_gpa;
+	uint64_t size;
+
+	desc_gpa = pci_vhost_queue_desc_gpa(vq);
+	avail_gpa = vq->vq_avail_gpa;
+	if (desc_gpa == 0 || avail_gpa <= desc_gpa)
+		return (0);
+
+	size = (avail_gpa - desc_gpa) / sizeof(struct vring_desc);
+	if ((avail_gpa - desc_gpa) % sizeof(struct vring_desc) != 0 ||
+	    size == 0 || size > UINT16_MAX || !powerof2((uint32_t)size))
+		return (0);
+
+	return ((uint16_t)size);
+}
+
+static uint16_t
+pci_vhost_queue_size(const struct vqueue_info *vq)
+{
+	uint16_t size;
+
+	if (vq->vq_qsize != 0)
+		return (vq->vq_qsize);
+	size = pci_vhost_queue_size_from_gpa(vq);
+	if (size != 0)
+		return (size);
+	return (vq->vq_maxqsize);
+}
+
 static uint64_t
 pci_vhost_queue_avail_gpa(const struct vqueue_info *vq)
 {
 	uint64_t desc_gpa;
+	uint16_t queue_size;
 
 	if (vq->vq_avail_gpa != 0)
 		return (vq->vq_avail_gpa);
 	desc_gpa = pci_vhost_queue_desc_gpa(vq);
 	if (desc_gpa == 0)
 		return (0);
-	return (desc_gpa + (uint64_t)vq->vq_qsize * sizeof(struct vring_desc));
+	queue_size = pci_vhost_queue_size(vq);
+	return (desc_gpa + (uint64_t)queue_size * sizeof(struct vring_desc));
 }
 
 static uint64_t
 pci_vhost_queue_used_gpa(const struct vqueue_info *vq)
 {
 	uint64_t avail_gpa;
+	uint16_t queue_size;
 
 	if (vq->vq_used_gpa != 0)
 		return (vq->vq_used_gpa);
 	avail_gpa = pci_vhost_queue_avail_gpa(vq);
 	if (avail_gpa == 0)
 		return (0);
+	queue_size = pci_vhost_queue_size(vq);
 	return (roundup2(avail_gpa +
-		(uint64_t)(2 + vq->vq_qsize + 1) * sizeof(uint16_t),
+		(uint64_t)(2 + queue_size + 1) * sizeof(uint16_t),
 	    VRING_ALIGN));
+}
+
+static bool
+pci_vhost_queue_ready(const struct vqueue_info *vq)
+{
+	return (vq_ring_ready((struct vqueue_info *)vq) != 0 &&
+	    vq->vq_enabled && pci_vhost_queue_size(vq) != 0);
 }
 
 static void
@@ -66,7 +110,7 @@ pci_vhost_interrupt(void *opaque, uint32_t queue_index)
 	pthread_mutex_lock(state->vs->vs_mtx);
 	if (queue_index < state->queue_count) {
 		vq = &state->queues[queue_index];
-		if (vq_ring_ready(vq))
+		if (pci_vhost_queue_ready(vq))
 			vq_endchains(vq, 1);
 	}
 	pthread_mutex_unlock(state->vs->vs_mtx);
@@ -131,6 +175,14 @@ pci_vhost_set_device_features_cb(struct pci_vhost_state *state,
 	state->device_features_opaque = opaque;
 }
 
+void
+pci_vhost_set_event_cb(struct pci_vhost_state *state,
+    pci_vhost_event_cb event_cb, void *opaque)
+{
+	state->event_cb = event_cb;
+	state->event_opaque = opaque;
+}
+
 static void
 pci_vhost_device_features(void *opaque, uint64_t device_features)
 {
@@ -140,6 +192,16 @@ pci_vhost_device_features(void *opaque, uint64_t device_features)
 		return;
 	state->device_features_cb(state->device_features_opaque,
 	    device_features);
+}
+
+static void
+pci_vhost_event(void *opaque, const struct scorpi_vhost_msg *msg)
+{
+	struct pci_vhost_state *state = opaque;
+
+	if (state == NULL || state->event_cb == NULL)
+		return;
+	state->event_cb(state->event_opaque, msg);
 }
 
 void
@@ -166,11 +228,11 @@ pci_vhost_bind_transport(struct pci_vhost_state *state, struct vmctx *ctx,
 		struct vqueue_info *vq = &state->queues[i];
 
 		transport.queues[i].index = vq->vq_num;
-		transport.queues[i].size = vq->vq_qsize;
+		transport.queues[i].size = pci_vhost_queue_size(vq);
 		transport.queues[i].desc_addr = pci_vhost_queue_desc_gpa(vq);
 		transport.queues[i].avail_addr = pci_vhost_queue_avail_gpa(vq);
 		transport.queues[i].used_addr = pci_vhost_queue_used_gpa(vq);
-		transport.queues[i].ready = vq_ring_ready(vq) != 0;
+		transport.queues[i].ready = pci_vhost_queue_ready(vq);
 	}
 	vhost_vmmem_fill_transport(ctx, &transport);
 	if (info != NULL && info->ready_queue < transport.queue_count)
@@ -178,7 +240,9 @@ pci_vhost_bind_transport(struct pci_vhost_state *state, struct vmctx *ctx,
 
 	return (virtio_vhost_transport_bind_device(state->backend_id,
 	    &transport, pci_vhost_interrupt, pci_vhost_reset,
-	    state->device_features_cb == NULL ? NULL : pci_vhost_device_features,
+	    state->device_features_cb == NULL ? NULL :
+						pci_vhost_device_features,
+	    state->event_cb == NULL ? NULL : pci_vhost_event,
 	    state));
 }
 

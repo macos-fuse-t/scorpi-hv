@@ -5,12 +5,15 @@
 #include <stdint.h>
 
 #include <scorpi/protocol/virtio_vhost.h>
+#include <scorpi/protocol/vhost_user.h>
 
 typedef void (*virtio_vhost_interrupt_cb)(void *opaque,
     uint32_t queue_index);
 typedef void (*virtio_vhost_reset_cb)(void *opaque);
 typedef void (*virtio_vhost_device_features_cb)(void *opaque,
     uint64_t device_features);
+typedef void (*virtio_vhost_event_cb)(void *opaque,
+    const struct scorpi_vhost_msg *msg);
 
 void virtio_vhost_transport_init(void);
 bool virtio_vhost_transport_registered(const char *backend_id);
@@ -26,7 +29,8 @@ int virtio_vhost_transport_bind_device(const char *backend_id,
     const struct scorpi_virtio_vhost_transport_desc *transport,
     virtio_vhost_interrupt_cb interrupt_cb,
     virtio_vhost_reset_cb reset_cb,
-    virtio_vhost_device_features_cb device_features_cb, void *opaque);
+    virtio_vhost_device_features_cb device_features_cb,
+    virtio_vhost_event_cb event_cb, void *opaque);
 void virtio_vhost_transport_clear_transport(const char *backend_id);
 int virtio_vhost_transport_notify_queue_kick(const char *backend_id,
     uint32_t queue_index);

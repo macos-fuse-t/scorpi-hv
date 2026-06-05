@@ -6,7 +6,6 @@
 
 #include <sys/param.h>
 #include <sys/mman.h>
-#include <sys/queue.h>
 #include <sys/stat.h>
 #include <assert.h>
 #include <errno.h>
@@ -21,8 +20,9 @@
 #include <unistd.h>
 #include <uuid/uuid.h>
 
+#include <scorpi/protocol/vhost_user.h>
+
 #include "bhyverun.h"
-#include "cnc.h"
 #include "config.h"
 #include "console.h"
 #include "debug.h"
@@ -74,17 +74,15 @@ struct pci_vhost_softc {
 	struct vqueue_info queues[VHOST_GPU_QUEUE_COUNT];
 
 	bool legacy_fb_direct_mapped;
+	bool renderer_scanout_active;
 	uint64_t legacy_fb_direct_gpa;
 	char legacy_fb_shm_name[PSHMNAMLEN];
+	char renderer_scanout_shm_name[PSHMNAMLEN];
 	int legacy_fb_shm_fd;
 	uint8_t *legacy_fb_base;
 	size_t legacy_fb_size;
-	LIST_ENTRY(pci_vhost_softc) entries;
+	size_t renderer_scanout_shm_size;
 };
-
-static LIST_HEAD(pci_vhost_gpu_devices, pci_vhost_softc) pci_vhost_gpu_devices =
-    LIST_HEAD_INITIALIZER(pci_vhost_gpu_devices);
-static pthread_mutex_t pci_vhost_gpu_devices_mtx = PTHREAD_MUTEX_INITIALIZER;
 
 extern uuid_t vm_uuid;
 
@@ -99,8 +97,12 @@ static void pci_vhost_barwrite(struct pci_devinst *pi, int baridx,
     uint64_t offset, int size, uint64_t value);
 static void pci_vhost_baraddr(struct pci_devinst *pi, int baridx, int enabled,
     uint64_t address);
-static void pci_vhost_gpu_config(cnc_conn_t c, int req_id, int argc,
-    char *argv[], void *param);
+static void pci_vhost_backend_event(void *opaque,
+    const struct scorpi_vhost_msg *msg);
+static void pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
+    const struct scorpi_vhost_scanout *scanout);
+static void pci_vhost_apply_renderer_dirty_rect(
+    const struct scorpi_vhost_dirty_rect *rect);
 
 static bool
 pci_vhost_mode_supports_hdpi(uint32_t width, uint32_t height)
@@ -178,6 +180,27 @@ pci_vhost_device_features(void *opaque, uint64_t device_features)
 }
 
 static void
+pci_vhost_backend_event(void *opaque, const struct scorpi_vhost_msg *msg)
+{
+	struct pci_vhost_softc *sc = opaque;
+
+	pthread_mutex_lock(&sc->vsc_mtx);
+	switch (msg->header.request) {
+	case SCORPI_VHOST_MSG_SCANOUT:
+		pci_vhost_apply_renderer_scanout(sc, &msg->payload.scanout);
+		break;
+	case SCORPI_VHOST_MSG_DIRTY_RECT:
+		if (sc->renderer_scanout_active)
+			pci_vhost_apply_renderer_dirty_rect(
+			    &msg->payload.dirty_rect);
+		break;
+	default:
+		break;
+	}
+	pthread_mutex_unlock(&sc->vsc_mtx);
+}
+
+static void
 pci_vhost_set_legacy_scanout(struct pci_vhost_softc *sc)
 {
 	uint32_t stride;
@@ -189,6 +212,50 @@ pci_vhost_set_legacy_scanout(struct pci_vhost_softc *sc)
 	console_set_scanout(true, sc->resx, sc->resy, stride,
 	    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, sc->legacy_fb_shm_name,
 	    sc->legacy_fb_size, true);
+}
+
+static void
+pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
+    const struct scorpi_vhost_scanout *scanout)
+{
+	uint32_t stride;
+	uint32_t format;
+
+	if ((scanout->flags & SCORPI_VHOST_SCANOUT_F_ENABLED) == 0 ||
+	    scanout->width == 0 || scanout->height == 0) {
+		sc->renderer_scanout_active = false;
+		pci_vhost_set_legacy_scanout(sc);
+		return;
+	}
+	if (scanout->shm_name[0] == '\0' || scanout->shm_size == 0)
+		return;
+
+	snprintf(sc->renderer_scanout_shm_name,
+	    sizeof(sc->renderer_scanout_shm_name), "%s", scanout->shm_name);
+	sc->renderer_scanout_shm_size = (size_t)scanout->shm_size;
+	stride = scanout->stride != 0 ? scanout->stride : scanout->width * 4;
+	format = scanout->format != 0 ? scanout->format :
+	    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;
+	PRINTLN(
+	    "virtio-gpu-vhost: renderer scanout shm=%s active=%ux%u backing=%ux%u stride=%u size=%zu",
+	    sc->renderer_scanout_shm_name, scanout->width, scanout->height,
+	    scanout->backing_width, scanout->backing_height, stride,
+	    sc->renderer_scanout_shm_size);
+	console_set_scanout(true, scanout->width, scanout->height, stride,
+	    format, sc->renderer_scanout_shm_name,
+	    sc->renderer_scanout_shm_size, true);
+	console_update_scanout_rect(0, 0, scanout->width, scanout->height);
+	sc->renderer_scanout_active = true;
+}
+
+static void
+pci_vhost_apply_renderer_dirty_rect(
+    const struct scorpi_vhost_dirty_rect *rect)
+{
+	if (rect->width == 0 || rect->height == 0)
+		return;
+	console_update_scanout_rect(rect->x, rect->y, rect->width,
+	    rect->height);
 }
 
 static int
@@ -282,11 +349,13 @@ pci_vhost_legacy_ctrl_write(struct pci_vhost_softc *sc, uint64_t offset,
 	switch (offset) {
 	case 4:
 		sc->resx = (uint32_t)value;
-		pci_vhost_set_legacy_scanout(sc);
+		if (!sc->renderer_scanout_active)
+			pci_vhost_set_legacy_scanout(sc);
 		break;
 	case 6:
 		sc->resy = (uint32_t)value;
-		pci_vhost_set_legacy_scanout(sc);
+		if (!sc->renderer_scanout_active)
+			pci_vhost_set_legacy_scanout(sc);
 		break;
 	default:
 		break;
@@ -428,73 +497,6 @@ pci_vhost_gpu_transport_info(struct pci_vhost_softc *sc,
 }
 
 static void
-pci_vhost_gpu_register_device(struct pci_vhost_softc *sc)
-{
-	static int command_registered;
-
-	pthread_mutex_lock(&pci_vhost_gpu_devices_mtx);
-	if (!command_registered) {
-		cnc_register_command(SCORPI_VIRTIO_VHOST_CMD_GPU_CONFIG,
-		    pci_vhost_gpu_config, NULL);
-		command_registered = 1;
-	}
-	LIST_INSERT_HEAD(&pci_vhost_gpu_devices, sc, entries);
-	pthread_mutex_unlock(&pci_vhost_gpu_devices_mtx);
-}
-
-static struct pci_vhost_softc *
-pci_vhost_gpu_find_locked(const char *backend_id)
-{
-	struct pci_vhost_softc *sc;
-
-	LIST_FOREACH(sc, &pci_vhost_gpu_devices, entries) {
-		if (strcmp(sc->vhost.backend_id, backend_id) == 0)
-			return (sc);
-	}
-	return (NULL);
-}
-
-static void
-pci_vhost_gpu_config(cnc_conn_t c, int req_id, int argc, char *argv[],
-    void *param)
-{
-	struct pci_vhost_softc *sc;
-	char response[256];
-	int rc;
-
-	(void)param;
-	if (argc < 1) {
-		cnc_send_response(c, req_id,
-		    "{\"accepted\":false,\"reason\":\"bad_args\"}");
-		return;
-	}
-
-	pthread_mutex_lock(&pci_vhost_gpu_devices_mtx);
-	sc = pci_vhost_gpu_find_locked(argv[0]);
-	if (sc == NULL) {
-		pthread_mutex_unlock(&pci_vhost_gpu_devices_mtx);
-		cnc_send_response(c, req_id,
-		    "{\"accepted\":false,\"reason\":\"not_registered\"}");
-		return;
-	}
-
-	rc = snprintf(response, sizeof(response),
-	    "{\"accepted\":true,\"backend_id\":\"%s\","
-	    "\"display_width\":%u,\"display_height\":%u,"
-	    "\"display_hdpi\":%s}",
-	    sc->vhost.backend_id, sc->resx, sc->resy,
-	    sc->hdpi_enabled ? "true" : "false");
-	pthread_mutex_unlock(&pci_vhost_gpu_devices_mtx);
-
-	if (rc < 0 || (size_t)rc >= sizeof(response)) {
-		cnc_send_response(c, req_id,
-		    "{\"accepted\":false,\"reason\":\"response_too_large\"}");
-		return;
-	}
-	cnc_send_response(c, req_id, response);
-}
-
-static void
 pci_vhost_bind_callbacks(struct pci_vhost_softc *sc)
 {
 	struct pci_vhost_transport_info info;
@@ -511,6 +513,8 @@ pci_vhost_reset(void *vsc)
 
 	pci_vhost_clear_features(&sc->vhost);
 	pci_vhost_advance_reset_generation(&sc->vhost);
+	sc->renderer_scanout_active = false;
+	pci_vhost_set_legacy_scanout(sc);
 	vi_reset_dev(&sc->vsc_vs);
 	pci_vhost_bind_callbacks(sc);
 }
@@ -688,6 +692,7 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 
 	for (uint32_t i = 0; i < VHOST_GPU_QUEUE_COUNT; i++) {
 		sc->queues[i].vq_qsize = VHOST_DEFAULT_QUEUE_SIZE;
+		sc->queues[i].vq_maxqsize = VHOST_DEFAULT_QUEUE_SIZE;
 		sc->queues[i].vq_notify = pci_vhost_queue_notify;
 	}
 	pci_vhost_state_init(&sc->vhost, &sc->vsc_vs, sc->queues,
@@ -695,6 +700,7 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	    sc);
 	pci_vhost_set_device_features_cb(&sc->vhost, pci_vhost_device_features,
 	    sc);
+	pci_vhost_set_event_cb(&sc->vhost, pci_vhost_backend_event, sc);
 
 	pci_set_cfgdata16(pi, PCIR_DEVICE, VIRTIO_DEV_GPU);
 	pci_set_cfgdata16(pi, PCIR_VENDOR, VIRTIO_VENDOR);
@@ -728,7 +734,6 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	pci_emul_set_bar_direct_mapped(pi, VHOST_LEGACY_FB_BAR, 1);
 
 	pci_vhost_bind_callbacks(sc);
-	pci_vhost_gpu_register_device(sc);
 	if (socket_path != NULL &&
 	    virtio_vhost_transport_set_backend_socket(sc->vhost.backend_id,
 		socket_path) != 0) {

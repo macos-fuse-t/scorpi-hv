@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include <scorpi/protocol/virtio_vhost.h>
+#include <scorpi/protocol/vhost_user.h>
 
 struct virtio_softc;
 struct vqueue_info;
@@ -12,6 +13,8 @@ struct vmctx;
 typedef void (*pci_vhost_reset_cb)(void *opaque);
 typedef void (*pci_vhost_device_features_cb)(void *opaque,
     uint64_t device_features);
+typedef void (*pci_vhost_event_cb)(void *opaque,
+    const struct scorpi_vhost_msg *msg);
 
 struct pci_vhost_state {
 	struct virtio_softc *vs;
@@ -24,8 +27,10 @@ struct pci_vhost_state {
 	uint32_t reset_generation;
 	pci_vhost_reset_cb reset_cb;
 	pci_vhost_device_features_cb device_features_cb;
+	pci_vhost_event_cb event_cb;
 	void *reset_opaque;
 	void *device_features_opaque;
+	void *event_opaque;
 };
 
 struct pci_vhost_transport_info {
@@ -41,6 +46,8 @@ void pci_vhost_clear_features(struct pci_vhost_state *state);
 bool pci_vhost_features_negotiated(const struct pci_vhost_state *state);
 void pci_vhost_set_device_features_cb(struct pci_vhost_state *state,
     pci_vhost_device_features_cb device_features_cb, void *opaque);
+void pci_vhost_set_event_cb(struct pci_vhost_state *state,
+    pci_vhost_event_cb event_cb, void *opaque);
 void pci_vhost_advance_reset_generation(struct pci_vhost_state *state);
 int pci_vhost_bind_transport(struct pci_vhost_state *state, struct vmctx *ctx,
     const struct pci_vhost_transport_info *info);
