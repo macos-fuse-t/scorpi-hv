@@ -102,6 +102,8 @@ static void pci_vhost_apply_renderer_dirty_rect(
 static void pci_vhost_blank_legacy_fb(struct pci_vhost_softc *sc);
 static void pci_vhost_unmap_legacy_fb(struct pci_vhost_softc *sc);
 static void pci_vhost_destroy_legacy_fb(struct pci_vhost_softc *sc);
+static void pci_vhost_interrupt_config(struct pci_vhost_softc *sc);
+static void resize_event(int x, int y, void *arg);
 
 static bool
 pci_vhost_mode_supports_hdpi(uint32_t width, uint32_t height)
@@ -259,7 +261,7 @@ pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
 	    sc->renderer_scanout_shm_size);
 	console_set_scanout(true, scanout->width, scanout->height, stride,
 	    format, sc->renderer_scanout_shm_name,
-	    sc->renderer_scanout_shm_size, true);
+	    sc->renderer_scanout_shm_size, false);
 	console_update_scanout_rect(0, 0, scanout->width, scanout->height);
 	sc->renderer_scanout_active = true;
 }
@@ -585,6 +587,54 @@ pci_vhost_cfgwrite(void *vsc, int offset, int size, uint32_t value)
 }
 
 static void
+pci_vhost_interrupt_config(struct pci_vhost_softc *sc)
+{
+	uint16_t msix_idx;
+
+	msix_idx = sc->vsc_vs.vs_msix_cfg_idx;
+	if (msix_idx == VIRTIO_MSI_NO_VECTOR)
+		msix_idx = sc->queues[VHOST_GPU_CTRLQ].vq_msix_idx;
+
+	vi_interrupt(&sc->vsc_vs, VIRTIO_PCI_ISR_CONFIG, msix_idx);
+}
+
+static void
+resize_event(int x, int y, void *arg)
+{
+	struct pci_vhost_softc *sc;
+	char backend_id[SCORPI_VIRTIO_VHOST_NAME_MAX];
+	bool hdpi_enabled;
+	bool valid;
+
+	sc = arg;
+	pthread_mutex_lock(&sc->vsc_mtx);
+
+	valid = x >= VHOST_GPU_COLS_MIN && x <= VHOST_GPU_COLS_MAX &&
+	    y >= VHOST_GPU_ROWS_MIN && y <= VHOST_GPU_ROWS_MAX;
+	if (!valid || (sc->resx == (uint32_t)x && sc->resy == (uint32_t)y)) {
+		pthread_mutex_unlock(&sc->vsc_mtx);
+		return;
+	}
+	sc->resx = x;
+	sc->resy = y;
+	sc->gpu_config.events_read |= VIRTIO_GPU_EVENT_DISPLAY;
+	hdpi_enabled = sc->hdpi_enabled;
+	snprintf(backend_id, sizeof(backend_id), "%s", sc->vhost.backend_id);
+	pthread_mutex_unlock(&sc->vsc_mtx);
+
+	if (virtio_vhost_transport_notify_display_hint(backend_id, (uint32_t)x,
+		(uint32_t)y, hdpi_enabled) != 0) {
+		EPRINTLN(
+		    "virtio-gpu-vhost: failed to send display hint %dx%d",
+		    x, y);
+	}
+
+	pthread_mutex_lock(&sc->vsc_mtx);
+	pci_vhost_interrupt_config(sc);
+	pthread_mutex_unlock(&sc->vsc_mtx);
+}
+
+static void
 pci_vhost_queue_notify(void *vsc, struct vqueue_info *vq)
 {
 	struct pci_vhost_softc *sc = vsc;
@@ -725,6 +775,7 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	}
 	console_set_hdpi(sc->hdpi_enabled);
 	console_set_hardware_mouse(false);
+	console_resize_register(resize_event, sc);
 	return (0);
 }
 

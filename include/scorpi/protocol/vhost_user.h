@@ -43,6 +43,7 @@ enum scorpi_vhost_msg_type {
 	SCORPI_VHOST_MSG_ERROR = 18,
 	SCORPI_VHOST_MSG_SCANOUT = 19,
 	SCORPI_VHOST_MSG_DIRTY_RECT = 20,
+	SCORPI_VHOST_MSG_DISPLAY_HINT = 21,
 };
 
 struct scorpi_vhost_header {
@@ -118,6 +119,13 @@ struct scorpi_vhost_dirty_rect {
 	uint32_t height;
 };
 
+struct scorpi_vhost_display_hint {
+	uint32_t width;
+	uint32_t height;
+	uint32_t hdpi;
+	uint32_t reserved;
+};
+
 struct scorpi_vhost_msg {
 	struct scorpi_vhost_header header;
 	union {
@@ -129,6 +137,7 @@ struct scorpi_vhost_msg {
 		struct scorpi_vhost_config config;
 		struct scorpi_vhost_scanout scanout;
 		struct scorpi_vhost_dirty_rect dirty_rect;
+		struct scorpi_vhost_display_hint display_hint;
 	} payload;
 };
 

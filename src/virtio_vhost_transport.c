@@ -1078,3 +1078,43 @@ virtio_vhost_transport_notify_queue_kick(const char *backend_id,
 	close(fd);
 	return (0);
 }
+
+int
+virtio_vhost_transport_notify_display_hint(const char *backend_id,
+    uint32_t width, uint32_t height, bool hdpi)
+{
+	struct virtio_vhost_transport *backend;
+	struct scorpi_vhost_msg msg;
+	pthread_mutex_t *io_mtx;
+	int fd;
+	int rc;
+
+	if (backend_id == NULL || width == 0 || height == 0)
+		return (-1);
+
+	pthread_mutex_lock(&backends_lock);
+	backend = virtio_vhost_transport_find_locked(backend_id);
+	if (backend == NULL || !backend->connected || backend->fd < 0) {
+		pthread_mutex_unlock(&backends_lock);
+		return (-1);
+	}
+	fd = dup(backend->fd);
+	if (fd < 0) {
+		pthread_mutex_unlock(&backends_lock);
+		return (-1);
+	}
+	io_mtx = &backend->io_mtx;
+	pthread_mutex_unlock(&backends_lock);
+
+	vhost_user_msg_init(&msg, SCORPI_VHOST_MSG_DISPLAY_HINT,
+	    sizeof(msg.payload.display_hint));
+	msg.payload.display_hint.width = width;
+	msg.payload.display_hint.height = height;
+	msg.payload.display_hint.hdpi = hdpi ? 1 : 0;
+
+	pthread_mutex_lock(io_mtx);
+	rc = vhost_user_send_msg(fd, &msg, NULL, 0) < 0 ? -1 : 0;
+	pthread_mutex_unlock(io_mtx);
+	close(fd);
+	return (rc);
+}
