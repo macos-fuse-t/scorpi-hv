@@ -99,6 +99,8 @@ static void pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
     const struct scorpi_vhost_scanout *scanout);
 static void pci_vhost_apply_renderer_dirty_rect(
     const struct scorpi_vhost_dirty_rect *rect);
+static void pci_vhost_apply_renderer_cursor(
+    const struct scorpi_vhost_cursor *cursor);
 static void pci_vhost_blank_legacy_fb(struct pci_vhost_softc *sc);
 static void pci_vhost_unmap_legacy_fb(struct pci_vhost_softc *sc);
 static void pci_vhost_destroy_legacy_fb(struct pci_vhost_softc *sc);
@@ -192,6 +194,9 @@ pci_vhost_backend_event(void *opaque, const struct scorpi_vhost_msg *msg)
 			pci_vhost_apply_renderer_dirty_rect(
 			    &msg->payload.dirty_rect);
 		break;
+	case SCORPI_VHOST_MSG_CURSOR:
+		pci_vhost_apply_renderer_cursor(&msg->payload.cursor);
+		break;
 	default:
 		break;
 	}
@@ -273,6 +278,25 @@ pci_vhost_apply_renderer_dirty_rect(const struct scorpi_vhost_dirty_rect *rect)
 		return;
 	console_update_scanout_rect(rect->x, rect->y, rect->width,
 	    rect->height);
+}
+
+static void
+pci_vhost_apply_renderer_cursor(const struct scorpi_vhost_cursor *cursor)
+{
+	if ((cursor->flags & SCORPI_VHOST_CURSOR_F_MOVE) != 0) {
+		console_move_cursor(cursor->x, cursor->y);
+		return;
+	}
+	if ((cursor->flags & SCORPI_VHOST_CURSOR_F_VISIBLE) == 0) {
+		console_set_mouse_scanout(false, 0, 0, 0, 0, 0, 0, NULL);
+		return;
+	}
+	if (cursor->width == 0 || cursor->height == 0 || cursor->stride == 0 ||
+	    cursor->shm_name[0] == '\0')
+		return;
+	console_set_mouse_scanout(true, cursor->width, cursor->height,
+	    cursor->stride, cursor->format, cursor->hot_x, cursor->hot_y,
+	    cursor->shm_name);
 }
 
 static int

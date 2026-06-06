@@ -12,14 +12,14 @@
  * a frontend exports memory/vrings and a backend owns virtqueue processing.
  */
 
-#define SCORPI_VHOST_MAGIC 0x56534350u /* "PCSV" little endian. */
-#define SCORPI_VHOST_VERSION 1u
-#define SCORPI_VHOST_FLAG_REPLY 0x1u
-#define SCORPI_VHOST_FLAG_NEED_REPLY 0x2u
+#define SCORPI_VHOST_MAGIC		0x56534350u /* "PCSV" little endian. */
+#define SCORPI_VHOST_VERSION		1u
+#define SCORPI_VHOST_FLAG_REPLY		0x1u
+#define SCORPI_VHOST_FLAG_NEED_REPLY	0x2u
 #define SCORPI_VHOST_MAX_MEMORY_REGIONS 16
-#define SCORPI_VHOST_MAX_QUEUES 16
-#define SCORPI_VHOST_MAX_CONFIG_SIZE 256
-#define SCORPI_VHOST_SCANOUT_NAME_MAX 31
+#define SCORPI_VHOST_MAX_QUEUES		16
+#define SCORPI_VHOST_MAX_CONFIG_SIZE	256
+#define SCORPI_VHOST_SCANOUT_NAME_MAX	31
 
 enum scorpi_vhost_msg_type {
 	SCORPI_VHOST_MSG_NONE = 0,
@@ -44,6 +44,7 @@ enum scorpi_vhost_msg_type {
 	SCORPI_VHOST_MSG_SCANOUT = 19,
 	SCORPI_VHOST_MSG_DIRTY_RECT = 20,
 	SCORPI_VHOST_MSG_DISPLAY_HINT = 21,
+	SCORPI_VHOST_MSG_CURSOR = 22,
 };
 
 struct scorpi_vhost_header {
@@ -87,7 +88,8 @@ struct scorpi_vhost_memory_region {
 struct scorpi_vhost_memory {
 	uint32_t nregions;
 	uint32_t padding;
-	struct scorpi_vhost_memory_region regions[SCORPI_VHOST_MAX_MEMORY_REGIONS];
+	struct scorpi_vhost_memory_region
+	    regions[SCORPI_VHOST_MAX_MEMORY_REGIONS];
 };
 
 struct scorpi_vhost_config {
@@ -126,6 +128,23 @@ struct scorpi_vhost_display_hint {
 	uint32_t reserved;
 };
 
+#define SCORPI_VHOST_CURSOR_F_VISIBLE 0x1u
+#define SCORPI_VHOST_CURSOR_F_MOVE    0x2u
+
+struct scorpi_vhost_cursor {
+	uint32_t flags;
+	uint32_t x;
+	uint32_t y;
+	uint32_t hot_x;
+	uint32_t hot_y;
+	uint32_t width;
+	uint32_t height;
+	uint32_t stride;
+	uint32_t format;
+	uint32_t reserved;
+	char shm_name[SCORPI_VHOST_SCANOUT_NAME_MAX + 1];
+};
+
 struct scorpi_vhost_msg {
 	struct scorpi_vhost_header header;
 	union {
@@ -138,6 +157,7 @@ struct scorpi_vhost_msg {
 		struct scorpi_vhost_scanout scanout;
 		struct scorpi_vhost_dirty_rect dirty_rect;
 		struct scorpi_vhost_display_hint display_hint;
+		struct scorpi_vhost_cursor cursor;
 	} payload;
 };
 
