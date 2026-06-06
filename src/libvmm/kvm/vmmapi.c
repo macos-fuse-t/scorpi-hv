@@ -460,7 +460,10 @@ vm_setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
 	int fd;
 
 	vhost_vmmem_shm_name(name, sizeof(name), suffix);
-	fd = shm_open(name, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR);
+	if (shm_unlink(name) == -1 && errno != ENOENT)
+		return (errno);
+
+	fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, S_IRUSR | S_IWUSR);
 	if (fd == -1)
 		return (errno);
 
@@ -476,7 +479,6 @@ vm_setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
 	if (object == MAP_FAILED)
 		return (error);
 
-	memset(object, 0, len);
 	mapped_addr = (uintptr_t)object;
 	error = vm_setup_memory_segment_internal(ctx, gpa, len,
 	    prot | PROT_DONT_ALLOCATE, &mapped_addr);
