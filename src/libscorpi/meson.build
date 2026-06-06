@@ -40,6 +40,7 @@ install_headers(
   subdir: 'scorpi',
 )
 install_headers(
+  '../../include/scorpi/protocol/endian.h',
   '../../include/scorpi/protocol/virtio_gpu.h',
   '../../include/scorpi/protocol/virtio_ring.h',
   '../../include/scorpi/protocol/virtio_vhost.h',
