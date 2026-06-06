@@ -37,7 +37,7 @@
 #include "cnc.h"
 #include "console.h"
 
-#define BUFSIZE 1024
+#define BUFSIZE		     1024
 #define CONSOLE_SHM_NAME_MAX 256
 
 static struct {
@@ -183,8 +183,7 @@ console_set_mouse_scanout(bool scanout_active, int w, int h, int stride,
 		    "\"shm_name\": \"%s\""
 		    "}"
 		    "}",
-		    hot_x, hot_y, w, h, stride, format,
-		    console.mouse_shm_name);
+		    hot_x, hot_y, w, h, stride, format, console.mouse_shm_name);
 
 	cnc_send_notification(notification);
 }
@@ -329,8 +328,7 @@ get_framebuffer(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	    console.stride, console.format, console.shm_name, console.shm_size,
 	    console.redrawOnTimer ? "true" : "false", console.mouse_hot_x,
 	    console.mouse_hot_y, console.mouse_w, console.mouse_h,
-	    console.mouse_stride, console.mouse_format,
-	    console.mouse_shm_name);
+	    console.mouse_stride, console.mouse_format, console.mouse_shm_name);
 	cnc_send_response(c, req_id, rsp);
 }
 

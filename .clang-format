@@ -98,7 +98,6 @@ ForEachMacros:
 SpaceBeforeParens: ControlStatementsExceptForEachMacros
 IndentCaseLabels: false
 IndentPPDirectives: None
-Language: C
 NamespaceIndentation: None
 PointerAlignment: Right
 ContinuationIndentWidth: 4

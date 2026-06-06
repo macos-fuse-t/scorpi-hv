@@ -30,22 +30,23 @@
 
 #include <sys/queue.h>
 
-typedef struct cnc_conn_t* cnc_conn_t;
+typedef struct cnc_conn_t *cnc_conn_t;
 
-typedef void (*CMD_HANDLER)(cnc_conn_t conn,  int req_id, int argc, char *argv[], void *param);
+typedef void (*CMD_HANDLER)(cnc_conn_t conn, int req_id, int argc, char *argv[],
+    void *param);
 
 struct cnc_command {
-    const char* cmd;
-    CMD_HANDLER cmd_handler;
+	const char *cmd;
+	CMD_HANDLER cmd_handler;
 
-    const void* param;
+	const void *param;
 
-    LIST_ENTRY(cnc_command) entries; 
+	LIST_ENTRY(cnc_command) entries;
 };
 
-void  cnc_register_command(const char *cmd, CMD_HANDLER handler, void *param);
-void  cnc_unregister_commands_by_param(void *param);
-int   cnc_start_srv();
+void cnc_register_command(const char *cmd, CMD_HANDLER handler, void *param);
+void cnc_unregister_commands_by_param(void *param);
+int cnc_start_srv();
 
 void cnc_send_response(struct cnc_conn_t *c, int response_id, const char *data);
 void cnc_send_notification(const char *data);
