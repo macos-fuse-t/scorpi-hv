@@ -39,10 +39,3 @@ cnc_send_notification(const char *data)
 {
 	(void)data;
 }
-
-void
-cnc_send_notification_to(struct cnc_conn_t *c, const char *data)
-{
-	(void)c;
-	(void)data;
-}

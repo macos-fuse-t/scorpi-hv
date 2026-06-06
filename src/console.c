@@ -28,12 +28,10 @@
  */
 
 #include <sys/types.h>
-#include <sys/socket.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "bhyvegc.h"
 #include "cnc.h"
@@ -373,122 +371,6 @@ kbd_event(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	}
 }
 
-static uint32_t
-console_parse_u32_arg(const char *arg)
-{
-	return ((uint32_t)strtoul(arg, NULL, 10));
-}
-
-static uint64_t
-console_parse_u64_arg(const char *arg)
-{
-	return ((uint64_t)strtoull(arg, NULL, 10));
-}
-
-static void
-renderer_set_scanout(cnc_conn_t c, int req_id, int argc, char *argv[],
-    void *param)
-{
-	uint32_t width, height, stride, format;
-	uint64_t shm_size;
-	bool redraw_on_timer;
-
-	(void)param;
-	(void)c;
-	(void)req_id;
-	if (argc < 7)
-		return;
-
-	width = console_parse_u32_arg(argv[0]);
-	height = console_parse_u32_arg(argv[1]);
-	stride = console_parse_u32_arg(argv[2]);
-	format = console_parse_u32_arg(argv[3]);
-	shm_size = console_parse_u64_arg(argv[5]);
-	redraw_on_timer = strcmp(argv[6], "true") == 0 ||
-	    strcmp(argv[6], "1") == 0;
-
-	console_set_scanout(true, width, height, stride, format, argv[4],
-	    shm_size, redraw_on_timer);
-}
-
-static void
-renderer_update_scanout(cnc_conn_t c, int req_id, int argc, char *argv[],
-    void *param)
-{
-	(void)param;
-	(void)c;
-	(void)req_id;
-	if (argc < 4)
-		return;
-
-	console_update_scanout_rect(console_parse_u32_arg(argv[0]),
-	    console_parse_u32_arg(argv[1]), console_parse_u32_arg(argv[2]),
-	    console_parse_u32_arg(argv[3]));
-}
-
-static void
-renderer_unset_scanout(cnc_conn_t c, int req_id, int argc, char *argv[],
-    void *param)
-{
-	(void)argc;
-	(void)argv;
-	(void)param;
-	(void)c;
-	(void)req_id;
-
-	console_set_scanout(false, 0, 0, 0, 0, NULL, 0, false);
-}
-
-static void
-renderer_set_cursor(cnc_conn_t c, int req_id, int argc, char *argv[],
-    void *param)
-{
-	uint32_t width, height, stride, format, hot_x, hot_y;
-
-	(void)param;
-	(void)c;
-	(void)req_id;
-	if (argc < 7)
-		return;
-
-	width = console_parse_u32_arg(argv[0]);
-	height = console_parse_u32_arg(argv[1]);
-	stride = console_parse_u32_arg(argv[2]);
-	format = console_parse_u32_arg(argv[3]);
-	hot_x = console_parse_u32_arg(argv[4]);
-	hot_y = console_parse_u32_arg(argv[5]);
-
-	console_set_mouse_scanout(true, width, height, stride, format, hot_x,
-	    hot_y, argv[6]);
-}
-
-static void
-renderer_move_cursor(cnc_conn_t c, int req_id, int argc, char *argv[],
-    void *param)
-{
-	(void)param;
-	(void)c;
-	(void)req_id;
-	if (argc < 2)
-		return;
-
-	console_move_cursor(console_parse_u32_arg(argv[0]),
-	    console_parse_u32_arg(argv[1]));
-}
-
-static void
-renderer_unset_cursor(cnc_conn_t c, int req_id, int argc, char *argv[],
-    void *param)
-{
-	(void)argc;
-	(void)argv;
-	(void)param;
-	(void)c;
-	(void)req_id;
-
-	console_set_mouse_scanout(false, 0, 0, 0, 0, 0, 0, NULL);
-}
-
 void
 console_init()
 {
@@ -500,18 +382,6 @@ console_init()
 		    NULL);
 		cnc_register_command("mouse_event", mouse_event, NULL);
 		cnc_register_command("key_event", kbd_event, NULL);
-		cnc_register_command("renderer_set_scanout",
-		    renderer_set_scanout, NULL);
-		cnc_register_command("renderer_update_scanout",
-		    renderer_update_scanout, NULL);
-		cnc_register_command("renderer_unset_scanout",
-		    renderer_unset_scanout, NULL);
-		cnc_register_command("renderer_set_cursor", renderer_set_cursor,
-		    NULL);
-		cnc_register_command("renderer_move_cursor",
-		    renderer_move_cursor, NULL);
-		cnc_register_command("renderer_unset_cursor",
-		    renderer_unset_cursor, NULL);
 	}
 	once = 1;
 }
