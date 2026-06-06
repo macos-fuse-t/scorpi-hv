@@ -23,7 +23,7 @@ Windows guest
        -> kick/call fd wiring
        -> interrupt injection
   -> Scorpi vhost Unix domain socket
-  -> scorpi-gpu-renderer process
+  -> GPU renderer backend process
        -> Scorpi vhost backend server
        -> direct virtqueue descriptor reader
        -> virtio-gpu and future D3D12 command frontend
@@ -43,7 +43,7 @@ Windows guest
 `scorpi-hv` must not parse, copy, or forward virtio-gpu or D3D12 command
 payloads on renderer-owned queues.
 
-`scorpi-gpu-renderer` owns:
+The GPU renderer backend owns:
 
 - Scorpi vhost backend server socket;
 - guest memory mapping from Scorpi vhost memory table fds;
@@ -76,7 +76,7 @@ Production transport properties:
 
 ## Run And Configure
 
-`scorpi-gpu-renderer` is launched separately and must own the backend socket.
+The GPU renderer backend is launched separately and must own the backend socket.
 `scorpi-hv` connects to that socket when the VM starts; it does not spawn the
 renderer and it does not send host display dimensions. The renderer probes host
 display limits, publishes EDID/display modes, creates scanout shared memory, and
@@ -85,8 +85,8 @@ notifies `scorpi-hv` about scanout and dirty-rectangle updates.
 Start the renderer first:
 
 ```sh
-cd /Users/alexf/work/scorpi-gpu-renderer
-./build/scorpi-gpu-renderer \
+cd <gpu-renderer-checkout>
+./build/<gpu-renderer-binary> \
   --backend metal \
   --listen /tmp/scorpi-vm1-gpu.sock
 ```
@@ -94,7 +94,7 @@ cd /Users/alexf/work/scorpi-gpu-renderer
 Then start the VM:
 
 ```sh
-cd /Users/alexf/work/scorpi-hv
+cd <scorpi-hv-checkout>
 ./build-macos-arm64/scorpi-hv -f ./win2.yaml
 ```
 
@@ -161,7 +161,7 @@ scorpi-hv
 Backends should be separate processes:
 
 ```text
-scorpi-gpu-renderer
+GPU renderer backend
 scorpi-fs-backend       future
 other Scorpi vhost backends
 ```

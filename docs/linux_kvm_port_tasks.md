@@ -29,7 +29,7 @@ Current status, 2026-05-15:
 ## Milestone 0: Linux Build Baseline
 
 - [x] Verify the Linux guest path used for development:
-  `scorpi run alma -- sh -lc 'cd /home/alexf/scorpi-hv && ...'`.
+  `scorpi run alma -- sh -lc 'cd <scorpi-hv-checkout> && ...'`.
 - [x] Install or document Linux build dependencies:
   - `meson`
   - `ninja`
