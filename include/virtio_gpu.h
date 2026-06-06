@@ -63,6 +63,11 @@
  */
 #define VIRTIO_GPU_F_CONTEXT_INIT        4
 
+/*
+ * Scorpi private extension: DX12 command transport support.
+ */
+#define VIRTIO_GPU_F_SCORPI_DX12         10
+
 enum virtio_gpu_ctrl_type {
 	VIRTIO_GPU_UNDEFINED = 0,
 
