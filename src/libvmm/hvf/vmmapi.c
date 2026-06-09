@@ -339,6 +339,8 @@ vm_close(struct vmctx *ctx)
 			free(seg->object);
 		} else if (seg->shm_suffix[0] != '\0') {
 			munmap(seg->object, seg->len);
+			if (seg->shm_fd >= 0)
+				close(seg->shm_fd);
 			vhost_vmmem_shm_name(name, sizeof(name),
 			    seg->shm_suffix);
 			shm_unlink(name);
@@ -706,6 +708,7 @@ vm_malloc(struct vmctx *ctx, uint64_t gpa, size_t len, uint64_t prot,
 	seg->prot = prot;
 	seg->active = false;
 	seg->owned = owned;
+	seg->shm_fd = -1;
 
 	if (vm_map_range(seg, true) != 0) {
 		EPRINTLN("hv_vm_map() failed");
@@ -781,6 +784,7 @@ setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
 
 	range_start_count = ctx->num_mem_ranges;
 	chunk_index = 0;
+	fd = -1;
 	for (offset = 0; offset < len; offset += chunk_len) {
 		uintptr_t mapped_addr;
 
@@ -812,9 +816,12 @@ setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
 		object = mmap((void *)((uintptr_t)base + offset), chunk_len,
 		    PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
 		error = errno;
-		close(fd);
 		if (object == MAP_FAILED)
 			goto fail;
+		if (shm_unlink(name) == -1) {
+			error = errno;
+			goto fail;
+		}
 
 		memset(object, 0, chunk_len);
 		mapped_addr = (uintptr_t)object;
@@ -827,7 +834,12 @@ setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
 			strlcpy(ctx->mem_ranges[old_range_count].shm_suffix,
 			    chunk_suffix,
 			    sizeof(ctx->mem_ranges[old_range_count].shm_suffix));
+			ctx->mem_ranges[old_range_count].shm_fd = fd;
+			fd = -1;
 		}
+		if (fd >= 0)
+			close(fd);
+		fd = -1;
 		chunk_index++;
 	}
 	if (addr != NULL)
@@ -839,8 +851,12 @@ fail:
 		if (ctx->mem_ranges[i].active)
 			hv_vm_unmap(ctx->mem_ranges[i].gpa,
 			    ctx->mem_ranges[i].len);
+		if (ctx->mem_ranges[i].shm_fd >= 0)
+			close(ctx->mem_ranges[i].shm_fd);
 		memset(&ctx->mem_ranges[i], 0, sizeof(ctx->mem_ranges[i]));
 	}
+	if (fd >= 0)
+		close(fd);
 	ctx->num_mem_ranges = range_start_count;
 	munmap(base, len);
 	for (unsigned int i = 0; i <= chunk_index; i++) {
@@ -1013,7 +1029,7 @@ vm_get_highmem_size(struct vmctx *ctx)
 
 int
 vm_get_external_memory_region(struct vmctx *ctx, unsigned int index,
-    vm_paddr_t *gpa, size_t *len, char *suffix, size_t suffix_len)
+    vm_paddr_t *gpa, size_t *len, char *suffix, size_t suffix_len, int *fd)
 {
 	unsigned int match;
 
@@ -1031,6 +1047,8 @@ vm_get_external_memory_region(struct vmctx *ctx, unsigned int index,
 			*len = seg->len;
 		if (suffix != NULL && suffix_len > 0)
 			strlcpy(suffix, seg->shm_suffix, suffix_len);
+		if (fd != NULL)
+			*fd = seg->shm_fd;
 		return (0);
 	}
 

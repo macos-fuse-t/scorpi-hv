@@ -45,6 +45,7 @@ struct mem_range {
 	uint64_t prot;
 	bool active;
 	bool owned;
+	int shm_fd;
 	char shm_suffix[64];
 };
 

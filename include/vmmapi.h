@@ -153,7 +153,8 @@ size_t	vm_get_lowmem_size(struct vmctx *ctx);
 vm_paddr_t vm_get_highmem_base(struct vmctx *ctx);
 size_t	vm_get_highmem_size(struct vmctx *ctx);
 int	vm_get_external_memory_region(struct vmctx *ctx, unsigned int index,
-	    vm_paddr_t *gpa, size_t *len, char *suffix, size_t suffix_len);
+	    vm_paddr_t *gpa, size_t *len, char *suffix, size_t suffix_len,
+	    int *fd);
 #ifdef __amd64__
 int	vm_set_desc(struct vcpu *vcpu, int reg,
 		    uint64_t base, uint32_t limit, uint32_t access);

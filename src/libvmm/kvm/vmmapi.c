@@ -575,8 +575,11 @@ vm_get_highmem_size(struct vmctx *ctx)
 
 int
 vm_get_external_memory_region(struct vmctx *ctx, unsigned int index,
-    vm_paddr_t *gpa, size_t *len, char *suffix, size_t suffix_len)
+    vm_paddr_t *gpa, size_t *len, char *suffix, size_t suffix_len, int *fd)
 {
+	if (fd != NULL)
+		*fd = -1;
+
 	if (index == 0 && ctx->memsegs[VM_MEMSEG_LOW].size > 0) {
 		if (gpa != NULL)
 			*gpa = 0;

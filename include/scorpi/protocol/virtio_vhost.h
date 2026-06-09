@@ -22,6 +22,7 @@ struct scorpi_virtio_vhost_memory_region_desc {
 	uint32_t index;
 	uint64_t guest_phys_addr;
 	uint64_t size;
+	int shm_fd;
 	char shm_name[SCORPI_VIRTIO_VHOST_NAME_MAX];
 	uint64_t shm_offset;
 };

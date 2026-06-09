@@ -293,10 +293,14 @@ virtio_vhost_transport_open_memory_fds(
 	for (uint32_t i = 0; i < transport->memory_region_count; i++) {
 		if (i >= VHOST_USER_MAX_FDS)
 			return (-1);
-		fds[i] = shm_open(transport->memory_regions[i].shm_name, O_RDWR,
-		    0);
+		if (transport->memory_regions[i].shm_fd >= 0) {
+			fds[i] = dup(transport->memory_regions[i].shm_fd);
+		} else {
+			fds[i] = shm_open(
+			    transport->memory_regions[i].shm_name, O_RDWR, 0);
+		}
 		if (fds[i] < 0) {
-			EPRINTLN("virtio vhost: shm_open %s: %s",
+			EPRINTLN("virtio vhost: open memory region %s: %s",
 			    transport->memory_regions[i].shm_name,
 			    strerror(errno));
 			*fd_count = i;
