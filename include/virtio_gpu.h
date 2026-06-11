@@ -42,31 +42,36 @@
  * VIRTIO_GPU_CMD_CTX_*
  * VIRTIO_GPU_CMD_*_3D
  */
-#define VIRTIO_GPU_F_VIRGL               0
+#define VIRTIO_GPU_F_VIRGL 0
 
 /*
  * VIRTIO_GPU_CMD_GET_EDID
  */
-#define VIRTIO_GPU_F_EDID                1
+#define VIRTIO_GPU_F_EDID 1
 /*
  * VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID
  */
-#define VIRTIO_GPU_F_RESOURCE_UUID       2
+#define VIRTIO_GPU_F_RESOURCE_UUID 2
 
 /*
  * VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB
  */
-#define VIRTIO_GPU_F_RESOURCE_BLOB       3
+#define VIRTIO_GPU_F_RESOURCE_BLOB 3
 /*
  * VIRTIO_GPU_CMD_CREATE_CONTEXT with
  * context_init and multiple timelines
  */
-#define VIRTIO_GPU_F_CONTEXT_INIT        4
+#define VIRTIO_GPU_F_CONTEXT_INIT 4
 
 /*
  * Scorpi private extension: DX12 command transport support.
  */
-#define VIRTIO_GPU_F_SCORPI_DX12         10
+#define VIRTIO_GPU_F_SCORPI_DX12 10
+
+/*
+ * Scorpi private extension: guest-to-renderer text log queue.
+ */
+#define VIRTIO_GPU_F_SCORPI_LOGS 11
 
 enum virtio_gpu_ctrl_type {
 	VIRTIO_GPU_UNDEFINED = 0,
@@ -130,7 +135,7 @@ enum virtio_gpu_shm_id {
 	VIRTIO_GPU_SHM_ID_HOST_VISIBLE = 1
 };
 
-#define VIRTIO_GPU_FLAG_FENCE         (1 << 0)
+#define VIRTIO_GPU_FLAG_FENCE (1 << 0)
 /*
  * If the following flag is set, then ring_idx contains the index
  * of the command ring that needs to used when creating the fence
@@ -158,10 +163,10 @@ struct virtio_gpu_cursor_pos {
 /* VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_CMD_MOVE_CURSOR */
 struct virtio_gpu_update_cursor {
 	struct virtio_gpu_ctrl_hdr hdr;
-	struct virtio_gpu_cursor_pos pos;  /* update & move */
-	uint32_t resource_id;           /* update only */
-	uint32_t hot_x;                 /* update only */
-	uint32_t hot_y;                 /* update only */
+	struct virtio_gpu_cursor_pos pos; /* update & move */
+	uint32_t resource_id;		  /* update only */
+	uint32_t hot_x;			  /* update only */
+	uint32_t hot_y;			  /* update only */
 	uint32_t padding;
 };
 
@@ -310,7 +315,7 @@ struct virtio_gpu_cmd_submit {
 	uint32_t padding;
 };
 
-#define VIRTIO_GPU_CAPSET_VIRGL 1
+#define VIRTIO_GPU_CAPSET_VIRGL	 1
 #define VIRTIO_GPU_CAPSET_VIRGL2 2
 
 /* VIRTIO_GPU_CMD_GET_CAPSET_INFO */
@@ -368,16 +373,16 @@ struct virtio_gpu_config {
 
 /* simple formats for fbcon/X use */
 enum virtio_gpu_formats {
-	VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM  = 1,
-	VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM  = 2,
-	VIRTIO_GPU_FORMAT_A8R8G8B8_UNORM  = 3,
-	VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM  = 4,
+	VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM = 1,
+	VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM = 2,
+	VIRTIO_GPU_FORMAT_A8R8G8B8_UNORM = 3,
+	VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM = 4,
 
-	VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM  = 67,
-	VIRTIO_GPU_FORMAT_X8B8G8R8_UNORM  = 68,
+	VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM = 67,
+	VIRTIO_GPU_FORMAT_X8B8G8R8_UNORM = 68,
 
-	VIRTIO_GPU_FORMAT_A8B8G8R8_UNORM  = 121,
-	VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM  = 134,
+	VIRTIO_GPU_FORMAT_A8B8G8R8_UNORM = 121,
+	VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM = 134,
 };
 
 /* VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID */
@@ -397,8 +402,8 @@ struct virtio_gpu_resp_resource_uuid {
 struct virtio_gpu_resource_create_blob {
 	struct virtio_gpu_ctrl_hdr hdr;
 	uint32_t resource_id;
-#define VIRTIO_GPU_BLOB_MEM_GUEST             0x0001
-#define VIRTIO_GPU_BLOB_MEM_HOST3D            0x0002
+#define VIRTIO_GPU_BLOB_MEM_GUEST	      0x0001
+#define VIRTIO_GPU_BLOB_MEM_HOST3D	      0x0002
 #define VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST      0x0003
 
 #define VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE     0x0001
@@ -442,7 +447,7 @@ struct virtio_gpu_resource_map_blob {
 #define VIRTIO_GPU_MAP_CACHE_NONE     0x00
 #define VIRTIO_GPU_MAP_CACHE_CACHED   0x01
 #define VIRTIO_GPU_MAP_CACHE_UNCACHED 0x02
-#define VIRTIO_GPU_MAP_CACHE_WC       0x03
+#define VIRTIO_GPU_MAP_CACHE_WC	      0x03
 struct virtio_gpu_resp_map_info {
 	struct virtio_gpu_ctrl_hdr hdr;
 	uint32_t map_info;

@@ -36,7 +36,7 @@
 #define VHOST_DEFAULT_BACKEND_ID  "gpu0"
 #define VHOST_DEFAULT_DEVICE_NAME SCORPI_VIRTIO_VHOST_DEVICE_GPU
 #define VHOST_DEFAULT_QUEUE_SIZE  1024
-#define VHOST_GPU_QUEUE_COUNT	  2
+#define VHOST_GPU_QUEUE_COUNT	  3
 #define VHOST_GPU_CTRLQ		  0
 #define VHOST_GPU_COLS_MAX	  7680
 #define VHOST_GPU_ROWS_MAX	  4320
@@ -52,9 +52,9 @@
 #define VHOST_LEGACY_RESOURCE_ID  0xFFFFFFFF
 #define VHOST_GPU_TRANSPORT_FEATURES \
 	(VIRTIO_RING_F_INDIRECT_DESC | VIRTIO_F_VERSION_1)
-#define VHOST_GPU_DEVICE_FEATURES \
-	((1ULL << VIRTIO_GPU_F_EDID) | \
-	    (1ULL << VIRTIO_GPU_F_SCORPI_DX12))
+#define VHOST_GPU_DEVICE_FEATURES                                           \
+	((1ULL << VIRTIO_GPU_F_EDID) | (1ULL << VIRTIO_GPU_F_SCORPI_DX12) | \
+	    (1ULL << VIRTIO_GPU_F_SCORPI_LOGS))
 
 struct pci_vhost_softc {
 	struct virtio_softc vsc_vs;
@@ -650,8 +650,7 @@ resize_event(int x, int y, void *arg)
 
 	if (virtio_vhost_transport_notify_display_hint(backend_id, (uint32_t)x,
 		(uint32_t)y, hdpi_enabled) != 0) {
-		EPRINTLN(
-		    "virtio-gpu-vhost: failed to send display hint %dx%d",
+		EPRINTLN("virtio-gpu-vhost: failed to send display hint %dx%d",
 		    x, y);
 	}
 
