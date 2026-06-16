@@ -71,6 +71,7 @@ static int unet_debug = 0;
 #define DEFAULT_MAC_ADDR "00:CD:56:3B:42:70"
 #define UNET_MAC_STRING_LEN 13
 #define UNET_MTU_SIZE	 1514
+#define UNET_NTB_DEFAULT_SIZE 8192
 #define UNET_NTB_MAX_SIZE 65536
 #define UNET_NTB_MAX_FRAMES 32
 #define UNET_NTB_MAX_IN_DGRAMS 8
@@ -299,11 +300,11 @@ static struct unet_bos_desc unet_bosd = {
 struct usb_ncm_parameters ncm_params = {
 	MSETW(.wLength, sizeof(struct usb_ncm_parameters)),
 	.bmNtbFormatsSupported[0] = UCDC_NCM_FORMAT_NTB16,
-	MSETDW(.dwNtbInMaxSize, 8192),
+	MSETDW(.dwNtbInMaxSize, UNET_NTB_DEFAULT_SIZE),
 	.wNdpInDivisor[0] = 4,
 	.wNdpInPayloadRemainder[0] = 0,
 	.wNdpInAlignment[0] = 4,
-	MSETDW(.dwNtbOutMaxSize, 8192),
+	MSETDW(.dwNtbOutMaxSize, UNET_NTB_DEFAULT_SIZE),
 	.wNdpOutDivisor[0] = 4,
 	.wNdpOutPayloadRemainder = { 0 },
 	.wNdpOutAlignment[0] = 4,
@@ -378,8 +379,8 @@ unet_init(struct usb_hci *hci, nvlist_t *nvl)
 	sc->hci = hci;
 
 	sc->ntb_format = UCDC_NCM_FORMAT_NTB16;
-	sc->max_dgram = 8192;
-	sc->ntb_input_size = UNET_NTB_MAX_SIZE;
+	sc->max_dgram = UNET_MTU_SIZE;
+	sc->ntb_input_size = UNET_NTB_DEFAULT_SIZE;
 
 	pthread_mutexattr_init(&attr);
 	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
@@ -441,6 +442,8 @@ unet_request(void *scarg, struct usb_data_xfer *xfer)
 	uint16_t index;
 	uint16_t len;
 	uint16_t slen;
+	uint16_t max_dgram;
+	uint32_t ntb_input_size;
 	uint8_t *udata;
 	int err;
 	int i, idx;
@@ -768,14 +771,15 @@ unet_request(void *scarg, struct usb_data_xfer *xfer)
 		    "unet: (UCDC_NCM_SET_NTB_INPUT_SIZE, UT_WRITE_CLASS_INTERFACE)"));
 		if (!data || len < 4)
 			break;
-		sc->ntb_input_size = usb_extract_u32(data->buf);
-		if (sc->ntb_input_size < sizeof(struct usb_ncm16_hdr) +
+		ntb_input_size = usb_extract_u32(data->buf);
+		if (ntb_input_size < sizeof(struct usb_ncm16_hdr) +
 		    sizeof(struct usb_ncm16_dpt) +
 		    (2 * sizeof(struct usb_ncm16_dp)) ||
-		    sc->ntb_input_size > UNET_NTB_MAX_SIZE) {
+		    ntb_input_size > UNET_NTB_MAX_SIZE) {
 			err = USB_ERR_STALLED;
 			goto done;
 		}
+		sc->ntb_input_size = ntb_input_size;
 		break;
 
 	case UREQ(UCDC_NCM_SET_MAX_DATAGRAM_SIZE, UT_WRITE_CLASS_INTERFACE):
@@ -783,7 +787,12 @@ unet_request(void *scarg, struct usb_data_xfer *xfer)
 		    "unet: (UCDC_NCM_SET_MAX_DATAGRAM_SIZE, UT_WRITE_CLASS_INTERFACE)"));
 		if (!data || len < 2)
 			break;
-		sc->max_dgram = usb_extract_u16(data->buf);
+		max_dgram = usb_extract_u16(data->buf);
+		if (max_dgram == 0 || max_dgram > UNET_MTU_SIZE) {
+			err = USB_ERR_STALLED;
+			goto done;
+		}
+		sc->max_dgram = max_dgram;
 		break;
 
 	case UREQ(UCDC_NCM_SET_ETHERNET_PACKET_FILTER, UT_READ_CLASS_INTERFACE):
@@ -862,6 +871,7 @@ unet_process_bulk_out_packet(struct unet_softc *sc, struct iovec *iov,
 		if (avail < sizeof(ntb)) {
 			DPRINTF(("unet bulk-out: partial NTB tail %zu byte(s) left in TRB",
 			    avail));
+			consumed += avail;
 			break;
 		}
 
@@ -886,6 +896,7 @@ unet_process_bulk_out_packet(struct unet_softc *sc, struct iovec *iov,
 		if (block_len > avail) {
 			WPRINTF(("unet bulk-out: NTB crosses TRB boundary: block=%u avail=%zu",
 			    block_len, avail));
+			consumed += avail;
 			break;
 		}
 		if (usb_extract_u16(ntb.wHeaderLength) < sizeof(ntb) ||
@@ -1048,6 +1059,7 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 	struct usb_ncm16_dp *dp;
 	size_t len, total_len, remaining;
 	struct iovec *riov;
+	size_t ntb_limit;
 	int riov_len, hdr_len, pkt;
 
 	DPRINTF(("unet_process_bulk_in"));
@@ -1096,8 +1108,10 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 	dp = (struct usb_ncm16_dp *)(dpt + 1);
 
 	total_len = hdr_len;
+	ntb_limit = MIN((size_t)sc->ntb_input_size, count_iov(iov, iovcnt));
 	pkt = 0;
 	while (riov != NULL && count_iov(riov, riov_len) >= UNET_MTU_SIZE &&
+	    total_len + UNET_MTU_SIZE <= ntb_limit &&
 	    pkt < UNET_NTB_MAX_IN_DGRAMS) {
 		len = netbe_recv(sc->vsc_be, riov, riov_len);
 		if (len <= 0)
