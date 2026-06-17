@@ -657,9 +657,6 @@ virtio_vhost_transport_send_transport_setup(
 	    0)
 		return (-1);
 	for (uint32_t i = 0; i < transport->queue_count; i++) {
-		if (!transport->queues[i].ready ||
-		    transport->queues[i].size == 0)
-			continue;
 		if (virtio_vhost_transport_send_queue_setup(backend, fd,
 			&transport->queues[i]) != 0)
 			return (-1);
