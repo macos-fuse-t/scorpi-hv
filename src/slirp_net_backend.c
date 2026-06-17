@@ -51,6 +51,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -641,6 +642,8 @@ slirp_send(struct net_backend *be, const struct iovec *iov, int iovcnt)
 
 	if (iovcnt == 1) {
 		/* We can avoid copying if there's a single segment. */
+		if (iov->iov_len > INT_MAX)
+			return (-1);
 		pthread_mutex_lock(&priv->mtx);
 		slirp_input(priv->slirp, iov->iov_base, (int)iov->iov_len);
 		pthread_mutex_unlock(&priv->mtx);
@@ -659,6 +662,10 @@ slirp_send(struct net_backend *be, const struct iovec *iov, int iovcnt)
 		for (int i = 0; i < iovcnt; i++) {
 			memcpy(pkt + pktlen, iov[i].iov_base, iov[i].iov_len);
 			pktlen += iov[i].iov_len;
+		}
+		if (pktlen > INT_MAX) {
+			free(pkt);
+			return (-1);
 		}
 		pthread_mutex_lock(&priv->mtx);
 		slirp_input(priv->slirp, pkt, (int)pktlen);
