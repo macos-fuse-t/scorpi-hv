@@ -111,7 +111,7 @@ pci_vhost_interrupt(void *opaque, uint32_t queue_index)
 	if (queue_index < state->queue_count) {
 		vq = &state->queues[queue_index];
 		if (pci_vhost_queue_ready(vq))
-			vq_endchains(vq, 1);
+			vq_endchains(vq, 0);
 	}
 	pthread_mutex_unlock(state->vs->vs_mtx);
 }
