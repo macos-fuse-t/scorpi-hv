@@ -29,6 +29,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <arch/arm64/hyperv.h>
 
 enum {
 	VM_MEMSEG_LOW,
@@ -52,6 +53,8 @@ struct mem_range {
 #define MAX_VCPUS		64
 
 struct vmctx {
+    struct arm64_hyperv hyperv;
+    bool hyperv_enabled;
     struct {
 		vm_paddr_t base;
 		vm_size_t size;
