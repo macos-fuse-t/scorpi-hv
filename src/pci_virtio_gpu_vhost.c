@@ -73,6 +73,7 @@ struct pci_vhost_softc {
 
 	bool legacy_fb_direct_mapped;
 	bool renderer_scanout_active;
+	bool renderer_surface_active;
 	uint64_t legacy_fb_direct_gpa;
 	char legacy_fb_shm_name[PSHMNAMLEN];
 	char renderer_scanout_shm_name[PSHMNAMLEN];
@@ -99,6 +100,9 @@ static void pci_vhost_backend_event(void *opaque,
     const struct scorpi_vhost_msg *msg);
 static void pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
     const struct scorpi_vhost_scanout *scanout);
+static void pci_vhost_apply_renderer_display_surface(
+    struct pci_vhost_softc *sc,
+    const struct scorpi_vhost_display_surface *surface);
 static void pci_vhost_apply_renderer_dirty_rect(
     const struct scorpi_vhost_dirty_rect *rect);
 static void pci_vhost_apply_renderer_cursor(
@@ -191,8 +195,12 @@ pci_vhost_backend_event(void *opaque, const struct scorpi_vhost_msg *msg)
 	case SCORPI_VHOST_MSG_SCANOUT:
 		pci_vhost_apply_renderer_scanout(sc, &msg->payload.scanout);
 		break;
+	case SCORPI_VHOST_MSG_DISPLAY_SURFACE:
+		pci_vhost_apply_renderer_display_surface(sc,
+		    &msg->payload.display_surface);
+		break;
 	case SCORPI_VHOST_MSG_DIRTY_RECT:
-		if (sc->renderer_scanout_active)
+		if (sc->renderer_scanout_active || sc->renderer_surface_active)
 			pci_vhost_apply_renderer_dirty_rect(
 			    &msg->payload.dirty_rect);
 		break;
@@ -248,6 +256,8 @@ pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
 	if ((scanout->flags & SCORPI_VHOST_SCANOUT_F_ENABLED) == 0 ||
 	    scanout->width == 0 || scanout->height == 0) {
 		sc->renderer_scanout_active = false;
+		if (sc->renderer_surface_active)
+			return;
 		pci_vhost_blank_legacy_fb(sc);
 		pci_vhost_set_legacy_scanout(sc);
 		return;
@@ -271,6 +281,61 @@ pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
 	    sc->renderer_scanout_shm_size, false);
 	console_update_scanout_rect(0, 0, scanout->width, scanout->height);
 	sc->renderer_scanout_active = true;
+	sc->renderer_surface_active = false;
+	console_set_display_surface(false, 0, 0, 0, 0, 0, 0, 0);
+}
+
+static void
+pci_vhost_apply_renderer_display_surface(struct pci_vhost_softc *sc,
+    const struct scorpi_vhost_display_surface *surface)
+{
+	const uint64_t diagnostic_sequence =
+	    ((uint64_t)surface->reserved1 << 32) | surface->reserved0;
+
+	if ((surface->flags & SCORPI_VHOST_DISPLAY_SURFACE_F_ENABLED) == 0 ||
+	    surface->width == 0 || surface->height == 0 ||
+	    surface->surface_id == 0) {
+		sc->renderer_surface_active = false;
+		console_set_display_surface(false, 0, 0, 0, 0, 0, 0,
+		    diagnostic_sequence);
+		if (!sc->renderer_scanout_active) {
+			pci_vhost_blank_legacy_fb(sc);
+			pci_vhost_set_legacy_scanout(sc);
+		}
+		return;
+	}
+
+	if (diagnostic_sequence != 0) {
+		EPRINTLN(
+		    "PRESENT_DIAG hv-receive sequence=%llu active=%ux%u format=%u handleType=%u surface=%llu fence=%llu",
+		    (unsigned long long)diagnostic_sequence,
+		    surface->width, surface->height, surface->format,
+		    surface->handle_type,
+		    (unsigned long long)surface->surface_id,
+		    (unsigned long long)surface->fence_value);
+	} else {
+		PRINTLN(
+		    "virtio-gpu-vhost: renderer display surface active=%ux%u format=%u handleType=%u surface=%llu fence=%llu",
+		    surface->width, surface->height, surface->format,
+		    surface->handle_type,
+		    (unsigned long long)surface->surface_id,
+		    (unsigned long long)surface->fence_value);
+	}
+	sc->renderer_surface_active = true;
+	sc->renderer_scanout_active = false;
+	PRINTLN(
+	    "virtio-gpu-vhost: renderer display surface apply enter surface=%llu",
+	    (unsigned long long)surface->surface_id);
+	console_set_display_surface(true, surface->width, surface->height,
+	    surface->format, surface->handle_type, surface->surface_id,
+	    surface->fence_value, diagnostic_sequence);
+	PRINTLN(
+	    "virtio-gpu-vhost: renderer display surface set complete surface=%llu",
+	    (unsigned long long)surface->surface_id);
+	console_update_scanout_rect(0, 0, surface->width, surface->height);
+	PRINTLN(
+	    "virtio-gpu-vhost: renderer display surface update complete surface=%llu",
+	    (unsigned long long)surface->surface_id);
 }
 
 static void
@@ -426,12 +491,12 @@ pci_vhost_legacy_ctrl_write(struct pci_vhost_softc *sc, uint64_t offset,
 	switch (offset) {
 	case 4:
 		sc->resx = (uint32_t)value;
-		if (!sc->renderer_scanout_active)
+		if (!sc->renderer_scanout_active && !sc->renderer_surface_active)
 			pci_vhost_set_legacy_scanout(sc);
 		break;
 	case 6:
 		sc->resy = (uint32_t)value;
-		if (!sc->renderer_scanout_active)
+		if (!sc->renderer_scanout_active && !sc->renderer_surface_active)
 			pci_vhost_set_legacy_scanout(sc);
 		break;
 	default:

@@ -45,6 +45,7 @@ enum scorpi_vhost_msg_type {
 	SCORPI_VHOST_MSG_DIRTY_RECT = 20,
 	SCORPI_VHOST_MSG_DISPLAY_HINT = 21,
 	SCORPI_VHOST_MSG_CURSOR = 22,
+	SCORPI_VHOST_MSG_DISPLAY_SURFACE = 23,
 };
 
 struct scorpi_vhost_header {
@@ -100,6 +101,8 @@ struct scorpi_vhost_config {
 };
 
 #define SCORPI_VHOST_SCANOUT_F_ENABLED 0x1u
+#define SCORPI_VHOST_DISPLAY_SURFACE_F_ENABLED 0x1u
+#define SCORPI_VHOST_DISPLAY_SURFACE_HANDLE_IOSURFACE_ID 1u
 
 struct scorpi_vhost_scanout {
 	uint32_t flags;
@@ -112,6 +115,19 @@ struct scorpi_vhost_scanout {
 	uint32_t reserved;
 	uint64_t shm_size;
 	char shm_name[SCORPI_VHOST_SCANOUT_NAME_MAX + 1];
+};
+
+struct scorpi_vhost_display_surface {
+	uint32_t flags;
+	uint32_t width;
+	uint32_t height;
+	uint32_t format;
+	uint32_t handle_type;
+	uint32_t reserved0;
+	uint32_t reserved1;
+	uint32_t reserved2;
+	uint64_t surface_id;
+	uint64_t fence_value;
 };
 
 struct scorpi_vhost_dirty_rect {
@@ -155,6 +171,7 @@ struct scorpi_vhost_msg {
 		struct scorpi_vhost_memory memory;
 		struct scorpi_vhost_config config;
 		struct scorpi_vhost_scanout scanout;
+		struct scorpi_vhost_display_surface display_surface;
 		struct scorpi_vhost_dirty_rect dirty_rect;
 		struct scorpi_vhost_display_hint display_hint;
 		struct scorpi_vhost_cursor cursor;

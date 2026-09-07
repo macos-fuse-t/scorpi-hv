@@ -36,6 +36,7 @@
 #include "bhyvegc.h"
 #include "cnc.h"
 #include "console.h"
+#include "debug.h"
 
 #define BUFSIZE		     1024
 #define CONSOLE_SHM_NAME_MAX 256
@@ -65,6 +66,12 @@ static struct {
 	char shm_name[CONSOLE_SHM_NAME_MAX];
 	size_t shm_size;
 	bool redrawOnTimer;
+	bool display_surface_active;
+	uint32_t display_surface_format;
+	uint32_t display_surface_handle_type;
+	uint64_t display_surface_id;
+	uint64_t display_surface_fence_value;
+	uint64_t display_surface_diagnostic_sequence;
 	bool hdpi;
 
 	bool hardware_mouse;
@@ -126,6 +133,53 @@ console_set_scanout(bool scanout_active, int w, int h, int stride,
 		    redrawOnTimer ? "true" : "false");
 	else
 		snprintf(data, sizeof(data), "{ \"event\": \"unset_scanout\"}");
+	cnc_send_notification(data);
+}
+
+void
+console_set_display_surface(bool active, int w, int h, uint32_t format,
+    uint32_t handle_type, uint64_t surface_id, uint64_t fence_value,
+    uint64_t diagnostic_sequence)
+{
+	char data[BUFSIZE];
+
+	console.display_surface_active = active;
+	console.w = w;
+	console.h = h;
+	console.display_surface_format = format;
+	console.display_surface_handle_type = handle_type;
+	console.display_surface_id = surface_id;
+	console.display_surface_fence_value = fence_value;
+	console.display_surface_diagnostic_sequence = diagnostic_sequence;
+
+	if (active) {
+		snprintf(data, sizeof(data),
+		    "{ \"event\": \"set_display_surface\", "
+		    "\"data\": { "
+		    "\"width\": %d, "
+		    "\"height\": %d, "
+		    "\"format\": %u, "
+		    "\"handle_type\": %u, "
+		    "\"surface_id\": %llu, "
+		    "\"fence_value\": %llu, "
+		    "\"diagnostic_sequence\": %llu"
+		    "}"
+		    "}",
+		    w, h, format, handle_type,
+		    (unsigned long long)surface_id,
+		    (unsigned long long)fence_value,
+		    (unsigned long long)diagnostic_sequence);
+	} else {
+		snprintf(data, sizeof(data),
+		    "{ \"event\": \"unset_display_surface\"}");
+	}
+	if (diagnostic_sequence != 0) {
+		EPRINTLN(
+		    "PRESENT_DIAG console-notify sequence=%llu active=%u surface=%llu size=%dx%d",
+		    (unsigned long long)diagnostic_sequence,
+		    active ? 1u : 0u,
+		    (unsigned long long)surface_id, w, h);
+	}
 	cnc_send_notification(data);
 }
 
@@ -218,7 +272,7 @@ console_get_image(void)
 bool
 console_is_active()
 {
-	return console.scanout_active;
+	return console.scanout_active || console.display_surface_active;
 }
 
 int
@@ -304,6 +358,15 @@ get_framebuffer(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	    "{"
 	    "\"hardware_mouse\": %s, "
 	    "\"hdpi\": %s, "
+	    "\"display_surface\": {"
+	    "\"active\": %s, "
+	    "\"width\": %d, "
+	    "\"height\": %d, "
+	    "\"format\": %u, "
+	    "\"handle_type\": %u, "
+	    "\"surface_id\": %llu, "
+	    "\"fence_value\": %llu"
+	    "},"
 	    "\"scanout\": {"
 	    "\"width\": %d, "
 	    "\"height\": %d, "
@@ -324,7 +387,13 @@ get_framebuffer(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	    "}"
 	    "}",
 	    console.hardware_mouse ? "true" : "false",
-	    console.hdpi ? "true" : "false", console.w, console.h,
+	    console.hdpi ? "true" : "false",
+	    console.display_surface_active ? "true" : "false",
+	    console.w, console.h, console.display_surface_format,
+	    console.display_surface_handle_type,
+	    (unsigned long long)console.display_surface_id,
+	    (unsigned long long)console.display_surface_fence_value,
+	    console.w, console.h,
 	    console.stride, console.format, console.shm_name, console.shm_size,
 	    console.redrawOnTimer ? "true" : "false", console.mouse_hot_x,
 	    console.mouse_hot_y, console.mouse_w, console.mouse_h,
