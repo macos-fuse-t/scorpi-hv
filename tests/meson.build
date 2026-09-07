@@ -367,3 +367,11 @@ scorpi_yaml_file_cli_test_executable = executable(
 )
 
 test('scorpi_yaml_file_cli_test', scorpi_yaml_file_cli_test_executable)
+
+arm64_hyperv_test = executable(
+  'arm64_hyperv_test',
+  files('arm64_hyperv_test.c', '../src/arch/arm64/hyperv.c'),
+  dependencies: threads_dep,
+  include_directories: inc,
+)
+test('arm64_hyperv_test', arm64_hyperv_test)
