@@ -166,6 +166,12 @@ vm_openf(const char *name, int flags)
 	ctx = malloc(sizeof(struct vmctx));
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->el2_enabled = el2_enabled;
+	ctx->hyperv_enabled = get_config_bool_default("arm64.hyperv", true);
+	if (arm64_hyperv_init(&ctx->hyperv) != 0) {
+		free(ctx);
+		hv_vm_destroy();
+		return NULL;
+	}
 
 	return ctx;
 }

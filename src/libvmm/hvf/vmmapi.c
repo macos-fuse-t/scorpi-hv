@@ -61,6 +61,7 @@
 #endif
 
 #include "arch.h"
+#include "bhyverun.h"
 #include "debug.h"
 #include "vhost_vmmem.h"
 #include "internal.h"
@@ -347,6 +348,7 @@ vm_close(struct vmctx *ctx)
 		}
 	}
 	hv_vm_destroy();
+	arm64_hyperv_destroy(&ctx->hyperv);
 	free(ctx->name);
 	free(ctx);
 }
@@ -484,8 +486,10 @@ vm_vcpu_deinit(struct vcpu *vcpu)
 int
 vcpu_reset(struct vcpu *vcpu)
 {
-	if (vcpu_id(vcpu) == 0)
+	if (vcpu_id(vcpu) == 0) {
+		arm64_hyperv_reset(&vcpu->ctx->hyperv);
 		hv_gic_reset();
+	}
 	vm_vcpu_deinit(vcpu);
 	return vm_vcpu_init(vcpu);
 }
@@ -1896,6 +1900,12 @@ vm_inject_exception(struct vcpu *vcpu, uint64_t esr, uint64_t far)
 	return (vm_inject_exception_to_el(vcpu, esr, far, target_el));
 }
 
+static void *
+hyperv_map_ram(void *arg, uint64_t gpa, size_t size)
+{
+	return vm_map_gpa(arg, gpa, size);
+}
+
 static int
 vmexit_handle_exception(struct vcpu *vcpu, struct vm_exit *vme)
 {
@@ -1950,6 +1960,22 @@ vmexit_handle_exception(struct vcpu *vcpu, struct vm_exit *vme)
 		forward_pc = true;
 		// fallthrough
 	case EXCP_HVC:
+		if (vcpu->ctx->hyperv_enabled) {
+			uint64_t x[18];
+			for (int i = 0; i < 18; i++)
+				hv_vcpu_get_reg(vcpu->vcpu, HV_REG_X0 + i, &x[i]);
+			/* SMC #1 is not the legacy Hyper-V HVC #1 interface. */
+			unsigned int imm = syndrome & 0xffff;
+			if ((ec == EXCP_HVC || imm == 0) &&
+			    arm64_hyperv_call(&vcpu->ctx->hyperv, imm, x,
+			    vcpu->vcpuid, guest_ncpus, hyperv_map_ram, vcpu->ctx)) {
+				for (int i = 0; i < 18; i++)
+					hv_vcpu_set_reg(vcpu->vcpu, HV_REG_X0 + i, x[i]);
+				/* HVF advances HVC's PC; SMC is advanced below. */
+				ret = 0;
+				break;
+			}
+		}
 		hv_vcpu_get_reg(vcpu->vcpu, HV_REG_X0, &x0);
 		DPRINTLN("%llx: VM made an %s call! x0 register holds 0x%llx",
 		    pc, ec == EXCP_HVC ? "HVC" : "SMC", x0);
