@@ -231,7 +231,8 @@ cnc_send_response(struct cnc_conn_t *c, int response_id, const char *data)
 }
 
 static void
-cnc_enqueue_notification_locked(struct per_session_data *pss, const char *data)
+cnc_enqueue_notification_locked(struct per_session_data *pss, const char *data,
+    bool trace)
 {
 	char notification[BUFFER_SIZE];
 	struct queued_message *msg;
@@ -263,7 +264,11 @@ cnc_enqueue_notification_locked(struct per_session_data *pss, const char *data)
 	STAILQ_INSERT_TAIL(&pss->queue, msg, entries);
 	pss->queue_size++;
 
+	if (trace)
+		PRINTLN("cnc: display surface writable callback enter");
 	lws_callback_on_writable(pss->wsi);
+	if (trace)
+		PRINTLN("cnc: display surface writable callback complete");
 }
 
 void
@@ -271,11 +276,23 @@ cnc_send_notification(const char *data)
 {
 	struct per_session_data *pss;
 	const struct lws_protocols *prot;
+	bool trace;
 
+	trace = strstr(data, "set_display_surface") != NULL;
+	if (trace)
+		PRINTLN("cnc: display surface notification waiting for sessions lock");
 	pthread_mutex_lock(&sessions_lock);
+	if (trace)
+		PRINTLN("cnc: display surface notification acquired sessions lock");
 
 	LIST_FOREACH(pss, &sessions, entries) {
+		if (trace)
+			PRINTLN(
+			    "cnc: display surface notification waiting for session queue lock");
 		pthread_mutex_lock(&pss->queue_lock);
+		if (trace)
+			PRINTLN(
+			    "cnc: display surface notification acquired session queue lock");
 
 		prot = lws_get_protocol(pss->wsi);
 		if (strcmp(prot->name, protocols[0].name)) {
@@ -283,11 +300,13 @@ cnc_send_notification(const char *data)
 			continue;
 		}
 
-		cnc_enqueue_notification_locked(pss, data);
+		cnc_enqueue_notification_locked(pss, data, trace);
 		pthread_mutex_unlock(&pss->queue_lock);
 	}
 
 	pthread_mutex_unlock(&sessions_lock);
+	if (trace)
+		PRINTLN("cnc: display surface notification complete");
 }
 
 static void

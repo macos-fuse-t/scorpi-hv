@@ -31,6 +31,8 @@
 #define	_CONSOLE_H_
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 struct bhyvegc;
 
@@ -52,6 +54,10 @@ void console_set_hardware_mouse(bool hardware_mouse);
 void console_set_scanout(bool scanout_active, int w, int h, int sride,
     uint32_t format, const char *shm_name, size_t shm_size,
     bool redrawOnTimer);
+
+void console_set_display_surface(bool active, int w, int h, uint32_t format,
+    uint32_t handle_type, uint64_t surface_id, uint64_t fence_value,
+    uint64_t diagnostic_sequence);
 
 void console_update_scanout_rect(int x, int y, int w, int h);
 
