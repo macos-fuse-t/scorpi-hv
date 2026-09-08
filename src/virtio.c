@@ -885,9 +885,12 @@ vi_vq_init_modern(struct virtio_softc *vs)
 	char *base;
 
 	vq = &vs->vs_queues[vs->vs_curq];
-	size = vring_size_aligned(vq->vq_qsize);
+	/* Modern queues give each ring its own GPA. Mapping the whole legacy
+	 * ring size at each GPA can reject valid rings near the end of RAM.
+	 */
+	size = sizeof(struct vring_desc) * vq->vq_qsize;
 
-	// descriptors
+	/* descriptors */
 	base = paddr_guest2host(vs->vs_pi->pi_vmctx, vq->vq_desc_gpa, size);
 	vq->vq_desc = (struct vring_desc *)base;
 	if (vq->vq_desc == NULL) {
@@ -898,6 +901,8 @@ vi_vq_init_modern(struct virtio_softc *vs)
 	}
 
 	/* "avail" ring (entirely uint16_t's) */
+	size = sizeof(struct vring_avail) +
+	    sizeof(uint16_t) * (vq->vq_qsize + 1);
 	base = paddr_guest2host(vs->vs_pi->pi_vmctx, vq->vq_avail_gpa, size);
 	vq->vq_avail = (struct vring_avail *)base;
 	if (vq->vq_avail == NULL) {
@@ -908,6 +913,8 @@ vi_vq_init_modern(struct virtio_softc *vs)
 	}
 
 	/* used ring */
+	size = sizeof(struct vring_used) +
+	    sizeof(struct vring_used_elem) * vq->vq_qsize + sizeof(uint16_t);
 	base = paddr_guest2host(vs->vs_pi->pi_vmctx, vq->vq_used_gpa, size);
 	vq->vq_used = (struct vring_used *)base;
 	if (vq->vq_used == NULL) {
