@@ -375,3 +375,12 @@ arm64_hyperv_test = executable(
   include_directories: inc,
 )
 test('arm64_hyperv_test', arm64_hyperv_test)
+
+usb_net_xhci_test = executable(
+  'usb_net_xhci_test',
+  files('usb_net_xhci_test.c'),
+  dependencies: [scorpi_kit_dep, libnv_dep],
+  include_directories: inc,
+)
+test('usb_net_xhci_retry', usb_net_xhci_test, args: ['retry'])
+test('usb_net_xhci_short', usb_net_xhci_test, args: ['short'])

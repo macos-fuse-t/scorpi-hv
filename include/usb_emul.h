@@ -124,7 +124,9 @@ enum USB_ERRCODE {
 	USB_SHORT
 };
 
-#define	USB_DATA_GET_ERRCODE(x)		(x)->processed >> 8
+/* The low byte is completion state; an error code alone is not completion. */
+#define	USB_DATA_IS_PROCESSED(x)		(((x)->processed & 0xFF) != 0)
+#define	USB_DATA_GET_ERRCODE(x)		((x)->processed >> 8)
 #define	USB_DATA_SET_ERRCODE(x,e)	do {				\
 			(x)->processed = ((x)->processed & 0xFF) | (e << 8); \
 		} while (0)
