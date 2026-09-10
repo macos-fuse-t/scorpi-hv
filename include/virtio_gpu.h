@@ -369,6 +369,12 @@ struct virtio_gpu_config {
 	uint32_t events_clear;
 	uint32_t num_scanouts;
 	uint32_t num_capsets;
+	/* Scorpi clock extension: resolved Apple GPU timestamps use host uptime ns.
+	 * Read high/low/high and retry on rollover; no mutable shared latch. */
+	uint32_t clock_magic;
+	uint32_t clock_frequency;
+	uint32_t clock_low;
+	uint32_t clock_high;
 };
 
 /* simple formats for fbcon/X use */

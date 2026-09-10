@@ -18,6 +18,7 @@
 #include <string.h>
 #include <support/linker_set.h>
 #include <unistd.h>
+#include <time.h>
 #include <uuid/uuid.h>
 
 #include <scorpi/protocol/vhost_user.h>
@@ -657,10 +658,21 @@ pci_vhost_cfgread(void *vsc, int offset, int size, uint32_t *retval)
 	struct pci_vhost_softc *sc = vsc;
 	uint32_t value = 0;
 
-	if (offset < 0 || size < 0 ||
+	if (offset < 0 || size <= 0 || size > (int)sizeof(value) ||
 	    (size_t)offset + (size_t)size > sizeof(sc->gpu_config))
 		return (EINVAL);
-	memcpy(&value, ((uint8_t *)&sc->gpu_config) + offset, size);
+#ifdef __APPLE__
+	if (offset >= offsetof(struct virtio_gpu_config, clock_magic)) {
+		struct virtio_gpu_config snapshot = sc->gpu_config;
+		const uint64_t ns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+		snapshot.clock_magic = 0x53435431u; /* SCT1 */
+		snapshot.clock_frequency = 1000000000u;
+		snapshot.clock_low = (uint32_t)ns;
+		snapshot.clock_high = (uint32_t)(ns >> 32);
+		memcpy(&value, ((uint8_t *)&snapshot) + offset, size);
+	} else
+#endif
+		memcpy(&value, ((uint8_t *)&sc->gpu_config) + offset, size);
 	*retval = value;
 	return (0);
 }
