@@ -38,6 +38,16 @@ scorpi_header_compile_test_executable = executable(
 
 test('scorpi_header_compile_test', scorpi_header_compile_test_executable)
 
+cnc_thread_test_executable = executable(
+  'cnc_thread_test',
+  files('cnc_thread_test.c') + [libwebsockets_static],
+  dependencies: [threads_dep, libwebsockets_dep, libmjson_dep],
+  include_directories: [inc, include_directories('../mjson', '../libnv')],
+  c_args: ['-UNDEBUG'],
+)
+
+test('cnc_thread_test', cnc_thread_test_executable)
+
 compat_src = files('../src/compat.c')
 
 if host_machine.system() == 'linux'
