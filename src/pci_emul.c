@@ -1707,7 +1707,8 @@ init_pci(struct vmctx *ctx)
 
 	pci_irq_init(pcie_intrs);
 
-	if (vm_get_lowmem_limit(ctx) > PCI_EMUL_MEMBASE32)
+	if (vm_get_lowmem_base(ctx) + vm_get_lowmem_limit(ctx) >
+	    PCI_EMUL_MEMBASE32)
 		errx(EX_OSERR, "Invalid lowmem limit");
 
 	pci_emul_iobase = PCI_EMUL_IOBASE;
@@ -1848,7 +1849,7 @@ init_pci(struct vmctx *ctx)
 	 * [roundup(4GB + highmem, 32GB), ...)	PCI 64-bit BAR allocation
 	 *
 	 * On arm64 the guest physical memory map looks like this:
-	 * [0x0DF00000,	    0x10000000)		PCI I/O memory
+	 * [0x40000000,	    0x60000000)		HVF low RAM (up to 512 MiB)
 	 * [0xA0000000,	    0xE0000000)		PCI 32-bit BAR allocation
 	 * [0xE0000000,	    0xF0000000)		PCI extended config window
 	 * [4GB,	    4GB + highmem)	guest system memory
@@ -1856,7 +1857,7 @@ init_pci(struct vmctx *ctx)
 	 *
 	 * "lowmem" is guest memory below 0xC0000000.  amd64 guests provisioned
 	 * with less than 3GB of RAM will have no memory above the 4GB boundary.
-	 * System memory for arm64 guests is all above the 4GB boundary.
+	 * ARM64 keeps its primary RAM bank above 4GB for firmware startup.
 	 */
 
 	/*
@@ -1867,9 +1868,16 @@ init_pci(struct vmctx *ctx)
 	bzero(&mr, sizeof(struct mem_range));
 	mr.name = "PCI hole";
 	mr.flags = MEM_F_RW | MEM_F_IMMUTABLE;
-	mr.base = lowmem;
-	mr.size = (4ULL * 1024 * 1024 * 1024) - lowmem;
 	mr.handler = pci_emul_fallback_handler;
+	/* A nonzero low-bank base leaves a separate hole below RAM. */
+	if (lowmem != 0 && vm_get_lowmem_base(ctx) != 0) {
+		mr.base = 0;
+		mr.size = vm_get_lowmem_base(ctx);
+		error = register_mem_fallback(&mr);
+		assert(error == 0);
+	}
+	mr.base = lowmem != 0 ? vm_get_lowmem_base(ctx) + lowmem : 0;
+	mr.size = (4ULL * 1024 * 1024 * 1024) - mr.base;
 	error = register_mem_fallback(&mr);
 	assert(error == 0);
 

@@ -551,7 +551,7 @@ static struct smbios_template_entry smbios_template[] = {
 	{ NULL, NULL, NULL }
 };
 
-static uint64_t guest_lomem, guest_himem, guest_himem_base;
+static uint64_t guest_lomem, guest_lomem_base, guest_himem, guest_himem_base;
 static uint16_t type16_handle;
 
 static int
@@ -797,12 +797,15 @@ smbios_type19_initializer(const struct smbios_structure *template_entry,
 {
 	struct smbios_table_type19 *type19;
 
-	smbios_generic_initializer(template_entry, template_strings, curaddr,
-	    endaddr, n);
-	type19 = (struct smbios_table_type19 *)curaddr;
-	type19->arrayhand = type16_handle;
-	type19->xsaddr = 0;
-	type19->xeaddr = guest_lomem;
+	*endaddr = curaddr;
+	if (guest_lomem > 0) {
+		smbios_generic_initializer(template_entry, template_strings, curaddr,
+		    endaddr, n);
+		type19 = (struct smbios_table_type19 *)curaddr;
+		type19->arrayhand = type16_handle;
+		type19->xsaddr = guest_lomem_base;
+		type19->xeaddr = guest_lomem_base + guest_lomem - 1;
+	}
 
 	if (guest_himem > 0) {
 		curaddr = *endaddr;
@@ -811,7 +814,7 @@ smbios_type19_initializer(const struct smbios_structure *template_entry,
 		type19 = (struct smbios_table_type19 *)curaddr;
 		type19->arrayhand = type16_handle;
 		type19->xsaddr = guest_himem_base;
-		type19->xeaddr = guest_himem_base + guest_himem;
+		type19->xeaddr = guest_himem_base + guest_himem - 1;
 	}
 
 	return (0);
@@ -826,6 +829,7 @@ smbios_build(struct vmctx *ctx, void **addr, size_t *len)
 	int err;
 
 	guest_lomem = vm_get_lowmem_size(ctx);
+	guest_lomem_base = vm_get_lowmem_base(ctx);
 	guest_himem = vm_get_highmem_size(ctx);
 	guest_himem_base = vm_get_highmem_base(ctx);
 

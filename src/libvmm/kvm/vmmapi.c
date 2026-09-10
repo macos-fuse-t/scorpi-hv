@@ -562,6 +562,12 @@ vm_get_lowmem_size(struct vmctx *ctx)
 }
 
 vm_paddr_t
+vm_get_lowmem_base(struct vmctx *ctx __unused)
+{
+	return (0);
+}
+
+vm_paddr_t
 vm_get_highmem_base(struct vmctx *ctx __unused)
 {
 	return (VM_HIGHMEM_BASE);
