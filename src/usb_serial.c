@@ -804,7 +804,8 @@ userial_bulk_in(struct userial_softc *sc, struct usb_data_xfer *xfer)
 	idx = xfer->head;
 	for (i = 0; i < xfer->ndata; i++) {
 		data = &xfer->data[idx];
-		if (data->processed || data->buf == NULL || data->blen == 0) {
+		if (USB_DATA_IS_PROCESSED(data) || data->buf == NULL ||
+		    data->blen == 0) {
 			data->processed = 1;
 			idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
 			continue;
@@ -835,7 +836,8 @@ userial_bulk_out(struct userial_softc *sc, struct usb_data_xfer *xfer)
 	idx = xfer->head;
 	for (i = 0; i < xfer->ndata; i++) {
 		data = &xfer->data[idx];
-		if (data->processed || data->buf == NULL || data->blen == 0) {
+		if (USB_DATA_IS_PROCESSED(data) || data->buf == NULL ||
+		    data->blen == 0) {
 			data->processed = 1;
 			idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
 			continue;

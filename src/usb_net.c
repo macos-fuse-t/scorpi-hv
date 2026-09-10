@@ -992,7 +992,7 @@ unet_process_bulk_out(struct unet_softc *sc, struct usb_data_xfer *xfer)
 	idx = xfer->head;
 	for (i = 0; i < xfer->ndata; i++) {
 		data = &xfer->data[idx];
-		if (data->processed) {
+		if (USB_DATA_IS_PROCESSED(data)) {
 			idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
 			continue;
 		}
@@ -1018,7 +1018,7 @@ unet_process_bulk_out(struct unet_softc *sc, struct usb_data_xfer *xfer)
 		size_t chunk;
 
 		data = &xfer->data[idx];
-		if (data->processed) {
+		if (USB_DATA_IS_PROCESSED(data)) {
 			idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
 			continue;
 		}
@@ -1069,7 +1069,7 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 	iovcnt = 0;
 	for (i = 0; i < xfer->ndata && iovcnt < nitems(iov); i++) {
 		data = &xfer->data[idx];
-		if (data->processed) {
+		if (USB_DATA_IS_PROCESSED(data)) {
 			idx = (idx + 1) % USB_MAX_XFER_BLOCKS;
 			continue;
 		}
@@ -1150,6 +1150,11 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 
 	buf_to_iov(header, hdr_len, iov, iovcnt, 0);
 
+	/*
+	 * A short packet ends the whole TD, including unused buffers. Retire
+	 * them with zero bytes so xHCI reaches EVENT_DATA and reports the
+	 * accumulated length of this transfer.
+	 */
 	remaining = total_len;
 	for (i = 0; i < iovcnt; i++) {
 		size_t chunk;
@@ -1160,8 +1165,6 @@ unet_process_bulk_in(struct unet_softc *sc, struct usb_data_xfer *xfer)
 		data->blen -= chunk;
 		data->processed = 1;
 		remaining -= chunk;
-		if (remaining == 0)
-			break;
 	}
 
 	err = USB_ERR_NORMAL_COMPLETION;

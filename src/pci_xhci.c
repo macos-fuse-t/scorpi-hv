@@ -1650,7 +1650,7 @@ pci_xhci_xfer_complete(struct pci_xhci_softc *sc, struct usb_data_xfer *xfer,
 		    XHCI_TRB_3_TYPE_GET(trbflags), evtrb.qwTrb0, trbflags, err,
 		    trb->dwTrb3 & XHCI_TRB_3_IOC_BIT ? 1 : 0));
 
-		if (!xfer->data[i].processed) {
+		if (!USB_DATA_IS_PROCESSED(&xfer->data[i])) {
 			xfer->head = i;
 			// err = XHCI_TRB_ERROR_STALL;
 			break;
@@ -1667,13 +1667,14 @@ pci_xhci_xfer_complete(struct pci_xhci_softc *sc, struct usb_data_xfer *xfer,
 
 		/* Only interrupt if IOC or short packet */
 		if (!(trb->dwTrb3 & XHCI_TRB_3_IOC_BIT) &&
-		    !((err == XHCI_TRB_ERROR_SHORT_PKT) &&
+		    !((xfer_err == XHCI_TRB_ERROR_SHORT_PKT) &&
 			(trb->dwTrb3 & XHCI_TRB_3_ISP_BIT))) {
 			i = (i + 1) % USB_MAX_XFER_BLOCKS;
 			continue;
 		}
 
-		evtrb.dwTrb2 = XHCI_TRB_2_ERROR_SET(err) |
+		/* Event insertion status must not replace the TD completion code. */
+		evtrb.dwTrb2 = XHCI_TRB_2_ERROR_SET(xfer_err) |
 		    XHCI_TRB_2_REM_SET(xfer->data[i].blen);
 
 		evtrb.dwTrb3 = XHCI_TRB_3_TYPE_SET(XHCI_TRB_EVENT_TRANSFER) |
@@ -1683,7 +1684,7 @@ pci_xhci_xfer_complete(struct pci_xhci_softc *sc, struct usb_data_xfer *xfer,
 			DPRINTF(("pci_xhci EVENT_DATA edtla %u", edtla));
 			evtrb.qwTrb0 = trb->qwTrb0;
 			evtrb.dwTrb2 = (edtla & 0xFFFFF) |
-			    XHCI_TRB_2_ERROR_SET(err);
+			    XHCI_TRB_2_ERROR_SET(xfer_err);
 			evtrb.dwTrb3 |= XHCI_TRB_3_ED_BIT;
 			edtla = 0;
 		}
