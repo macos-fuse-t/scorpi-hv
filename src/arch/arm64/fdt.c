@@ -157,12 +157,22 @@ fdt_init(struct vmctx *ctx, int ncpu, void *fdtaddr, vm_size_t fdtsize)
 		fdt_property_string(fdt, "bootargs", bootargs);
 	fdt_end_node(fdt);
 
-	fdt_begin_node(fdt, "memory");
+	/* EDK2 consumes one base/size pair per memory node. Keep its primary
+	 * bank at 4 GiB, including for guests with a separate low bank. */
+	fdt_begin_node(fdt, "memory@100000000");
 	fdt_property_string(fdt, "device_type", "memory");
-	/* There is no lowmem on arm64. */
-	assert(vm_get_lowmem_size(ctx) == 0);
 	set_single_reg(fdt, vm_get_highmem_base(ctx), vm_get_highmem_size(ctx));
 	fdt_end_node(fdt);
+	if (vm_get_lowmem_size(ctx) != 0) {
+		char node_name[32];
+
+		snprintf(node_name, sizeof(node_name), "memory@%llx",
+		    (unsigned long long)vm_get_lowmem_base(ctx));
+		fdt_begin_node(fdt, node_name);
+		fdt_property_string(fdt, "device_type", "memory");
+		set_single_reg(fdt, vm_get_lowmem_base(ctx), vm_get_lowmem_size(ctx));
+		fdt_end_node(fdt);
+	}
 
 	// add_cpus(fdt, ncpu);
 

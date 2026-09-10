@@ -386,6 +386,20 @@ arm64_hyperv_test = executable(
 )
 test('arm64_hyperv_test', arm64_hyperv_test)
 
+if hypervisor_backend == 'hvf'
+  # No VM is created. Discard unused backend functions and their dependencies.
+  hvf_memory_test = executable(
+    'hvf_memory_test',
+    files('hvf_memory_test.c', '../src/libvmm/hvf/vmmapi.c',
+      '../src/arch/arm64/fdt.c'),
+    dependencies: [libfdt_dep, libutil_dep],
+    include_directories: inc,
+    c_args: ['-UNDEBUG'],
+    link_args: ['-Wl,-dead_strip'],
+  )
+  test('hvf_memory_test', hvf_memory_test)
+endif
+
 usb_net_xhci_test = executable(
   'usb_net_xhci_test',
   files('usb_net_xhci_test.c'),

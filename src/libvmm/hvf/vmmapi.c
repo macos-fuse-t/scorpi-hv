@@ -66,6 +66,7 @@
 #include "vhost_vmmem.h"
 #include "internal.h"
 #include "vmmapi.h"
+#include <arch/arm64/memory_layout.h>
 
 bool mem_range_registered(uint64_t gpa);
 
@@ -114,11 +115,13 @@ bool mem_range_registered(uint64_t gpa);
 #define VM_SHARED_MEMORY_CHUNK_SIZE GB
 
 #ifdef __amd64__
+#define VM_LOWMEM_BASE 0
 #define VM_LOWMEM_LIMIT (3 * GB)
 #else
-#define VM_LOWMEM_LIMIT 0
+#define VM_LOWMEM_BASE ARM64_LOWMEM_BASE
+#define VM_LOWMEM_LIMIT ARM64_LOWMEM_SIZE
 #endif
-#define VM_HIGHMEM_BASE (4 * GB)
+#define VM_HIGHMEM_BASE ARM64_HIGHMEM_BASE
 
 /*
  * Size of the guard region before and after the virtual address space
@@ -937,12 +940,17 @@ vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 	 * create another 'highmem' segment above for the remainder.
 	 */
 
+	ctx->memsegs[VM_MEMSEG_LOW].base = VM_LOWMEM_BASE;
+	ctx->memsegs[VM_MEMSEG_HIGH].base = VM_HIGHMEM_BASE;
+#ifdef __amd64__
 	ctx->memsegs[VM_MEMSEG_LOW].size = (memsize > VM_LOWMEM_LIMIT) ?
 	    VM_LOWMEM_LIMIT :
 	    memsize;
-	ctx->memsegs[VM_MEMSEG_HIGH].size = (memsize > VM_LOWMEM_LIMIT) ?
-	    (memsize - ctx->memsegs[VM_MEMSEG_LOW].size) :
-	    0;
+#else
+	ctx->memsegs[VM_MEMSEG_LOW].size = arm64_lowmem_size(memsize);
+#endif
+	ctx->memsegs[VM_MEMSEG_HIGH].size =
+	    memsize - ctx->memsegs[VM_MEMSEG_LOW].size;
 
 	if (ctx->memsegs[VM_MEMSEG_HIGH].size > 0) {
 		addr = (vms == VM_MMAP_ALL) ?
@@ -959,7 +967,7 @@ vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 		addr = (vms == VM_MMAP_ALL) ?
 		    &ctx->memsegs[VM_MEMSEG_LOW].addr :
 		    NULL;
-		if ((error = setup_shared_system_memory_segment(ctx, 0,
+		if ((error = setup_shared_system_memory_segment(ctx, VM_LOWMEM_BASE,
 			 ctx->memsegs[VM_MEMSEG_LOW].size, protFlags, addr,
 			 "low"))) {
 			return (error);
@@ -979,21 +987,13 @@ vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 void *
 vm_map_gpa(struct vmctx *ctx, vm_paddr_t gaddr, size_t len)
 {
-	vm_size_t lowsize, highsize;
+	for (int i = 0; i < VM_MEMSEG_COUNT; i++) {
+		vm_paddr_t base = ctx->memsegs[i].base;
+		vm_size_t size = ctx->memsegs[i].size;
 
-	lowsize = ctx->memsegs[VM_MEMSEG_LOW].size;
-	if (lowsize > 0) {
-		if (gaddr < lowsize && len <= lowsize && gaddr + len <= lowsize)
-			return (
-			    (void *)ctx->memsegs[VM_MEMSEG_LOW].addr + gaddr);
-	}
-
-	highsize = ctx->memsegs[VM_MEMSEG_HIGH].size;
-	if (highsize > 0 && gaddr >= VM_HIGHMEM_BASE) {
-		if (gaddr < VM_HIGHMEM_BASE + highsize && len <= highsize &&
-		    gaddr + len <= VM_HIGHMEM_BASE + highsize)
-			return ((void *)ctx->memsegs[VM_MEMSEG_HIGH].addr +
-			    (gaddr - VM_HIGHMEM_BASE));
+		if (gaddr >= base && gaddr - base < size &&
+		    len <= size - (gaddr - base))
+			return ((void *)(ctx->memsegs[i].addr + (gaddr - base)));
 	}
 
 	return (NULL);
@@ -1017,6 +1017,12 @@ size_t
 vm_get_lowmem_size(struct vmctx *ctx)
 {
 	return (ctx->memsegs[VM_MEMSEG_LOW].size);
+}
+
+vm_paddr_t
+vm_get_lowmem_base(struct vmctx *ctx __unused)
+{
+	return (VM_LOWMEM_BASE);
 }
 
 vm_paddr_t

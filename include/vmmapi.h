@@ -150,6 +150,7 @@ void	vm_set_memflags(struct vmctx *ctx, int flags);
 int	vm_get_memflags(struct vmctx *ctx);
 const char *vm_get_name(struct vmctx *ctx);
 size_t	vm_get_lowmem_size(struct vmctx *ctx);
+vm_paddr_t vm_get_lowmem_base(struct vmctx *ctx);
 vm_paddr_t vm_get_highmem_base(struct vmctx *ctx);
 size_t	vm_get_highmem_size(struct vmctx *ctx);
 int	vm_get_external_memory_region(struct vmctx *ctx, unsigned int index,
