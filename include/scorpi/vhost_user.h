@@ -5,7 +5,8 @@
 
 #include <scorpi/protocol/vhost_user.h>
 
-#define VHOST_USER_MAX_FDS 8
+/* SET_MEM_TABLE carries one descriptor for each shared memory region. */
+#define VHOST_USER_MAX_FDS SCORPI_VHOST_MAX_MEMORY_REGIONS
 
 int vhost_user_connect(const char *path);
 int vhost_user_listen(const char *path, int backlog);
