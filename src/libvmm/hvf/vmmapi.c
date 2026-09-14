@@ -1230,6 +1230,11 @@ arm64_gen_inst_emul_data(struct vcpu *vcpu, uint32_t esr_iss,
 	struct vie *vie;
 	uint32_t esr_sas, reg_num;
 
+	/* SAS/SRT describe a scalar access only when ISV is set. */
+	if ((esr_iss & (ISS_DATA_ISV | ISS_DATA_CM | ISS_DATA_S1PTW)) !=
+	    ISS_DATA_ISV)
+		return (ENOTSUP);
+
 	/*
 	 * Get the page address from HPFAR_EL2.
 	 */
@@ -1934,10 +1939,15 @@ vmexit_handle_exception(struct vcpu *vcpu, struct vm_exit *vme)
 			vcpu->vcpu_exit->exception.physical_address) ||
 		    mem_range_registered(
 			vcpu->vcpu_exit->exception.physical_address)) {
-			if (arm64_gen_inst_emul_data(vcpu, esr_iss, vme) != 0)
-				vme->exitcode = VM_EXITCODE_BOGUS;
-			else
-				vme->exitcode = VM_EXITCODE_INST_EMUL;
+			if (arm64_gen_inst_emul_data(vcpu, esr_iss, vme) != 0) {
+				EPRINTLN("Unsupported memory access: vcpu=%d pc=0x%llx "
+				    "syndrome=0x%llx gpa=0x%llx",
+				    vcpu->vcpuid, pc, syndrome,
+				    vcpu->vcpu_exit->exception.physical_address);
+				/* Never invent a register operand or skip the instruction. */
+				return (-1);
+			}
+			vme->exitcode = VM_EXITCODE_INST_EMUL;
 			ret = 1;
 		} else {
 			EPRINTLN("Memory allocated %llx\n",

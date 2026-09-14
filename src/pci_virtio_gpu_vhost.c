@@ -577,9 +577,24 @@ pci_vhost_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 		return;
 
 	if (!enabled) {
-		pci_vhost_unmap_legacy_fb(sc);
+		/*
+		 * Windows may still use the firmware framebuffer through
+		 * BasicDisplay while PnP disables PCI decoding to load the native
+		 * driver. Keep its RAM backing directly accessible across that
+		 * handoff. This exception is only for the legacy framebuffer;
+		 * device control BARs continue to follow PCI memory decoding.
+		 *
+		 * With decoding still enabled this callback is removing an old
+		 * BAR address, so retire that mapping before the relocation.
+		 */
+		if ((pci_get_cfgdata16(pi, PCIR_COMMAND) & PCIM_CMD_MEMEN) != 0)
+			pci_vhost_unmap_legacy_fb(sc);
 		return;
 	}
+
+	/* The BAR can also have moved while memory decoding was disabled. */
+	if (sc->legacy_fb_direct_mapped && sc->legacy_fb_direct_gpa != address)
+		pci_vhost_unmap_legacy_fb(sc);
 
 	created = sc->legacy_fb_base == NULL;
 	if (pci_vhost_create_legacy_fb(sc) != 0) {

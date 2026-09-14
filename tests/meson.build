@@ -407,6 +407,16 @@ if hypervisor_backend == 'hvf'
   )
   test('hvf_memory_test', hvf_memory_test)
 
+  foreach test_name : ['legacy_framebuffer_test', 'hvf_abort_decode_test']
+    regression_test = executable(
+      test_name,
+      files(test_name + '.c'),
+      include_directories: inc,
+      c_args: ['-UNDEBUG', '-Wno-unused-function'],
+      link_args: ['-Wl,-dead_strip'],
+    )
+    test(test_name, regression_test)
+  endforeach
 endif
 
 usb_net_xhci_test = executable(
