@@ -38,6 +38,14 @@ scorpi_header_compile_test_executable = executable(
 
 test('scorpi_header_compile_test', scorpi_header_compile_test_executable)
 
+vhost_memory_fds_test = executable(
+  'vhost_memory_fds_test',
+  files('vhost_memory_fds_test.c', '../src/vhost_user.c'),
+  include_directories: inc,
+  c_args: ['-UNDEBUG'],
+)
+test('vhost_memory_fds_test', vhost_memory_fds_test)
+
 cnc_thread_test_executable = executable(
   'cnc_thread_test',
   files('cnc_thread_test.c') + [libwebsockets_static],
@@ -398,6 +406,7 @@ if hypervisor_backend == 'hvf'
     link_args: ['-Wl,-dead_strip'],
   )
   test('hvf_memory_test', hvf_memory_test)
+
 endif
 
 usb_net_xhci_test = executable(
