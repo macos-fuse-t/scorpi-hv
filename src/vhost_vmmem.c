@@ -44,8 +44,12 @@ vhost_vmmem_add_region(
 	region->size = size;
 	region->shm_fd = fd;
 	region->shm_offset = 0;
-	vhost_vmmem_shm_name(region->shm_name, sizeof(region->shm_name),
-	    suffix);
+	/* Descriptor-backed regions are transferred with SCM_RIGHTS; their
+	 * names may already be unlinked and are never opened by the transport. */
+	region->shm_name[0] = '\0';
+	if (fd < 0)
+		vhost_vmmem_shm_name(region->shm_name, sizeof(region->shm_name),
+		    suffix);
 }
 
 void
