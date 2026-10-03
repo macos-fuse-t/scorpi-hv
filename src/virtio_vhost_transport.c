@@ -300,7 +300,11 @@ virtio_vhost_transport_open_memory_fds(
 			    transport->memory_regions[i].shm_name, O_RDWR, 0);
 		}
 		if (fds[i] < 0) {
-			EPRINTLN("virtio vhost: open memory region %s: %s",
+			EPRINTLN("virtio vhost: open memory region index=%u fd=%d "
+			    "gpa=0x%llx bytes=%llu name=%s: %s", i,
+			    transport->memory_regions[i].shm_fd,
+			    (unsigned long long)transport->memory_regions[i].guest_phys_addr,
+			    (unsigned long long)transport->memory_regions[i].size,
 			    transport->memory_regions[i].shm_name,
 			    strerror(errno));
 			*fd_count = i;
@@ -962,6 +966,23 @@ virtio_vhost_transport_bind_device(const char *backend_id,
 	bool device_features_valid = false;
 	int rc;
 
+	/* Notifications commonly publish an unchanged binding. Compare against
+	 * the registered state itself: reconnect and clear/reset remain visible,
+	 * without a second cache or repeatedly applying device feature callbacks. */
+	if (backend_id != NULL && transport != NULL) {
+		pthread_mutex_lock(&backends_lock);
+		backend = virtio_vhost_transport_find_locked(backend_id);
+		bool unchanged = backend != NULL &&
+		    memcmp(&backend->transport, transport, sizeof(*transport)) == 0 &&
+		    backend->interrupt_cb == interrupt_cb &&
+		    backend->device_features_cb == device_features_cb &&
+		    backend->event_cb == event_cb && backend->device_opaque == opaque &&
+		    (!backend->device_features_valid || backend->device_features_applied);
+		pthread_mutex_unlock(&backends_lock);
+		if (unchanged)
+			return (0);
+	}
+
 	rc = virtio_vhost_transport_set_transport(backend_id, transport);
 	if (rc != 0)
 		return (rc);
@@ -1023,7 +1044,7 @@ virtio_vhost_transport_notify_queue_kick(const char *backend_id,
 	int kick_fd;
 	int fd;
 
-	if (backend_id == NULL)
+	if (backend_id == NULL || queue_index >= SCORPI_VIRTIO_VHOST_MAX_QUEUES)
 		return (-1);
 
 	pthread_mutex_lock(&backends_lock);
@@ -1031,6 +1052,30 @@ virtio_vhost_transport_notify_queue_kick(const char *backend_id,
 	if (backend == NULL || !backend->connected || backend->fd < 0) {
 		pthread_mutex_unlock(&backends_lock);
 		return (-1);
+	}
+	/*
+	 * Data-plane kicks use the established notifier, not the control socket.
+	 * Hold its lifetime lock through the nonblocking write so reset/disconnect
+	 * cannot close and reuse the descriptor between lookup and notification.
+	 * Changed transport state still takes the serialized setup path below.
+	 */
+	if (!backend->setup_dirty) {
+		int rc = 0;
+		if (virtio_vhost_transport_queue_ready(&backend->transport, queue_index)) {
+			kick_fd = backend->kick_write_fds[queue_index];
+			ssize_t written = -1;
+			if (kick_fd >= 0) {
+				do {
+					written = write(kick_fd, &value, sizeof(value));
+				} while (written < 0 && errno == EINTR);
+			}
+			/* A full notifier already carries a wakeup; the shared ring
+			 * is authoritative, so another byte is unnecessary. */
+			if (kick_fd < 0 || (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK))
+				rc = -1;
+		}
+		pthread_mutex_unlock(&backends_lock);
+		return (rc);
 	}
 	fd = dup(backend->fd);
 	if (fd < 0) {

@@ -45,6 +45,19 @@ vhost_memory_fds_test = executable(
   c_args: ['-UNDEBUG'],
 )
 test('vhost_memory_fds_test', vhost_memory_fds_test)
+vhost_memory_transport_test = executable(
+  'vhost_memory_transport_test',
+  files('vhost_memory_transport_test.c', '../src/vhost_vmmem.c'),
+  include_directories: inc,
+  dependencies: uuid_dep,
+  c_args: ['-UNDEBUG'],
+)
+test('vhost_memory_transport_test', vhost_memory_transport_test)
+
+test('vhost_kick_test', find_program('python3'),
+  args: [files('vhost_kick_test.py')], timeout: 30)
+test('vhost_binding_test', find_program('python3'),
+  args: [files('vhost_binding_test.py')], timeout: 30)
 
 cnc_thread_test_executable = executable(
   'cnc_thread_test',
