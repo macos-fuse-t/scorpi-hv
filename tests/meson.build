@@ -440,3 +440,12 @@ usb_net_xhci_test = executable(
 )
 test('usb_net_xhci_retry', usb_net_xhci_test, args: ['retry'])
 test('usb_net_xhci_short', usb_net_xhci_test, args: ['short'])
+
+usb_kbd_test = executable(
+  'usb_kbd_test',
+  files('usb_kbd_test.c'),
+  dependencies: [scorpi_kit_dep, libnv_dep],
+  include_directories: inc,
+  c_args: ['-UNDEBUG'],
+)
+test('usb_kbd_test', usb_kbd_test)
