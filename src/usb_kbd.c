@@ -249,8 +249,11 @@ ukbd_event(int down, uint8_t hidcode, uint8_t modifiers, void *arg)
 	if (down) {
 		int free_index = -1;
 		for (int i = 0; i < 6; i++) {
-			if (sc->um_report.keys[i] == hidcode)
+			if (sc->um_report.keys[i] == hidcode) {
+				/* A repeat must not fill an earlier empty slot. */
+				free_index = -1;
 				break;
+			}
 			if (!sc->um_report.keys[i] && free_index == -1)
 				free_index = i;
 		}
@@ -258,10 +261,9 @@ ukbd_event(int down, uint8_t hidcode, uint8_t modifiers, void *arg)
 			sc->um_report.keys[free_index] = hidcode;
 	} else {
 		for (int i = 0; i < 6; i++) {
-			if (sc->um_report.keys[i] == hidcode) {
+			/* Also clear duplicates left by older event handling. */
+			if (sc->um_report.keys[i] == hidcode)
 				sc->um_report.keys[i] = 0;
-				break;
-			}
 		}
 	}
 
