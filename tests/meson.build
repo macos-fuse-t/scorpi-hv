@@ -449,3 +449,12 @@ usb_kbd_test = executable(
   c_args: ['-UNDEBUG'],
 )
 test('usb_kbd_test', usb_kbd_test)
+
+usb_mouse_test = executable(
+  'usb_mouse_test',
+  files('usb_mouse_test.c'),
+  dependencies: [scorpi_kit_dep, libnv_dep],
+  include_directories: inc,
+  c_args: ['-UNDEBUG'],
+)
+test('usb_mouse_test', usb_mouse_test)
