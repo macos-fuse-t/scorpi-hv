@@ -28,6 +28,8 @@
  */
 
 #include <sys/types.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -54,6 +56,10 @@ static struct {
 	ptr_event_func_t ptr_event_cb;
 	void *ptr_arg;
 	int ptr_priority;
+
+	scroll_event_func_t scroll_event_cb;
+	void *scroll_arg;
+	int scroll_priority;
 
 	resize_event_func_t resize_event_cb;
 	void *resize_arg;
@@ -329,6 +335,23 @@ console_resize_register(resize_event_func_t event_cb, void *arg)
 }
 
 void
+console_scroll_register(scroll_event_func_t event_cb, void *arg, int pri)
+{
+	if (pri > console.scroll_priority) {
+		console.scroll_event_cb = event_cb;
+		console.scroll_arg = arg;
+		console.scroll_priority = pri;
+	}
+}
+
+void
+console_scroll_event(uint8_t button, int x, int y, int delta)
+{
+	if (console.scroll_event_cb)
+		(*console.scroll_event_cb)(button, x, y, delta, console.scroll_arg);
+}
+
+void
 console_key_event(int down, uint32_t keysym, uint32_t keycode)
 {
 	if (console.kbd_event_cb)
@@ -438,6 +461,24 @@ kbd_event(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	}
 }
 
+static void
+scroll_event(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
+{
+	long values[4];
+	char *end;
+
+	if (argc != 4)
+		return;
+	for (int i = 0; i < 4; i++) {
+		errno = 0;
+		values[i] = strtol(argv[i], &end, 10);
+		if (errno || end == argv[i] || *end != '\0' ||
+		    values[i] < INT_MIN || values[i] > INT_MAX)
+			return;
+	}
+	console_scroll_event(values[0], values[1], values[2], values[3]);
+}
+
 void
 console_init()
 {
@@ -448,6 +489,7 @@ console_init()
 		cnc_register_command("resize_framebuffer", resize_framebuffer,
 		    NULL);
 		cnc_register_command("mouse_event", mouse_event, NULL);
+		cnc_register_command("scroll_event", scroll_event, NULL);
 		cnc_register_command("key_event", kbd_event, NULL);
 	}
 	once = 1;
