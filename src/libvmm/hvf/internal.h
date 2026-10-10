@@ -37,7 +37,8 @@ enum {
 	VM_MEMSEG_COUNT,
 };
 
-#define	VM_MAX_MEMORY_SEGMENTS	16
+/* Room for the vhost RAM regions plus firmware and device mappings. */
+#define	VM_MAX_MEMORY_SEGMENTS	64
 
 struct mem_range {
 	uint64_t gpa;

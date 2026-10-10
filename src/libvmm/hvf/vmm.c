@@ -106,6 +106,21 @@ vm_create_devmem(struct vmctx *ctx, int segid, const char *name, size_t len)
     return NULL;
 }*/
 
+static hv_return_t
+vm_create_with_max_ipa(hv_vm_config_t config)
+{
+	uint32_t ipa_size;
+	hv_return_t res;
+
+	/* The default 36-bit address space cannot hold RAM banks above 64 GiB. */
+	res = hv_vm_config_get_max_ipa_size(&ipa_size);
+	if (res == HV_SUCCESS)
+		res = hv_vm_config_set_ipa_size(config, ipa_size);
+	if (res == HV_SUCCESS)
+		res = hv_vm_create(config);
+	return (res);
+}
+
 struct vmctx *
 vm_openf(const char *name, int flags)
 {
@@ -140,14 +155,8 @@ vm_openf(const char *name, int flags)
 			}
 
 			res = hv_vm_config_set_el2_enabled(config, true);
-			if (res == HV_SUCCESS) {
-				uint32_t ipa_size;
-				res = hv_vm_config_get_default_ipa_size(&ipa_size);
-				if (res == HV_SUCCESS)
-					res = hv_vm_config_set_ipa_size(config, ipa_size);
-				if (res == HV_SUCCESS)
-					res = hv_vm_create(config);
-			}
+			if (res == HV_SUCCESS)
+				res = vm_create_with_max_ipa(config);
 			os_release(config);
 			if (res == HV_SUCCESS)
 				el2_enabled = true;
@@ -156,7 +165,14 @@ vm_openf(const char *name, int flags)
 			exit(-1);
 		}
 	} else {
-		res = hv_vm_create(NULL);
+		hv_vm_config_t config = hv_vm_config_create();
+
+		if (config == NULL) {
+			EPRINTLN("hv_vm_config_create() failed");
+			exit(-1);
+		}
+		res = vm_create_with_max_ipa(config);
+		os_release(config);
 	}
 
 	if (res != HV_SUCCESS) {

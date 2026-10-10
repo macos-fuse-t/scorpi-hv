@@ -95,6 +95,9 @@ int main(void)
 {
 	const size_t mib = 1024 * 1024;
 	check_layout(8192 * mib, 512 * mib);
+	check_layout(12288 * mib, 512 * mib);
+	check_layout(126 * 1024 * mib, 512 * mib);
+	check_layout(128 * 1024 * mib, 512 * mib);
 	check_layout(576 * mib, 512 * mib);
 	check_layout(256 * mib, 192 * mib);
 	check_layout(64 * mib, 0);

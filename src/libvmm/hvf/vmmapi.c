@@ -112,7 +112,6 @@ bool mem_range_registered(uint64_t gpa);
 
 #define MB (1024 * 1024UL)
 #define GB (1024 * 1024 * 1024UL)
-#define VM_SHARED_MEMORY_CHUNK_SIZE GB
 
 #ifdef __amd64__
 #define VM_LOWMEM_BASE 0
@@ -721,6 +720,7 @@ vm_malloc(struct vmctx *ctx, uint64_t gpa, size_t len, uint64_t prot,
 		EPRINTLN("hv_vm_map() failed");
 		if (owned)
 			free(object);
+		memset(seg, 0, sizeof(*seg));
 		return (ENOMEM);
 	}
 	seg->active = true;
@@ -769,9 +769,23 @@ setup_memory_segment(struct vmctx *ctx, vm_paddr_t gpa, size_t len,
 	return (error);
 }
 
+static size_t
+vm_shared_memory_chunk_size(size_t highmem_size)
+{
+	size_t chunk_size = GB;
+
+	/* Reserve one transport region for the low RAM bank. */
+	while (highmem_size / chunk_size +
+	    (highmem_size % chunk_size != 0) >
+	    SCORPI_VIRTIO_VHOST_MAX_MEMORY_REGIONS - 1)
+		chunk_size *= 2;
+	return (chunk_size);
+}
+
 static int
 setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
-    size_t len, uint64_t prot, uintptr_t *addr, const char *suffix)
+    size_t len, uint64_t prot, uintptr_t *addr, const char *suffix,
+    size_t chunk_size)
 {
 	char chunk_suffix[64];
 	char name[64];
@@ -795,7 +809,7 @@ setup_shared_system_memory_segment(struct vmctx *ctx, vm_paddr_t gpa,
 	for (offset = 0; offset < len; offset += chunk_len) {
 		uintptr_t mapped_addr;
 
-		chunk_len = MIN(VM_SHARED_MEMORY_CHUNK_SIZE, len - offset);
+		chunk_len = MIN(chunk_size, len - offset);
 		if (snprintf(chunk_suffix, sizeof(chunk_suffix), "%s%u", suffix,
 			chunk_index) >= (int)sizeof(chunk_suffix)) {
 			error = ENAMETOOLONG;
@@ -931,6 +945,7 @@ vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 {
 	uintptr_t *addr;
 	int error;
+	size_t chunk_size;
 	const uint64_t protFlags = PROT_READ | PROT_WRITE | PROT_EXEC;
 
 	assert(vms == VM_MMAP_NONE || vms == VM_MMAP_ALL);
@@ -951,6 +966,8 @@ vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 #endif
 	ctx->memsegs[VM_MEMSEG_HIGH].size =
 	    memsize - ctx->memsegs[VM_MEMSEG_LOW].size;
+	chunk_size = vm_shared_memory_chunk_size(
+	    ctx->memsegs[VM_MEMSEG_HIGH].size);
 
 	if (ctx->memsegs[VM_MEMSEG_HIGH].size > 0) {
 		addr = (vms == VM_MMAP_ALL) ?
@@ -958,7 +975,7 @@ vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 		    NULL;
 		if ((error = setup_shared_system_memory_segment(ctx,
 			 VM_HIGHMEM_BASE, ctx->memsegs[VM_MEMSEG_HIGH].size,
-			 protFlags, addr, "high"))) {
+			 protFlags, addr, "high", chunk_size))) {
 			return (error);
 		}
 	}
@@ -969,7 +986,7 @@ vm_setup_memory(struct vmctx *ctx, size_t memsize, enum vm_mmap_style vms)
 		    NULL;
 		if ((error = setup_shared_system_memory_segment(ctx, VM_LOWMEM_BASE,
 			 ctx->memsegs[VM_MEMSEG_LOW].size, protFlags, addr,
-			 "low"))) {
+			 "low", chunk_size))) {
 			return (error);
 		}
 	}
