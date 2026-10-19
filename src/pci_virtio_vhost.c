@@ -217,6 +217,7 @@ pci_vhost_bind_transport(struct pci_vhost_state *state, struct vmctx *ctx,
 		transport.queues[i].avail_addr = pci_vhost_queue_avail_gpa(vq);
 		transport.queues[i].used_addr = pci_vhost_queue_used_gpa(vq);
 		transport.queues[i].ready = pci_vhost_queue_ready(vq);
+		transport.queues[i].resetting = state->queue_resetting[i];
 	}
 	vhost_vmmem_fill_transport(ctx, &transport);
 	if (info != NULL && info->ready_queue < transport.queue_count)

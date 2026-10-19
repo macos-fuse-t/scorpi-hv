@@ -4,7 +4,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-source = (Path(__file__).resolve().parents[1] / 'src/virtio_vhost_transport.c').read_text()
+root = Path(__file__).resolve().parents[1]
+source = (root / 'src/virtio_vhost_transport.c').read_text()
 start = source.index('int\nvirtio_vhost_transport_notify_queue_kick(')
 end = source.index('\nint\nvirtio_vhost_transport_notify_display_hint(', start)
 production = source[start:end]
@@ -18,12 +19,11 @@ prefix = r'''
 #include <string.h>
 #include <unistd.h>
 #include <stdio.h>
-#define SCORPI_VIRTIO_VHOST_MAX_QUEUES 4
+#include <scorpi/protocol/virtio_vhost.h>
 #define VIRTIO_VHOST_NOTIFY_BYTE 1
-struct scorpi_virtio_vhost_transport_desc { bool ready[4]; };
 struct virtio_vhost_transport {
     bool connected, setup_dirty;
-    int fd, kick_write_fds[4];
+    int fd, kick_write_fds[SCORPI_VIRTIO_VHOST_MAX_QUEUES];
     pthread_mutex_t io_mtx;
     struct scorpi_virtio_vhost_transport_desc transport;
 };
@@ -31,6 +31,7 @@ static pthread_mutex_t backends_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct virtio_vhost_transport backend;
 static unsigned duplicates, setups;
 static bool interrupt_write, fail_setup, check_lifetime_lock;
+static void virtio_vhost_transport_dispatch_events(struct virtio_vhost_transport *state) { (void)state; }
 static int test_dup(int fd) { ++duplicates; return dup(fd); }
 static ssize_t test_write(int fd, const void *bytes, size_t size) {
     if (check_lifetime_lock)
@@ -43,7 +44,7 @@ static struct virtio_vhost_transport *virtio_vhost_transport_find_locked(const c
 }
 static bool virtio_vhost_transport_queue_ready(
     const struct scorpi_virtio_vhost_transport_desc *state, uint32_t index) {
-    return index < 4 && state->ready[index];
+    return index < SCORPI_VIRTIO_VHOST_MAX_QUEUES && state->queues[index].ready;
 }
 static int virtio_vhost_transport_send_transport_setup(
     struct virtio_vhost_transport *state, int fd,
@@ -69,9 +70,9 @@ int main(void) {
     assert(fcntl(descriptors[1], F_SETFL, O_NONBLOCK) == 0);
     backend.connected = true;
     backend.fd = descriptors[0];
-    for (unsigned i = 0; i < 4; ++i) backend.kick_write_fds[i] = -1;
+    for (unsigned i = 0; i < SCORPI_VIRTIO_VHOST_MAX_QUEUES; ++i) backend.kick_write_fds[i] = -1;
     backend.kick_write_fds[0] = descriptors[1];
-    backend.transport.ready[0] = true;
+    backend.transport.queues[0].ready = true;
     assert(pthread_mutex_init(&backend.io_mtx, NULL) == 0);
     // A clean kick must not take the control mutex or duplicate its socket.
     pthread_mutex_lock(&backend.io_mtx);
@@ -84,9 +85,25 @@ int main(void) {
     assert(duplicates == 0 && setups == 0 && !interrupt_write);
     assert(virtio_vhost_transport_notify_queue_kick(NULL, 0) == -1);
     assert(virtio_vhost_transport_notify_queue_kick("unknown", 0) == -1);
-    assert(virtio_vhost_transport_notify_queue_kick("test", 4) == -1);
+    assert(virtio_vhost_transport_notify_queue_kick("test", SCORPI_VIRTIO_VHOST_MAX_QUEUES) == -1);
+    assert(virtio_vhost_transport_notify_queue_kick("test", UINT32_MAX) == -1);
+    // All user slots use the same notifier. In particular slot 63 must not
+    // alias queue 3 through an obsolete queue-index mask or fixed capacity.
+    int user_pipe[2]; assert(pipe(user_pipe) == 0);
+    assert(fcntl(user_pipe[0], F_SETFL, O_NONBLOCK) == 0);
+    assert(fcntl(user_pipe[1], F_SETFL, O_NONBLOCK) == 0);
+    for (unsigned i = SCORPI_VIRTIO_GPU_KERNEL_QUEUE_COUNT;
+         i < SCORPI_VIRTIO_VHOST_MAX_QUEUES; ++i) {
+        backend.transport.queues[i].ready = true;
+        backend.kick_write_fds[i] = user_pipe[1];
+        assert(virtio_vhost_transport_notify_queue_kick("test", i) == 0);
+        assert(read(user_pipe[0], &byte, 1) == 1 && byte == 1);
+        assert(read(descriptors[0], &byte, 1) == -1 && errno == EAGAIN);
+        backend.kick_write_fds[i] = -1;
+    }
+    close(user_pipe[0]); close(user_pipe[1]);
     assert(virtio_vhost_transport_notify_queue_kick("test", 1) == 0);
-    backend.transport.ready[1] = true;
+    backend.transport.queues[1].ready = true;
     assert(virtio_vhost_transport_notify_queue_kick("test", 1) == -1);
     check_lifetime_lock = false;
     backend.setup_dirty = true;
@@ -114,5 +131,6 @@ with tempfile.TemporaryDirectory(prefix='scorpi-vhost-kick-') as directory:
     path = Path(directory)
     (path / 'test.c').write_text(prefix + production + suffix)
     subprocess.run(['clang', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread',
-                    '-fsanitize=address,undefined', str(path / 'test.c'), '-o', str(path / 'test')], check=True)
+                    '-fsanitize=address,undefined', '-I', str(root / 'include'),
+                    str(path / 'test.c'), '-o', str(path / 'test')], check=True)
     subprocess.run([str(path / 'test')], check=True, timeout=20)

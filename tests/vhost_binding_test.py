@@ -79,6 +79,11 @@ int main(void) {
     CHANGE(queues[0].used_addr, 0x3000);
     CHANGE(queues[0].ready, false);
     CHANGE(queues[0].size, 512);
+    CHANGE(queue_count, SCORPI_VIRTIO_VHOST_MAX_QUEUES);
+    CHANGE(queues[SCORPI_VIRTIO_VHOST_MAX_QUEUES-1].desc_addr, 0x100000);
+    CHANGE(queues[SCORPI_VIRTIO_VHOST_MAX_QUEUES-1].avail_addr, 0x104000);
+    CHANGE(queues[SCORPI_VIRTIO_VHOST_MAX_QUEUES-1].used_addr, 0x105000);
+    CHANGE(queues[SCORPI_VIRTIO_VHOST_MAX_QUEUES-1].ready, true);
     CHANGE(memory_regions[0].guest_phys_addr, 0x4000);
     CHANGE(memory_regions[0].size, 8192);
     CHANGE(memory_regions[0].shm_fd, 7);

@@ -19,6 +19,7 @@ struct pci_vhost_state {
 	struct virtio_softc *vs;
 	struct vqueue_info *queues;
 	uint32_t queue_count;
+	bool queue_resetting[SCORPI_VIRTIO_VHOST_MAX_QUEUES];
 	char backend_id[SCORPI_VIRTIO_VHOST_NAME_MAX];
 	char device_name[SCORPI_VIRTIO_VHOST_NAME_MAX];
 	uint64_t features;

@@ -31,5 +31,9 @@ int virtio_vhost_transport_bind_device(const char *backend_id,
 void virtio_vhost_transport_clear_transport(const char *backend_id);
 int virtio_vhost_transport_notify_queue_kick(const char *backend_id,
     uint32_t queue_index);
+/* Nonblocking with respect to renderer execution. Called on the host event
+ * thread without the device mutex; ACK arrives as QUEUE_RESET_DONE. */
+int virtio_vhost_transport_request_queue_reset(const char *backend_id,
+    const struct scorpi_vhost_queue_reset *reset);
 int virtio_vhost_transport_notify_display_hint(const char *backend_id,
     uint32_t width, uint32_t height, bool hdpi);

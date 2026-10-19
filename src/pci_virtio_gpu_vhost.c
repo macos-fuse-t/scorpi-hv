@@ -22,11 +22,13 @@
 #include <uuid/uuid.h>
 
 #include <scorpi/protocol/vhost_user.h>
+#include <scorpi/protocol/virtio_gpu_user.h>
 
 #include "bhyverun.h"
 #include "config.h"
 #include "console.h"
 #include "debug.h"
+#include "mevent.h"
 #include "pci_emul.h"
 #include "pci_virtio_vhost.h"
 #include "virtio.h"
@@ -37,7 +39,10 @@
 #define VHOST_DEFAULT_BACKEND_ID  "gpu0"
 #define VHOST_DEFAULT_DEVICE_NAME SCORPI_VIRTIO_VHOST_DEVICE_GPU
 #define VHOST_DEFAULT_QUEUE_SIZE  1024
-#define VHOST_GPU_QUEUE_COUNT	  4
+#define VHOST_GPU_QUEUE_COUNT SCORPI_VIRTIO_GPU_KERNEL_QUEUE_COUNT
+#define VHOST_GPU_QUEUE_CAPACITY SCORPI_VIRTIO_VHOST_MAX_QUEUES
+#define VHOST_GPU_MODERN_BAR 2
+#define VHOST_GPU_F_RING_RESET 40u
 #define VHOST_GPU_CTRLQ		  0
 #define VHOST_GPU_COLS_MAX	  7680
 #define VHOST_GPU_ROWS_MAX	  4320
@@ -57,6 +62,19 @@
 	((1ULL << VIRTIO_GPU_F_EDID) | (1ULL << VIRTIO_GPU_F_SCORPI_DX12) | \
 	    (1ULL << VIRTIO_GPU_F_SCORPI_LOGS))
 
+/* Only the vhost GPU implements the extended common configuration. Other
+ * virtio devices keep their existing register layout and queue lifecycle. */
+struct pci_vhost_common_cfg {
+	struct virtio_pci_common_cfg base;
+	uint16_t queue_notify_data;
+	uint16_t queue_reset;
+};
+#define VHOST_GPU_COMMON_Q_RESET \
+	offsetof(struct pci_vhost_common_cfg, queue_reset)
+_Static_assert(VHOST_GPU_COMMON_Q_RESET == 58, "virtio queue_reset ABI");
+_Static_assert(sizeof(struct pci_vhost_common_cfg) == 60,
+    "virtio common config ABI");
+
 struct pci_vhost_softc {
 	struct virtio_softc vsc_vs;
 	struct virtio_consts vsc_consts;
@@ -70,7 +88,12 @@ struct pci_vhost_softc {
 	uint32_t start_resx;
 	uint32_t start_resy;
 	bool hdpi_enabled;
-	struct vqueue_info queues[VHOST_GPU_QUEUE_COUNT];
+	struct vqueue_info queues[VHOST_GPU_QUEUE_CAPACITY];
+	int reset_fds[2];
+	struct mevent *reset_event;
+	uint64_t next_queue_reset;
+	struct scorpi_vhost_queue_reset queue_resets[VHOST_GPU_QUEUE_CAPACITY];
+	bool queue_reset_send[VHOST_GPU_QUEUE_CAPACITY];
 
 	bool legacy_fb_direct_mapped;
 	bool renderer_scanout_active;
@@ -86,7 +109,11 @@ struct pci_vhost_softc {
 
 extern uuid_t vm_uuid;
 
+static void pci_vhost_bind_callbacks(struct pci_vhost_softc *sc);
 static void pci_vhost_reset(void *vsc);
+static void pci_vhost_queue_reset(void *vsc, struct vqueue_info *vq);
+static void pci_vhost_complete_queue_reset(struct pci_vhost_softc *sc,
+    uint32_t index);
 static void pci_vhost_neg_features(void *vsc, uint64_t negotiated_features);
 static int pci_vhost_cfgread(void *vsc, int offset, int size, uint32_t *retval);
 static int pci_vhost_cfgwrite(void *vsc, int offset, int size, uint32_t value);
@@ -174,7 +201,16 @@ pci_vhost_device_features(void *opaque, uint64_t device_features)
 		return;
 	}
 	sc->vsc_consts.vc_hv_caps = VHOST_GPU_TRANSPORT_FEATURES |
-	    (device_features & VHOST_GPU_DEVICE_FEATURES);
+	    (device_features & (VHOST_GPU_DEVICE_FEATURES |
+	        (1ULL << VIRTIO_GPU_F_SCORPI_USER_SUBMISSION) |
+	        (1ULL << VHOST_GPU_F_RING_RESET)));
+	/* Keep the four-queue interface until the backend implements the full
+	 * user-submission contract. Notify vectors can be shared by user queues;
+	 * their native completions still use the existing kernel event queue. */
+	sc->vsc_consts.vc_nvq =
+	    (device_features & (1ULL << VIRTIO_GPU_F_SCORPI_USER_SUBMISSION)) ?
+	    VHOST_GPU_QUEUE_CAPACITY : VHOST_GPU_QUEUE_COUNT;
+	sc->vhost.queue_count = sc->vsc_consts.vc_nvq;
 	pthread_mutex_unlock(&sc->vsc_mtx);
 
 	if ((device_features & VHOST_GPU_DEVICE_FEATURES) !=
@@ -193,6 +229,22 @@ pci_vhost_backend_event(void *opaque, const struct scorpi_vhost_msg *msg)
 
 	pthread_mutex_lock(&sc->vsc_mtx);
 	switch (msg->header.request) {
+	case SCORPI_VHOST_MSG_QUEUE_RESET_DONE: {
+		const struct scorpi_vhost_queue_reset *reset = &msg->payload.queue_reset;
+		if (msg->header.size != sizeof(*reset) ||
+		    reset->index >= sc->vhost.queue_count)
+			break;
+		const uint32_t i = reset->index;
+		if (!sc->vhost.queue_resetting[i] || !reset->serial ||
+		    reset->device_generation != sc->vhost.reset_generation ||
+		    reset->serial != sc->queue_resets[i].serial)
+			break;
+		pci_vhost_complete_queue_reset(sc, i);
+		memset(&sc->queue_resets[i], 0, sizeof(sc->queue_resets[i]));
+		pci_vhost_bind_callbacks(sc);
+		break;
+	}
+
 	case SCORPI_VHOST_MSG_SCANOUT:
 		pci_vhost_apply_renderer_scanout(sc, &msg->payload.scanout);
 		break;
@@ -540,6 +592,26 @@ pci_vhost_barread(struct pci_devinst *pi, int baridx, uint64_t offset, int size)
 		return (pci_vhost_legacy_ctrl_read(sc, offset, size));
 	case VHOST_LEGACY_FB_BAR:
 		return (pci_vhost_legacy_fb_read(sc, offset, size));
+	case SCORPI_GPU_USER_NOTIFY_BAR:
+		return (0);
+	case VHOST_GPU_MODERN_BAR:
+		if (offset >= sizeof(struct virtio_pci_common_cfg) && offset < 64) {
+			uint32_t extension = 0;
+			uint64_t value = 0;
+			pthread_mutex_lock(&sc->vsc_mtx);
+			const uint32_t i = sc->vsc_vs.vs_curq;
+			if (i < sc->vhost.queue_count &&
+			    (sc->vsc_vs.vs_negotiated_caps & (1ULL << VHOST_GPU_F_RING_RESET)) &&
+			    sc->vhost.queue_resetting[i])
+				extension = 1u << 16;
+			if (size > 0 && size <= 4 &&
+			    offset + size <= sizeof(struct pci_vhost_common_cfg))
+				memcpy(&value, (uint8_t *)&extension + offset -
+				    sizeof(struct virtio_pci_common_cfg), size);
+			pthread_mutex_unlock(&sc->vsc_mtx);
+			return (value);
+		}
+		return (vi_pci_read_modern(pi, baridx, offset, size));
 	default:
 		return (vi_pci_read_modern(pi, baridx, offset, size));
 	}
@@ -558,6 +630,51 @@ pci_vhost_barwrite(struct pci_devinst *pi, int baridx, uint64_t offset,
 	case VHOST_LEGACY_FB_BAR:
 		pci_vhost_legacy_fb_write(sc, offset, size, value);
 		break;
+	case SCORPI_GPU_USER_NOTIFY_BAR: {
+		uint32_t queue;
+		/* Payload is deliberately ignored: a mapped page can notify only
+		 * its own slot, never a kernel queue or another device's slot. */
+		if (!scorpi_gpu_user_notify_queue(offset, (unsigned)size, &queue))
+			break;
+		pthread_mutex_lock(&sc->vsc_mtx);
+		const uint8_t status_mask = VIRTIO_CONFIG_STATUS_DRIVER_OK |
+		    VIRTIO_CONFIG_S_NEEDS_RESET | VIRTIO_CONFIG_STATUS_FAILED;
+		if ((sc->vsc_vs.vs_negotiated_caps &
+		        (1ULL << VIRTIO_GPU_F_SCORPI_USER_SUBMISSION)) &&
+		    (sc->vsc_vs.vs_status & status_mask) ==
+		        VIRTIO_CONFIG_STATUS_DRIVER_OK &&
+		    queue < sc->vhost.queue_count &&
+		    sc->queues[queue].vq_enabled && !sc->vhost.queue_resetting[queue] &&
+		    vq_ring_ready(&sc->queues[queue]))
+			pci_vhost_queue_notify(sc, &sc->queues[queue]);
+		pthread_mutex_unlock(&sc->vsc_mtx);
+		break;
+	}
+	case VHOST_GPU_MODERN_BAR: {
+		pthread_mutex_lock(&sc->vsc_mtx);
+		const uint32_t i = sc->vsc_vs.vs_curq;
+		if (offset == VHOST_GPU_COMMON_Q_RESET) {
+			if (size == 2 && value == 1 && i < sc->vhost.queue_count &&
+			    (sc->vsc_vs.vs_negotiated_caps & (1ULL << VHOST_GPU_F_RING_RESET)) &&
+			    !sc->vhost.queue_resetting[i]) {
+				sc->vhost.queue_resetting[i] = true;
+				pci_vhost_queue_reset(sc, &sc->queues[i]);
+			}
+		} else if (offset >= sizeof(struct virtio_pci_common_cfg) && offset < 64) {
+			/* queue_notify_data is read-only; trailing bytes are reserved. */
+		} else if (i < sc->vhost.queue_count &&
+		    (sc->queues[i].vq_enabled || sc->vhost.queue_resetting[i]) &&
+		    (offset == VIRTIO_PCI_COMMON_Q_SIZE ||
+		     offset == VIRTIO_PCI_COMMON_Q_ENABLE ||
+		     (offset >= VIRTIO_PCI_COMMON_Q_DESCLO &&
+		      offset <= VIRTIO_PCI_COMMON_Q_USEDHI))) {
+			/* Keep the live ring immutable until the renderer acknowledges reset. */
+		} else {
+			vi_pci_write_modern(pi, baridx, offset, size, value);
+		}
+		pthread_mutex_unlock(&sc->vsc_mtx);
+		break;
+	}
 	default:
 		vi_pci_write_modern(pi, baridx, offset, size, value);
 		break;
@@ -649,6 +766,9 @@ pci_vhost_reset(void *vsc)
 {
 	struct pci_vhost_softc *sc = vsc;
 
+	memset(sc->vhost.queue_resetting, 0, sizeof(sc->vhost.queue_resetting));
+	memset(sc->queue_resets, 0, sizeof(sc->queue_resets));
+	memset(sc->queue_reset_send, 0, sizeof(sc->queue_reset_send));
 	pci_vhost_clear_features(&sc->vhost);
 	pci_vhost_advance_reset_generation(&sc->vhost);
 	sc->renderer_scanout_active = false;
@@ -757,9 +877,100 @@ pci_vhost_queue_notify(void *vsc, struct vqueue_info *vq)
 	struct pci_vhost_softc *sc = vsc;
 	struct pci_vhost_transport_info info;
 
+	if (sc->vhost.queue_resetting[vq->vq_num])
+		return;
 	pci_vhost_gpu_transport_info(sc, &info);
 	(void)pci_vhost_notify_queue_kick(&sc->vhost,
 	    sc->vsc_vs.vs_pi->pi_vmctx, &info, vq->vq_num);
+}
+
+static void
+pci_vhost_complete_queue_reset(struct pci_vhost_softc *sc, uint32_t index)
+{
+	struct vqueue_info *vq = &sc->queues[index];
+
+	vq->vq_flags = 0;
+	vq->vq_last_avail = 0;
+	vq->vq_next_used = 0;
+	vq->vq_save_used = 0;
+	vq->vq_pfn = 0;
+	vq->vq_msix_idx = VIRTIO_MSI_NO_VECTOR;
+	if (vq->vq_maxqsize != 0)
+		vq->vq_qsize = vq->vq_maxqsize;
+	vq->vq_desc = NULL;
+	vq->vq_avail = NULL;
+	vq->vq_used = NULL;
+	vq->vq_desc_gpa = 0;
+	vq->vq_avail_gpa = 0;
+	vq->vq_used_gpa = 0;
+	vq->vq_enabled = false;
+	sc->vhost.queue_resetting[index] = false;
+}
+
+static void
+pci_vhost_queue_reset(void *vsc, struct vqueue_info *vq)
+{
+	struct pci_vhost_softc *sc = vsc;
+	/* MMIO holds vsc_mtx. Never wait for transport I/O from this callback. */
+	if (sc->next_queue_reset == UINT64_MAX)
+		return; /* fail closed */
+	const uint32_t i = vq->vq_num;
+	sc->queue_resets[i] = (struct scorpi_vhost_queue_reset){
+		.index = i, .device_generation = sc->vhost.reset_generation,
+		.serial = ++sc->next_queue_reset,
+	};
+	sc->queue_reset_send[i] = true;
+	pci_vhost_bind_callbacks(sc);
+	const uint8_t byte = 1;
+	ssize_t rc;
+	do {
+		rc = write(sc->reset_fds[1], &byte, sizeof(byte));
+	} while (rc < 0 && errno == EINTR);
+	if (rc < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+		EPRINTLN("virtio-gpu: queue reset wake failed: %s", strerror(errno));
+}
+
+static void
+pci_vhost_send_queue_resets(int fd, enum ev_type type, void *opaque)
+{
+	struct pci_vhost_softc *sc = opaque;
+	uint8_t bytes[64];
+	(void)type;
+	ssize_t nread;
+	do {
+		nread = read(fd, bytes, sizeof(bytes));
+	} while (nread > 0 || (nread < 0 && errno == EINTR));
+	for (uint32_t i = 0; i < VHOST_GPU_QUEUE_CAPACITY; ++i) {
+		pthread_mutex_lock(&sc->vsc_mtx);
+		const bool send = sc->queue_reset_send[i] && sc->vhost.queue_resetting[i];
+		const struct scorpi_vhost_queue_reset reset = sc->queue_resets[i];
+		sc->queue_reset_send[i] = false;
+		pthread_mutex_unlock(&sc->vsc_mtx);
+		if (send && virtio_vhost_transport_request_queue_reset(
+		    sc->vhost.backend_id, &reset) != 0)
+			EPRINTLN("virtio-gpu: queue %u reset delivery failed; "
+			    "reset remains pending", i);
+	}
+}
+
+static int
+pci_vhost_extend_common_cfg(struct pci_devinst *pi)
+{
+	/* The capabilities were just constructed locally; do not change the
+	 * generic virtio common-config size for other devices. */
+	for (unsigned cap = pci_get_cfgdata8(pi, PCIR_CAP_PTR); cap != 0;
+	     cap = pci_get_cfgdata8(pi, cap + 1)) {
+		if (pci_get_cfgdata8(pi, cap) == PCIY_VENDOR &&
+		    pci_get_cfgdata8(pi, cap + offsetof(struct virtio_pci_cap,
+		        cfg_type)) == VIRTIO_PCI_CAP_COMMON_CFG &&
+		    pci_get_cfgdata8(pi, cap + offsetof(struct virtio_pci_cap,
+		        bar)) == VHOST_GPU_MODERN_BAR) {
+			pci_set_cfgdata32(pi, cap + offsetof(struct virtio_pci_cap, length),
+			    sizeof(struct pci_vhost_common_cfg));
+			return (0);
+		}
+	}
+	return (EINVAL);
 }
 
 static int
@@ -839,10 +1050,13 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	pthread_mutex_init(&sc->vsc_mtx, &attr);
 	pthread_mutexattr_destroy(&attr);
 
-	for (uint32_t i = 0; i < VHOST_GPU_QUEUE_COUNT; i++) {
+	for (uint32_t i = 0; i < VHOST_GPU_QUEUE_CAPACITY; i++) {
 		sc->queues[i].vq_qsize = VHOST_DEFAULT_QUEUE_SIZE;
 		sc->queues[i].vq_maxqsize = VHOST_DEFAULT_QUEUE_SIZE;
 		sc->queues[i].vq_notify = pci_vhost_queue_notify;
+		sc->queues[i].vq_num = i;
+		sc->queues[i].vq_vs = &sc->vsc_vs;
+		sc->queues[i].vq_msix_idx = VIRTIO_MSI_NO_VECTOR;
 	}
 	pci_vhost_state_init(&sc->vhost, &sc->vsc_vs, sc->queues,
 	    VHOST_GPU_QUEUE_COUNT, backend_id, device_name);
@@ -866,8 +1080,10 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 		return (1);
 	}
 
-	vi_set_mmio_bar_modern(&sc->vsc_vs, 2);
-	err = add_virtio10_pci_caps(&sc->vsc_vs, 2);
+	vi_set_mmio_bar_modern(&sc->vsc_vs, VHOST_GPU_MODERN_BAR);
+	err = add_virtio10_pci_caps(&sc->vsc_vs, VHOST_GPU_MODERN_BAR);
+	if (err == 0)
+		err = pci_vhost_extend_common_cfg(pi);
 	if (err) {
 		free(sc);
 		return (err);
@@ -880,6 +1096,11 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	    VHOST_LEGACY_FB_SIZE);
 	assert(err == 0);
 	pci_emul_set_bar_direct_mapped(pi, VHOST_LEGACY_FB_BAR, 1);
+	/* Trapped MMIO only. Never directly map this aperture as guest RAM. */
+	err = pci_emul_alloc_bar(pi, SCORPI_GPU_USER_NOTIFY_BAR, PCIBAR_MEM32,
+	    SCORPI_GPU_USER_NOTIFY_BYTES);
+	if (err)
+		return (err);
 
 	pci_vhost_bind_callbacks(sc);
 	if (socket_path != NULL &&
@@ -888,6 +1109,16 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 		EPRINTLN(
 		    "virtio-gpu-vhost: failed to configure backend socket %s",
 		    socket_path);
+		return (-1);
+	}
+	if (pipe(sc->reset_fds) != 0)
+		return (-1);
+	if (fcntl(sc->reset_fds[0], F_SETFL, O_NONBLOCK) != 0 ||
+	    fcntl(sc->reset_fds[1], F_SETFL, O_NONBLOCK) != 0 ||
+	    !(sc->reset_event = mevent_add(sc->reset_fds[0], EVF_READ,
+	        pci_vhost_send_queue_resets, sc))) {
+		close(sc->reset_fds[0]);
+		close(sc->reset_fds[1]);
 		return (-1);
 	}
 	console_set_hdpi(sc->hdpi_enabled);
