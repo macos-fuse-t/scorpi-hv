@@ -188,7 +188,7 @@ write_register(struct arm64_hyperv *hv, uint32_t name, struct hv_value v,
 	if (v.low & ((UINT64_C(1) << 62) | ((UINT64_C(1) << 58) - 1)))
 		return HV_INVALID_PARAMETER;
 	if (v.low & HV_NOTIFY) {
-		PRINTLN("Hyper-V guest crash: vcpu=%u guestOsId=0x%016" PRIx64
+		EPRINTLN("Hyper-V guest crash: vcpu=%u guestOsId=0x%016" PRIx64
 		    " control=0x%016" PRIx64 " P0=0x%016" PRIx64
 		    " P1=0x%016" PRIx64 " P2=0x%016" PRIx64
 		    " P3=0x%016" PRIx64 " P4=0x%016" PRIx64,

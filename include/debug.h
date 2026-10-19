@@ -39,7 +39,7 @@ extern int raw_stdio;
 			fprintf(filep, fmt "\n", ##arg);	\
 	} while (0)
 
-#define PRINTLN(fmt, arg...)	FPRINTLN(stderr, fmt, ##arg)
+#define PRINTLN(fmt, arg...)	do { } while (0)
 #define EPRINTLN(fmt, arg...)	FPRINTLN(stderr, fmt, ##arg)
 
 #endif
