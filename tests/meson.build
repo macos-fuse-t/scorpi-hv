@@ -420,7 +420,8 @@ if hypervisor_backend == 'hvf'
   )
   test('hvf_memory_test', hvf_memory_test)
 
-  foreach test_name : ['legacy_framebuffer_test', 'hvf_abort_decode_test',
+  foreach test_name : ['legacy_framebuffer_test', 'legacy_framebuffer_mode_test',
+      'hvf_abort_decode_test',
       'hvf_memory_ranges_test', 'hvf_vm_config_test']
     regression_test = executable(
       test_name,

@@ -348,6 +348,31 @@ pci_vgpu_find_resource(struct pci_vgpu_softc *sc, uint32_t resource_id)
 }
 
 static void
+pci_vgpu_set_legacy_scanout(struct pci_vgpu_softc *sc)
+{
+	struct vgpu_scanout *scanout;
+	uint32_t stride;
+
+	scanout = pci_vgpu_find_resource(sc, VGPU_LEGACY_RESOURCE_ID);
+	if (scanout == NULL || sc->resx == 0 || sc->resy == 0 ||
+	    sc->resx > COLS_MAX || sc->resy > ROWS_MAX)
+		return;
+
+	/* GOP reports PixelsPerScanLine equal to the visible width. */
+	stride = sc->resx * 4;
+	if ((size_t)stride * sc->resy > scanout->size)
+		return;
+
+	scanout->width = sc->resx;
+	scanout->height = sc->resy;
+	scanout->stride = stride;
+	scanout->format = VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;
+	console_set_scanout(true, scanout->width, scanout->height,
+	    scanout->stride, scanout->format, scanout->shm_name,
+	    scanout->size, true);
+}
+
+static void
 pci_vgpu_destroy_scanout(struct vgpu_scanout *scanout)
 {
 	LIST_REMOVE(scanout, entries);
@@ -1392,7 +1417,6 @@ pci_vgpu_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 	struct pci_vgpu_softc *sc;
 	uint32_t resource_id;
 	struct vgpu_scanout *scanout;
-	int stride;
 	bool created;
 
 	if (baridx != LEGACY_FRAMEBUFFER_BAR)
@@ -1417,8 +1441,6 @@ pci_vgpu_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 		}
 		return;
 	}
-
-	stride = roundup2(sc->resx * 4, 32);
 
 	// create a default scanout
 	resource_id = VGPU_LEGACY_RESOURCE_ID;
@@ -1459,10 +1481,9 @@ pci_vgpu_baraddr(struct pci_devinst *pi, int baridx, int enabled,
 		}
 	}
 
-	console_set_scanout(true, sc->resx, sc->resy, stride,
-	    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, scanout->shm_name, FB_SIZE, true);
 	if (created)
 		memset((void *)scanout->base_ptr, 0, FB_SIZE);
+	pci_vgpu_set_legacy_scanout(sc);
 }
 
 static uint64_t
@@ -1557,8 +1578,11 @@ pci_vgpu_legacy_ctrl_write(struct pci_devinst *pi, int baridx, uint64_t offset,
 		sc->resy = value;
 		break;
 	default:
-		break;
+		return;
 	}
+
+	/* Firmware can select another GOP mode without moving the BAR. */
+	pci_vgpu_set_legacy_scanout(sc);
 }
 
 static uint64_t
