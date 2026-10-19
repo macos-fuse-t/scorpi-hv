@@ -4,7 +4,10 @@
 #include <stdint.h>
 
 #define SCORPI_VIRTIO_VHOST_NAME_MAX 64
-#define SCORPI_VIRTIO_VHOST_MAX_QUEUES 8
+#define SCORPI_VIRTIO_GPU_KERNEL_QUEUE_COUNT 4u
+#define SCORPI_VIRTIO_GPU_USER_QUEUE_COUNT 64u
+#define SCORPI_VIRTIO_VHOST_MAX_QUEUES \
+    (SCORPI_VIRTIO_GPU_KERNEL_QUEUE_COUNT + SCORPI_VIRTIO_GPU_USER_QUEUE_COUNT)
 #define SCORPI_VIRTIO_VHOST_MAX_MEMORY_REGIONS 16
 #define SCORPI_VIRTIO_VHOST_PROTOCOL "scorpi-vhost-v1"
 #define SCORPI_VIRTIO_VHOST_DEVICE_GPU "virtio-gpu"
@@ -16,6 +19,7 @@ struct scorpi_virtio_vhost_queue_desc {
 	uint64_t avail_addr;
 	uint64_t used_addr;
 	bool ready;
+	bool resetting;
 };
 
 struct scorpi_virtio_vhost_memory_region_desc {

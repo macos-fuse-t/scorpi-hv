@@ -59,6 +59,10 @@ test('vhost_kick_test', find_program('python3'),
 test('vhost_binding_test', find_program('python3'),
   args: [files('vhost_binding_test.py')], timeout: 30)
 
+user_notify_test = executable('user_notify_test', 'user_notify_test.c',
+  include_directories: inc, c_args: ['-UNDEBUG'], build_by_default: false)
+test('user_notify_test', user_notify_test)
+
 cnc_thread_test_executable = executable(
   'cnc_thread_test',
   files('cnc_thread_test.c') + [libwebsockets_static],

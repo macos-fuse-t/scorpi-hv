@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include "virtio_vhost.h"
 
 /*
  * Scorpi vhost transport.
@@ -17,7 +18,7 @@
 #define SCORPI_VHOST_FLAG_REPLY		0x1u
 #define SCORPI_VHOST_FLAG_NEED_REPLY	0x2u
 #define SCORPI_VHOST_MAX_MEMORY_REGIONS 16
-#define SCORPI_VHOST_MAX_QUEUES		16
+#define SCORPI_VHOST_MAX_QUEUES SCORPI_VIRTIO_VHOST_MAX_QUEUES
 #define SCORPI_VHOST_MAX_CONFIG_SIZE	256
 #define SCORPI_VHOST_SCANOUT_NAME_MAX	31
 
@@ -46,6 +47,8 @@ enum scorpi_vhost_msg_type {
 	SCORPI_VHOST_MSG_DISPLAY_HINT = 21,
 	SCORPI_VHOST_MSG_CURSOR = 22,
 	SCORPI_VHOST_MSG_DISPLAY_SURFACE = 23,
+	SCORPI_VHOST_MSG_RESET_QUEUE = 24,
+	SCORPI_VHOST_MSG_QUEUE_RESET_DONE = 25,
 };
 
 struct scorpi_vhost_header {
@@ -55,6 +58,14 @@ struct scorpi_vhost_header {
 	uint32_t request;
 	uint32_t flags;
 	uint32_t size;
+};
+
+/* Asynchronous reset request/ack. Serial is never reused within a frontend
+ * instance. Device generation rejects requests overtaken by a device reset. */
+struct scorpi_vhost_queue_reset {
+	uint32_t index;
+	uint32_t device_generation;
+	uint64_t serial;
 };
 
 struct scorpi_vhost_hello {
@@ -164,6 +175,7 @@ struct scorpi_vhost_cursor {
 struct scorpi_vhost_msg {
 	struct scorpi_vhost_header header;
 	union {
+		struct scorpi_vhost_queue_reset queue_reset;
 		uint64_t u64;
 		struct scorpi_vhost_hello hello;
 		struct scorpi_vhost_queue_state queue_state;
