@@ -34,6 +34,9 @@
 #include <sys/stat.h>
 #endif
 #include <sys/time.h>
+#ifdef __APPLE__
+#include <sys/qos.h>
+#endif
 #ifdef BHYVE_SNAPSHOT
 #include <sys/un.h>
 #endif
@@ -390,6 +393,14 @@ fbsdrun_start_thread(void *param)
 
 	snprintf(tname, sizeof(tname), "vcpu %d", vi->vcpuid);
 	compat_set_thread_name(pthread_self(), tname);
+
+#ifdef __APPLE__
+	error = pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+	if (error != 0) {
+		EPRINTLN("vcpu %d: failed to set thread QoS: %s",
+		    vi->vcpuid, strerror(error));
+	}
+#endif
 
 	if (vcpumap[vi->vcpuid] != NULL) {
 		error = compat_set_thread_affinity(pthread_self(), vi->vcpuid,
