@@ -86,6 +86,46 @@ test_invalid_yaml_file(void)
 }
 
 static void
+test_cpu_timer_options(void)
+{
+	static const char *const yaml[] = {
+	    "cpu:\n  cores: 4\n  hyperv: true\n  profile-timer: true\n"
+	    "  nested-virt: false\nmemory: 4G\n",
+	    "cpu:\n  cores: 4\n  hyperv: false\n  profile-timer: false\n"
+	    "  nested-virt: false\nmemory: 4G\n",
+	    "cpu:\n  cores: 4\nmemory: 4G\n",
+	};
+	static const char *const expected[] = {"true", "false", NULL};
+
+	for (size_t i = 0; i < sizeof(yaml) / sizeof(yaml[0]); i++) {
+		struct scorpi_normalized_vm *normalized, *roundtrip;
+		scorpi_vm_t vm, from_config;
+		nvlist_t *config;
+
+		assert(scorpi_load_vm_from_yaml(yaml[i], &vm) == SCORPI_OK);
+		assert(scorpi_vm_normalize(vm, &normalized) == SCORPI_OK);
+		assert(scorpi_vm_to_config(normalized, &config) == SCORPI_OK);
+		const char *hyperv = scorpi_config_get_value(config, "cpu.hyperv");
+		const char *timer = scorpi_config_get_value(config, "cpu.profile-timer");
+		if (expected[i] == NULL) {
+			assert(hyperv == NULL && timer == NULL);
+		} else {
+			assert(hyperv != NULL && strcmp(hyperv, expected[i]) == 0);
+			assert(timer != NULL && strcmp(timer, expected[i]) == 0);
+		}
+		/* CLI imports must preserve both explicit true and explicit false. */
+		assert(scorpi_load_vm_from_config_tree(config, &from_config) == SCORPI_OK);
+		assert(scorpi_vm_normalize(from_config, &roundtrip) == SCORPI_OK);
+		assert(scorpi_normalized_vm_equal(normalized, roundtrip));
+		scorpi_normalized_vm_destroy(roundtrip);
+		scorpi_destroy_vm(from_config);
+		scorpi_config_destroy(config);
+		scorpi_normalized_vm_destroy(normalized);
+		scorpi_destroy_vm(vm);
+	}
+}
+
+static void
 test_missing_yaml_file(void)
 {
 	scorpi_vm_t vm;
@@ -99,6 +139,7 @@ int
 main(void)
 {
 	test_yaml_file_parity();
+	test_cpu_timer_options();
 	test_invalid_yaml_file();
 	test_missing_yaml_file();
 	return (0);

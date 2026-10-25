@@ -62,6 +62,7 @@
 
 #include "arch.h"
 #include "bhyverun.h"
+#include "config.h"
 #include "debug.h"
 #include "vhost_vmmem.h"
 #include "internal.h"
@@ -69,6 +70,7 @@
 #include <arch/arm64/memory_layout.h>
 
 bool mem_range_registered(uint64_t gpa);
+static void *hyperv_map_ram(void *, uint64_t, size_t);
 
 #if defined(VMM_DEBUG)
 #define DPRINTLN PRINTLN
@@ -154,7 +156,14 @@ struct vcpu {
 	uint64_t pmxevtyper_el0;
 	uint64_t oslar_el1;
 	uint64_t osdlr_el1;
+	_Atomic enum vm_suspend_how pending_suspend;
 };
+
+static enum vm_suspend_how
+vcpu_take_suspend(struct vcpu *vcpu)
+{
+	return atomic_exchange(&vcpu->pending_suspend, VM_SUSPEND_NONE);
+}
 
 static int guest_vaddr2paddr(struct vcpu *vcpu, uint64_t vaddr,
     uint64_t *paddr);
@@ -333,6 +342,7 @@ vm_close(struct vmctx *ctx)
 		ctx->vcpus[i] = NULL;
 	}
 
+	arm64_hyperv_destroy(&ctx->hyperv);
 	for (int i = 0; i < ctx->num_mem_ranges; i++) {
 		struct mem_range *seg = &ctx->mem_ranges[i];
 
@@ -350,7 +360,6 @@ vm_close(struct vmctx *ctx)
 		}
 	}
 	hv_vm_destroy();
-	arm64_hyperv_destroy(&ctx->hyperv);
 	free(ctx->name);
 	free(ctx);
 }
@@ -418,6 +427,34 @@ vm_create_watchdog(void)
 }
 #endif
 
+bool
+vm_el2_enabled(struct vmctx *ctx)
+{
+	return (ctx->el2_enabled);
+}
+
+bool
+vm_profile_timer_enabled(struct vmctx *ctx)
+{
+	return (ctx->hyperv_enabled && !ctx->el2_enabled &&
+	    get_config_bool_default("cpu.profile-timer", false));
+}
+
+static void
+hyperv_kick(void *arg)
+{
+	struct vcpu *vcpu = arg;
+	hv_vcpus_exit(&vcpu->vcpu, 1);
+}
+
+static int
+hyperv_inject(void *arg, uint32_t pending)
+{
+	struct vcpu *vcpu = arg;
+	return hv_gic_set_redistributor_reg(vcpu->vcpu,
+	    HV_GIC_REDISTRIBUTOR_REG_GICR_ISPENDR0, pending) == HV_SUCCESS ? 0 : -1;
+}
+
 int
 vm_vcpu_init(struct vcpu *vcpu)
 {
@@ -451,18 +488,12 @@ vm_vcpu_init(struct vcpu *vcpu)
 
 	// hv_vcpu_set_sys_reg(vcpu->vcpu,  HV_SYS_REG_SCTLR_EL1, 0x30100180);
 
-	/*
-	It took me almost week to discover why vcpu_run() would hang in the
-	beginning of executing the Windows cdboot.efi loader. After
-	dissasembling and analyzing the efi code I realized this rather
-	innocuous instruction would cause it: mrs        x8, pmcr_el0 Then I
-	started looking for a workaround. Apparently when the Apple vgic is not
-	enabled the instruction would cause an exit with EXCP_MSR code, not so
-	with the vgic enabled. F*ck you Apple!
-	*/
-	// Workaround: set PMU enabled
+	/* Preserve the existing Windows boot workaround: with Apple's vGIC,
+	 * winload accesses PMCR_EL0 during boot. This PMU version exposure
+	 * predates STIMER profiling and is not a sampled-profile source.
+	 */
 	hv_vcpu_get_sys_reg(vcpu->vcpu, HV_SYS_REG_ID_AA64DFR0_EL1, &fr0);
-	fr0 |= (1 << 8); // Set PMUVer to 0b0001 for Windows guest
+	fr0 |= (1 << 8);
 	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_ID_AA64DFR0_EL1, fr0);
 
 	// set gicv3 feat
@@ -470,8 +501,23 @@ vm_vcpu_init(struct vcpu *vcpu)
 	pfr0 |= (1 << 24);
 	if (vcpu_init_el2_features(vcpu, &pfr0) != 0)
 		return (-1);
-	hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_ID_AA64PFR0_EL1, pfr0);
+	if (hv_vcpu_set_sys_reg(vcpu->vcpu, HV_SYS_REG_ID_AA64PFR0_EL1,
+	    pfr0) != HV_SUCCESS) {
+		EPRINTLN("failed to configure guest exception-level identity");
+		return (-1);
+	}
 
+	if (vm_profile_timer_enabled(vcpu->ctx)) {
+		/* CPU 0 initializes the partition before secondary CPUs are started. */
+		if (vcpu->vcpuid == 0 && !vcpu->ctx->hyperv.worker_started &&
+		    arm64_hyperv_enable_timers(&vcpu->ctx->hyperv,
+		    hyperv_map_ram, vcpu->ctx) != 0) {
+			EPRINTLN("failed to initialize Hyper-V timers");
+			return (-1);
+		}
+		arm64_hyperv_set_vp(&vcpu->ctx->hyperv, vcpu->vcpuid,
+		    hyperv_kick, vcpu);
+	}
 #ifdef VCPU_WATCHDOG
 	vm_create_watchdog();
 #endif
@@ -481,6 +527,8 @@ vm_vcpu_init(struct vcpu *vcpu)
 void
 vm_vcpu_deinit(struct vcpu *vcpu)
 {
+	if (vcpu->ctx->hyperv.timers_enabled)
+		arm64_hyperv_set_vp(&vcpu->ctx->hyperv, vcpu->vcpuid, NULL, NULL);
 	hv_vcpu_destroy(vcpu->vcpu);
 	vcpu->vcpu = 0;
 }
@@ -488,6 +536,8 @@ vm_vcpu_deinit(struct vcpu *vcpu)
 int
 vcpu_reset(struct vcpu *vcpu)
 {
+	/* The CPU issuing PSCI SYSTEM_RESET handles its request directly. */
+	(void)vcpu_take_suspend(vcpu);
 	if (vcpu_id(vcpu) == 0) {
 		arm64_hyperv_reset(&vcpu->ctx->hyperv);
 		hv_gic_reset();
@@ -1690,7 +1740,7 @@ read_trapped_sysreg(struct vcpu *vcpu, uint32_t esr_iss, int sysreg,
 	}
 
 	if (lor_read(vcpu, sysreg, val) || debug_read(vcpu, sysreg, val) ||
-	    pmu_read(vcpu, sysreg, val))
+	    (!vcpu->ctx->el2_enabled && pmu_read(vcpu, sysreg, val)))
 		return (0);
 
 	return (log_unhandled_sysreg(vcpu, esr_iss, sysreg, hvreg, reg_num,
@@ -1715,7 +1765,7 @@ write_trapped_sysreg(struct vcpu *vcpu, uint32_t esr_iss, int sysreg,
 	}
 
 	if (lor_write(vcpu, sysreg, val) || debug_write(vcpu, sysreg, val) ||
-	    pmu_write(vcpu, sysreg, val))
+	    (!vcpu->ctx->el2_enabled && pmu_write(vcpu, sysreg, val)))
 		return (0);
 
 	return (log_unhandled_sysreg(vcpu, esr_iss, sysreg, hvreg, reg_num,
@@ -2145,6 +2195,12 @@ vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 	}
 
 	do {
+		if (vcpu->ctx->hyperv.timers_enabled &&
+		    arm64_hyperv_process_timers(&vcpu->ctx->hyperv,
+		    vcpu->vcpuid, hyperv_inject, vcpu) != 0) {
+			EPRINTLN("failed to inject Hyper-V timer interrupt");
+			return (-1);
+		}
 		res = hv_vcpu_run(vcpu->vcpu);
 		if (res != HV_SUCCESS) {
 			EPRINTLN("hv_vcpu_run() failed %x", res);
@@ -2177,9 +2233,16 @@ vm_run(struct vcpu *vcpu, struct vm_run *vmrun)
 			ret = vmexit_handle_exception(vcpu, vme);
 			break;
 		case HV_EXIT_REASON_CANCELED:
+			/* Timer kicks only request another run-loop pass. A VM stop
+			 * publishes its reason before canceling the vCPU.
+			 */
+			vme->u.suspended.how = vcpu_take_suspend(vcpu);
+			if (vme->u.suspended.how == VM_SUSPEND_NONE) {
+				ret = 0;
+				break;
+			}
 			DPRINTLN("HV_EXIT_REASON_CANCELED");
 			vme->exitcode = VM_EXITCODE_SUSPENDED;
-			vme->u.suspended.how = vcpu->ctx->suspend_reason;
 			ret = 1;
 			break;
 		case HV_EXIT_REASON_VTIMER_ACTIVATED:
@@ -2202,10 +2265,9 @@ vm_suspend(struct vmctx *ctx, enum vm_suspend_how how)
 	hv_vcpu_t cpus[MAX_VCPUS] = { 0 };
 	int cnt = 0;
 
-	ctx->suspend_reason = how;
-
 	vm_suspend_all_cpus(ctx);
 	for (vcpu = 0; vcpu < MAX_VCPUS && ctx->vcpus[vcpu]; vcpu++) {
+		atomic_store(&ctx->vcpus[vcpu]->pending_suspend, how);
 		cpus[cnt++] = ctx->vcpus[vcpu]->vcpu;
 	}
 	hv_vcpus_exit(cpus, cnt);

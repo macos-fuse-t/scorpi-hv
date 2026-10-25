@@ -912,6 +912,18 @@ vm_inject_exception(struct vcpu *vcpu __unused, uint64_t esr __unused,
 	return (scorpi_kvm_unimplemented(__func__));
 }
 
+bool
+vm_el2_enabled(struct vmctx *ctx __unused)
+{
+	return (false);
+}
+
+bool
+vm_profile_timer_enabled(struct vmctx *ctx __unused)
+{
+	return (false);
+}
+
 int
 vm_get_spi_interrupt_range(uint32_t *spi_intid_base, uint32_t *spi_intid_count)
 {

@@ -121,6 +121,12 @@ vm_create_with_max_ipa(hv_vm_config_t config)
 	return (res);
 }
 
+static bool
+hyperv_config_enabled(bool el2_enabled)
+{
+	return (!el2_enabled && get_config_bool_default("cpu.hyperv", true));
+}
+
 struct vmctx *
 vm_openf(const char *name, int flags)
 {
@@ -182,7 +188,13 @@ vm_openf(const char *name, int flags)
 	ctx = malloc(sizeof(struct vmctx));
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->el2_enabled = el2_enabled;
-	ctx->hyperv_enabled = get_config_bool_default("arm64.hyperv", true);
+	/*
+	 * Our Microsoft interface includes legacy HVC #1 hypercalls. With
+	 * guest EL2 enabled these are delivered to the guest's EL2 vectors,
+	 * not to HVF's VM-exit handler. Do not advertise an unusable ABI:
+	 * Windows otherwise invokes it in winload before installing EL2 vectors.
+	 */
+	ctx->hyperv_enabled = hyperv_config_enabled(el2_enabled);
 	if (arm64_hyperv_init(&ctx->hyperv) != 0) {
 		free(ctx);
 		hv_vm_destroy();

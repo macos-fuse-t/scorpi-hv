@@ -67,6 +67,8 @@
 #define TIMER_EL1_NS_PHYS_IRQ	    30
 
 static void *fdtroot;
+static bool guest_el2_enabled;
+static bool guest_profile_timer_enabled;
 static uint32_t gic_phandle = 0;
 static uint32_t apb_pclk_phandle;
 
@@ -138,6 +140,8 @@ fdt_init(struct vmctx *ctx, int ncpu, void *fdtaddr, vm_size_t fdtsize)
 	if (fdt == NULL)
 		return (EFAULT);
 
+	guest_el2_enabled = vm_el2_enabled(ctx);
+	guest_profile_timer_enabled = vm_profile_timer_enabled(ctx);
 	fdt_create(fdt, (int)fdtsize);
 
 	/* Add the memory reserve map (needed even if none is reserved) */
@@ -179,7 +183,7 @@ fdt_init(struct vmctx *ctx, int ncpu, void *fdtaddr, vm_size_t fdtsize)
 	fdt_begin_node(fdt, "psci");
 	fdt_property_string(fdt, "compatible", "arm,psci-0.2");
 	fdt_property_string(fdt, "method",
-	    get_config_bool_default("cpu.nested-virt", false) ? "smc" : "hvc");
+	    guest_el2_enabled ? "smc" : "hvc");
 	fdt_end_node(fdt);
 
 	fdt_begin_node(fdt, "apb-pclk");
@@ -245,7 +249,7 @@ fdt_add_gic(uint64_t dist_base, uint64_t dist_size, uint64_t redist_base,
 		SET_PROP_U32(prop, 1, mmio_base);
 	}
 
-	if (get_config_bool_default("cpu.nested-virt", false)) {
+	if (guest_el2_enabled) {
 		fdt_property_placeholder(fdt, "interrupts",
 		    3 * sizeof(uint32_t), &prop);
 		SET_PROP_U32(prop, 0, GIC_PPI);
@@ -378,7 +382,7 @@ fdt_add_timer(void)
 	    INTID_TO_PPI(TIMER_EL2_VIRT_IRQ),
 	};
 
-	if (get_config_bool_default("cpu.nested-virt", false))
+	if (guest_el2_enabled)
 		irqs[3] = INTID_TO_PPI(TIMER_EL2_PHYS_IRQ);
 
 	assert(gic_phandle != 0);
@@ -387,6 +391,11 @@ fdt_add_timer(void)
 
 	fdt_begin_node(fdt, "timer");
 	fdt_property_string(fdt, "compatible", "arm,armv8-timer");
+	/* The virtual architectural timer continues across guest CPU idle.
+	 * EDK2 carries this into GTDT's Always-on Capability flag.
+	 */
+	if (guest_profile_timer_enabled)
+		fdt_property(fdt, "always-on", NULL, 0);
 	fdt_property_u32(fdt, "interrupt-parent", gic_phandle);
 	fdt_property_placeholder(fdt, "interrupts", 12 * sizeof(uint32_t),
 	    &interrupts);
@@ -396,6 +405,20 @@ fdt_add_timer(void)
 		SET_PROP_U32(interrupts, i * 3 + 2, IRQ_TYPE_LEVEL_LOW);
 	}
 	fdt_end_node(fdt);
+
+	/* The same opt-in gates host timer startup and firmware discovery. */
+	if (guest_profile_timer_enabled) {
+		uint32_t irq[] = { cpu_to_fdt32(GIC_PPI), cpu_to_fdt32(22 - 16),
+		    cpu_to_fdt32(1) }; /* Edge rising. */
+
+		fdt_begin_node(fdt, "profile-timer");
+		fdt_property_string(fdt, "compatible", "scorpi,stimer-profile-v1");
+		fdt_property_u32(fdt, "timer-index", 1);
+		fdt_property_u32(fdt, "clock-frequency", 10000000);
+		fdt_property_u32(fdt, "interrupt-parent", gic_phandle);
+		fdt_property(fdt, "interrupts", irq, sizeof(irq));
+		fdt_end_node(fdt);
+	}
 }
 
 struct lintr_cb {

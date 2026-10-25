@@ -9,6 +9,10 @@
 #include "../src/libvmm/hvf/internal.h"
 #include "../src/arch/arm64/fdt.h"
 
+int guest_ncpus = 4;
+/* -1 exercises the real default when the option is omitted. */
+static int test_profile_timer = -1;
+
 const char *get_config_value(const char *path)
 {
 	(void)path;
@@ -17,7 +21,8 @@ const char *get_config_value(const char *path)
 
 bool get_config_bool_default(const char *path, bool fallback)
 {
-	(void)path;
+	if (strcmp(path, "cpu.profile-timer") == 0 && test_profile_timer >= 0)
+		return (test_profile_timer != 0);
 	return (fallback);
 }
 
@@ -91,6 +96,63 @@ check_layout(size_t total, size_t expected_low)
 	assert(described == total);
 }
 
+/* Exercise the host startup policy and firmware metadata without a VM. */
+static void
+check_profile_fdt(bool el2, bool hyperv, int profile)
+{
+	struct vmctx ctx = {0};
+	char fdt[65536];
+	int node, len;
+	const fdt32_t *ints;
+	bool enabled = !el2 && hyperv && profile == 1;
+
+	ctx.el2_enabled = el2;
+	ctx.hyperv_enabled = hyperv;
+	test_profile_timer = profile;
+	assert(vm_profile_timer_enabled(&ctx) == enabled);
+	assert(fdt_init(&ctx, guest_ncpus, fdt, sizeof(fdt)) == 0);
+	fdt_add_gic(0x2f000000, 0x10000, 0x30000000, 0x20000, 0, 0, 0);
+	fdt_add_timer();
+	fdt_finalize();
+	assert(fdt_check_header(fdt) == 0);
+	node = fdt_path_offset(fdt, "/psci");
+	assert(node >= 0);
+	assert(strcmp(fdt_getprop(fdt, node, "method", NULL),
+	    el2 ? "smc" : "hvc") == 0);
+	node = fdt_path_offset(fdt, "/timer");
+	assert((fdt_getprop(fdt, node, "always-on", &len) != NULL) == enabled);
+	if (enabled)
+		assert(len == 0);
+	ints = fdt_getprop(fdt, node, "interrupts", &len);
+	assert(ints != NULL && len == 12 * sizeof(*ints));
+	assert(fdt32_to_cpu(ints[10]) == (el2 ? 26 : 28) - 16);
+	node = fdt_path_offset(fdt, "/profile-timer");
+	assert((node >= 0) == enabled);
+	if (node >= 0) {
+		assert(strcmp(fdt_getprop(fdt, node, "compatible", NULL),
+		    "scorpi,stimer-profile-v1") == 0);
+		const fdt32_t *index = fdt_getprop(fdt, node, "timer-index", &len);
+		assert(index != NULL && len == sizeof(*index) &&
+		    fdt32_to_cpu(*index) == 1);
+		const fdt32_t *freq = fdt_getprop(fdt, node, "clock-frequency", &len);
+		assert(freq != NULL && len == sizeof(*freq) &&
+		    fdt32_to_cpu(*freq) == 10000000);
+		ints = fdt_getprop(fdt, node, "interrupts", &len);
+		assert(ints != NULL && len == 3 * sizeof(*ints));
+		assert(fdt32_to_cpu(ints[0]) == 1 && fdt32_to_cpu(ints[1]) == 6);
+		assert(fdt32_to_cpu(ints[2]) == 1);
+	}
+	node = fdt_path_offset(fdt, "/interrupt-controller@2f000000");
+	assert(fdt_get_phandle(fdt, node) != 0);
+	ints = fdt_getprop(fdt, node, "interrupts", &len);
+	assert((ints != NULL) == el2);
+	if (el2) {
+		assert(len == 3 * sizeof(*ints));
+		assert(fdt32_to_cpu(ints[1]) == 25 - 16);
+	}
+	assert(fdt_path_offset(fdt, "/pmu") == -FDT_ERR_NOTFOUND);
+}
+
 int main(void)
 {
 	const size_t mib = 1024 * 1024;
@@ -101,6 +163,10 @@ int main(void)
 	check_layout(576 * mib, 512 * mib);
 	check_layout(256 * mib, 192 * mib);
 	check_layout(64 * mib, 0);
+	for (int el2 = 0; el2 <= 1; el2++)
+		for (int hyperv = 0; hyperv <= 1; hyperv++)
+			for (int profile = -1; profile <= 1; profile++)
+				check_profile_fdt(el2, hyperv, profile);
 	puts("HVF low-RAM layout, GPA boundaries, and FDT tests passed");
 	return (0);
 }

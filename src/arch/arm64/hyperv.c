@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * ARM64 TLFS crash notification subset. Reference layouts:
+ * ARM64 TLFS register, crash notification and synthetic timer services.
+ * Reference layouts:
  * https://learn.microsoft.com/virtualization/hyper-v-on-windows/tlfs/hypercall-interface
  * https://learn.microsoft.com/virtualization/hyper-v-on-windows/tlfs/partition-properties
  * Linux arch/arm64/hyperv/hv_core.c also documents the fast register ABI.
@@ -9,6 +10,8 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <errno.h>
 #include "debug.h"
 
 #define HV_GET_REGISTERS 0x50
@@ -32,17 +35,198 @@ struct hv_set_element { uint32_t name, reserved[3]; struct hv_value value; };
 _Static_assert(sizeof(struct hv_header) == 16, "Hyper-V input header");
 _Static_assert(sizeof(struct hv_set_element) == 32, "Hyper-V register association");
 
+#define ST_ENABLE UINT64_C(1)
+#define ST_PERIODIC UINT64_C(2)
+#define ST_AUTOENABLE UINT64_C(8)
+#define ST_DIRECT UINT64_C(0x1000)
+#define SINT_MASKED UINT64_C(0x10000)
+
+static uint64_t
+reference_now(struct arm64_hyperv *hv)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 10000000 + ts.tv_nsec / 100 -
+	    hv->reference_epoch;
+}
+
+static void
+reset_timers(struct arm64_hyperv *hv)
+{
+	for (unsigned cpu = 0; cpu < 64; cpu++) {
+		struct arm64_hyperv_vp *vp = &hv->vp[cpu];
+		vp->scontrol = 1;
+		vp->simp = vp->siefp = 0;
+		for (unsigned i = 0; i < 16; i++) vp->sint[i] = SINT_MASKED;
+		memset(vp->timers, 0, sizeof(vp->timers));
+		atomic_store(&vp->timer_pending, false);
+	}
+	pthread_cond_signal(&hv->changed);
+}
+
+/* Caller holds the partition lock, including when kicking a registered vCPU.
+ * Unregistering therefore excludes kicks before the backend destroys its vCPU.
+ */
+static int
+deliver_timer(struct arm64_hyperv *hv, unsigned cpu, unsigned index,
+    uint64_t now, arm64_hyperv_inject_fn inject, void *arg)
+{
+	struct arm64_hyperv_vp *vp = &hv->vp[cpu];
+	struct arm64_hyperv_timer *t = &vp->timers[index];
+	unsigned vector;
+	unsigned char *slot = NULL;
+	if (vp->kick == NULL) return false;
+	if (t->config & ST_DIRECT) {
+		vector = (t->config >> 4) & 31;
+	} else {
+		unsigned sint = (t->config >> 16) & 15;
+		if (!(vp->scontrol & 1) || !(vp->simp & 1) ||
+		    (vp->sint[sint] & SINT_MASKED)) return false;
+		unsigned char *page = hv->map(hv->map_arg,
+		    vp->simp & ~UINT64_C(0xfff), HV_PAGE_SIZE);
+		if (page == NULL) return false;
+		slot = page + sint * 256;
+		uint32_t *type = (uint32_t *)slot;
+		if (__atomic_load_n(type, __ATOMIC_ACQUIRE) != 0) {
+			__atomic_fetch_or(slot + 5, 1, __ATOMIC_RELEASE);
+			return false;
+		}
+		vector = vp->sint[sint] & 31;
+	}
+	/* The owning vCPU is stopped. Arm the interrupt before publishing the
+	 * message, so failed backend injection cannot strand a published slot.
+	 * Both operations finish before guest entry.
+	 */
+	int error = inject(arg, UINT32_C(1) << vector);
+	if (error) return error;
+	if (slot != NULL) {
+		memset(slot + 4, 0, 252);
+		slot[4] = 24;
+		memcpy(slot + 16, &index, 4);
+		memcpy(slot + 24, &t->deadline, 8);
+		memcpy(slot + 32, &now, 8);
+		__atomic_store_n((uint32_t *)slot, UINT32_C(0x80000010), __ATOMIC_RELEASE);
+	}
+	return 1;
+}
+
+static void *
+timer_worker(void *arg)
+{
+	struct arm64_hyperv *hv = arg;
+	pthread_mutex_lock(&hv->lock);
+	while (!hv->stopping) {
+		uint64_t now = reference_now(hv), next = UINT64_MAX;
+		for (unsigned cpu = 0; cpu < 64; cpu++) {
+			for (unsigned i = 0; i < 4; i++) {
+				struct arm64_hyperv_timer *t = &hv->vp[cpu].timers[i];
+				if (!(t->config & ST_ENABLE) || !t->count) continue;
+				if (t->deadline <= now && !t->pending) {
+					t->pending = true;
+					atomic_store(&hv->vp[cpu].timer_pending, true);
+					if (hv->vp[cpu].kick != NULL)
+						hv->vp[cpu].kick(hv->vp[cpu].kick_arg);
+				}
+				if ((t->config & ST_ENABLE) && !t->pending && t->deadline < next)
+					next = t->deadline;
+			}
+		}
+		if (next == UINT64_MAX) {
+			pthread_cond_wait(&hv->changed, &hv->lock);
+		} else {
+			now = reference_now(hv);
+			uint64_t delay = next > now ? next - now : 1;
+			/* Keep conversion bounded even for a far-future guest deadline. */
+			if (delay > UINT64_C(864000000000)) delay = UINT64_C(864000000000);
+			struct timespec ts = { delay / 10000000, (delay % 10000000) * 100 };
+#ifdef __APPLE__
+			pthread_cond_timedwait_relative_np(&hv->changed, &hv->lock, &ts);
+#else
+			struct timespec real;
+			clock_gettime(CLOCK_REALTIME, &real);
+			ts.tv_sec += real.tv_sec;
+			ts.tv_nsec += real.tv_nsec;
+			if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
+			pthread_cond_timedwait(&hv->changed, &hv->lock, &ts);
+#endif
+		}
+	}
+	pthread_mutex_unlock(&hv->lock);
+	return NULL;
+}
+
+int
+arm64_hyperv_enable_timers(struct arm64_hyperv *hv,
+    arm64_hyperv_map_fn map, void *arg)
+{
+	hv->map = map;
+	hv->map_arg = arg;
+	hv->timers_enabled = true;
+	int error = pthread_create(&hv->worker, NULL, timer_worker, hv);
+	if (error) hv->timers_enabled = false;
+	else hv->worker_started = true;
+	return error;
+}
+
+void
+arm64_hyperv_set_vp(struct arm64_hyperv *hv, unsigned cpu,
+    arm64_hyperv_kick_fn kick, void *arg)
+{
+	pthread_mutex_lock(&hv->lock);
+	hv->vp[cpu].kick = kick;
+	hv->vp[cpu].kick_arg = arg;
+	if (kick != NULL && atomic_load(&hv->vp[cpu].timer_pending)) kick(arg);
+	pthread_cond_signal(&hv->changed);
+	pthread_mutex_unlock(&hv->lock);
+}
+
+int
+arm64_hyperv_process_timers(struct arm64_hyperv *hv, unsigned cpu,
+    arm64_hyperv_inject_fn inject, void *arg)
+{
+	int error = 0;
+	if (!atomic_load(&hv->vp[cpu].timer_pending)) return 0;
+	pthread_mutex_lock(&hv->lock);
+	uint64_t now = reference_now(hv);
+	for (unsigned i = 0; i < 4; i++) {
+		struct arm64_hyperv_timer *t = &hv->vp[cpu].timers[i];
+		if (!t->pending) continue;
+		int result = deliver_timer(hv, cpu, i, now, inject, arg);
+		if (result < 0) { error = result; break; }
+		if (!result) continue;
+		t->pending = false;
+		if (t->config & ST_PERIODIC) {
+			/* Coalesce missed periods without deadline drift. */
+			uint64_t delta = t->count - (now - t->deadline) % t->count;
+			t->deadline = delta > UINT64_MAX - now ? UINT64_MAX : now + delta;
+		} else t->config &= ~ST_ENABLE;
+	}
+	bool pending = false;
+	for (unsigned i = 0; i < 4; i++) pending |= hv->vp[cpu].timers[i].pending;
+	atomic_store(&hv->vp[cpu].timer_pending, pending);
+	pthread_cond_signal(&hv->changed);
+	pthread_mutex_unlock(&hv->lock);
+	return error;
+}
+
 int
 arm64_hyperv_init(struct arm64_hyperv *hv)
 {
 	memset(hv, 0, sizeof(*hv));
-	return pthread_mutex_init(&hv->lock, NULL);
+	int error = pthread_mutex_init(&hv->lock, NULL);
+	if (error) return error;
+	error = pthread_cond_init(&hv->changed, NULL);
+	if (error) { pthread_mutex_destroy(&hv->lock); return error; }
+	hv->reference_epoch = reference_now(hv);
+	reset_timers(hv);
+	return 0;
 }
 
 void
 arm64_hyperv_reset(struct arm64_hyperv *hv)
 {
 	pthread_mutex_lock(&hv->lock);
+	reset_timers(hv);
 	hv->guest_os_id = 0;
 	hv->partition_info_page = 0;
 	hv->register_errors = 0;
@@ -56,6 +240,12 @@ arm64_hyperv_reset(struct arm64_hyperv *hv)
 void
 arm64_hyperv_destroy(struct arm64_hyperv *hv)
 {
+	pthread_mutex_lock(&hv->lock);
+	hv->stopping = true;
+	pthread_cond_signal(&hv->changed);
+	pthread_mutex_unlock(&hv->lock);
+	if (hv->worker_started) pthread_join(hv->worker, NULL);
+	pthread_cond_destroy(&hv->changed);
 	pthread_mutex_destroy(&hv->lock);
 }
 
@@ -63,7 +253,7 @@ static void
 announce(struct arm64_hyperv *hv)
 {
 	if (!hv->discovered) {
-		PRINTLN("Hyper-V ARM64: guest discovered crash notification interface");
+		PRINTLN("Hyper-V ARM64: guest discovered Hyper-V interface");
 		hv->discovered = true;
 	}
 }
@@ -73,6 +263,22 @@ read_register(struct arm64_hyperv *hv, uint32_t name, struct hv_value *v,
     unsigned int cpu, unsigned int cpu_count)
 {
 	*v = (struct hv_value){0, 0};
+	if (hv->timers_enabled) {
+		struct arm64_hyperv_vp *vp = &hv->vp[cpu];
+		if (name == 0x90004) { v->low = reference_now(hv); return HV_SUCCESS; }
+		if (name >= 0xb0000 && name <= 0xb0007) {
+			struct arm64_hyperv_timer *t = &vp->timers[(name - 0xb0000) / 2];
+			v->low = name & 1 ? t->count : t->config;
+			return HV_SUCCESS;
+		}
+		if (name >= 0xa0000 && name <= 0xa000f) { v->low = vp->sint[name - 0xa0000]; return HV_SUCCESS; }
+		switch (name) {
+		case 0xa0010: v->low = vp->scontrol; return HV_SUCCESS;
+		case 0xa0011: v->low = 1; return HV_SUCCESS;
+		case 0xa0012: v->low = vp->siefp; return HV_SUCCESS;
+		case 0xa0013: v->low = vp->simp; return HV_SUCCESS;
+		}
+	}
 	switch (name) {
 	case 0x100: /* HvRegisterHypervisorVersion */
 		/* Interface version only; feature bits govern available services. */
@@ -83,6 +289,10 @@ read_register(struct arm64_hyperv *hv, uint32_t name, struct hv_value *v,
 		v->low = UINT64_C(1) << 6;
 		/* ARM64 crash capability is bit 72, not the x64 EDX bit 10. */
 		v->high = UINT64_C(1) << 8;
+		if (hv->timers_enabled) {
+			v->low |= (UINT64_C(1) << 1) | (UINT64_C(1) << 2) | (UINT64_C(1) << 3);
+			v->high |= UINT64_C(1) << 13; /* ARM64 direct synthetic timers */
+		}
 		announce(hv);
 		break;
 	case 0x201: /* HvRegisterFeaturesInfo */
@@ -135,6 +345,55 @@ write_register(struct arm64_hyperv *hv, uint32_t name, struct hv_value v,
 {
 	if (v.high != 0)
 		return HV_INVALID_PARAMETER;
+	if (hv->timers_enabled) {
+		struct arm64_hyperv_vp *vp = &hv->vp[cpu];
+		if (name >= 0xb0000 && name <= 0xb0007) {
+			struct arm64_hyperv_timer *t = &vp->timers[(name - 0xb0000) / 2];
+			if (!(name & 1)) {
+				if (v.low & ~UINT64_C(0xf11ff)) return HV_INVALID_PARAMETER;
+				t->config = v.low;
+			} else {
+				t->count = v.low;
+				if (!v.low) t->config &= ~ST_ENABLE;
+				else if (t->config & ST_AUTOENABLE) t->config |= ST_ENABLE;
+			}
+			/* TLFS forbids enabled indirect timers targeting SINT0. */
+			if (!(t->config & ST_DIRECT) && !(t->config & UINT64_C(0xf0000)))
+				t->config &= ~ST_ENABLE;
+			t->pending = false;
+			uint64_t now = reference_now(hv);
+			t->deadline = t->config & ST_PERIODIC ?
+			    (t->count > UINT64_MAX - now ? UINT64_MAX : now + t->count) : t->count;
+			pthread_cond_signal(&hv->changed);
+			return HV_SUCCESS;
+		}
+		if (name >= 0xa0000 && name <= 0xa000f) {
+			if (v.low & ~UINT64_C(0x7001f)) return HV_INVALID_PARAMETER;
+			vp->sint[name - 0xa0000] = v.low;
+			pthread_cond_signal(&hv->changed);
+			return HV_SUCCESS;
+		}
+		if (name == 0xa0010) {
+			if (v.low & ~UINT64_C(1)) return HV_INVALID_PARAMETER;
+			vp->scontrol = v.low;
+			pthread_cond_signal(&hv->changed);
+			return HV_SUCCESS;
+		}
+		if (name == 0xa0012 || name == 0xa0013) {
+			if (v.low & 0xffe) return HV_INVALID_PARAMETER;
+			if ((v.low & 1) && map(arg, v.low & ~UINT64_C(0xfff), HV_PAGE_SIZE) == NULL)
+				return HV_INVALID_PARAMETER;
+			if (name == 0xa0012) vp->siefp = v.low;
+			else vp->simp = v.low;
+			pthread_cond_signal(&hv->changed);
+			return HV_SUCCESS;
+		}
+		if (name == 0xa0014) {
+			if (v.low) return HV_INVALID_PARAMETER;
+			pthread_cond_signal(&hv->changed);
+			return HV_SUCCESS;
+		}
+	}
 	if (name >= 0x210 && name <= 0x214) {
 		hv->crash_params[name - 0x210] = v.low;
 		return HV_SUCCESS;

@@ -1276,6 +1276,19 @@ scorpi_import_vm_scalars(const nvlist_t *config, scorpi_vm_t vm)
 			if (error != SCORPI_OK)
 				return (error);
 		}
+		value = scorpi_config_get_value(cpu, "hyperv");
+		if (value != NULL) {
+			error = scorpi_vm_set_inferred_prop(vm, "cpu.hyperv", value);
+			if (error != SCORPI_OK)
+				return (error);
+		}
+		value = scorpi_config_get_value(cpu, "profile-timer");
+		if (value != NULL) {
+			error = scorpi_vm_set_inferred_prop(vm,
+			    "cpu.profile-timer", value);
+			if (error != SCORPI_OK)
+				return (error);
+		}
 	}
 
 	value = scorpi_config_get_value(config, "virtio_msix");
@@ -2689,6 +2702,20 @@ scorpi_yaml_load_root_mapping(scorpi_vm_t vm, yaml_document_t *document,
 				if (size_node != NULL)
 					error = scorpi_yaml_set_vm_scalar_prop(vm,
 					    "cpu.nested-virt", size_node);
+				if (error != SCORPI_OK)
+					return (error);
+				size_node = scorpi_yaml_mapping_lookup(document,
+				    value_node, "hyperv");
+				if (size_node != NULL)
+					error = scorpi_yaml_set_vm_scalar_prop(vm,
+					    "cpu.hyperv", size_node);
+				if (error != SCORPI_OK)
+					return (error);
+				size_node = scorpi_yaml_mapping_lookup(document,
+				    value_node, "profile-timer");
+				if (size_node != NULL)
+					error = scorpi_yaml_set_vm_scalar_prop(vm,
+					    "cpu.profile-timer", size_node);
 			} else {
 				return (SCORPI_ERR_VALIDATION);
 			}

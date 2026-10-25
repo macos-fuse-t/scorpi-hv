@@ -65,7 +65,6 @@ struct vmctx {
     int             num_mem_ranges;
 	struct mem_range  mem_ranges[VM_MAX_MEMORY_SEGMENTS];
 	char	*name;
-	enum vm_suspend_how suspend_reason;
 	bool el2_enabled;
 
     cpuset_t active_cpus;

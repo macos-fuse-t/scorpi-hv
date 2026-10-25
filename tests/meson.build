@@ -408,6 +408,7 @@ test('scorpi_yaml_file_cli_test', scorpi_yaml_file_cli_test_executable)
 arm64_hyperv_test = executable(
   'arm64_hyperv_test',
   files('arm64_hyperv_test.c', '../src/arch/arm64/hyperv.c'),
+  c_args: ['-UNDEBUG'],
   dependencies: threads_dep,
   include_directories: inc,
 )
@@ -428,7 +429,7 @@ if hypervisor_backend == 'hvf'
 
   foreach test_name : ['legacy_framebuffer_test', 'legacy_framebuffer_mode_test',
       'vhost_gpu_ums_test', 'hvf_abort_decode_test',
-      'hvf_memory_ranges_test', 'hvf_vm_config_test']
+      'hvf_memory_ranges_test', 'hvf_vm_config_test', 'hvf_suspend_request_test']
     regression_test = executable(
       test_name,
       files(test_name + '.c'),

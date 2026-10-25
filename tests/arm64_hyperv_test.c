@@ -30,6 +30,137 @@ static uint64_t fast(struct arm64_hyperv *hv, bool set, bool legacy,
 }
 static void put32(size_t off, uint32_t v) { memcpy(ram + off, &v, 4); }
 static void put64(size_t off, uint64_t v) { memcpy(ram + off, &v, 8); }
+static void kick(void *arg)
+{
+	atomic_fetch_add((_Atomic unsigned *)arg, 1);
+}
+static uint64_t get(struct arm64_hyperv *hv, unsigned cpu, uint32_t name)
+{
+	uint64_t x[18];
+	assert(fast(hv, false, true, cpu, name, 0, x) == UINT64_C(1) << 32);
+	return x[15];
+}
+static void set(struct arm64_hyperv *hv, unsigned cpu, uint32_t name, uint64_t value)
+{
+	uint64_t x[18];
+	assert(fast(hv, true, true, cpu, name, value, x) == UINT64_C(1) << 32);
+}
+static int collect_irq(void *arg, uint32_t bits)
+{
+    *(uint32_t *)arg |= bits;
+    return 0;
+}
+static int reject_irq(void *arg, uint32_t bits)
+{
+    (void)arg; (void)bits;
+    return -1;
+}
+static uint32_t take_irqs(struct arm64_hyperv *hv, unsigned cpu)
+{
+    uint32_t bits = 0;
+    assert(arm64_hyperv_process_timers(hv, cpu, collect_irq, &bits) == 0);
+    return bits;
+}
+static void wait_irq(struct arm64_hyperv *hv, unsigned cpu, uint32_t expected)
+{
+	for (unsigned i = 0; i < 1000; i++) {
+		uint32_t bits = take_irqs(hv, cpu);
+		if (bits) { assert(bits == expected); return; }
+		usleep(1000);
+	}
+	assert(!"synthetic timer interrupt timed out");
+}
+static void test_timers(struct arm64_hyperv *hv)
+{
+	_Atomic unsigned kicks = 0;
+	uint64_t x[18];
+	assert(arm64_hyperv_enable_timers(hv, map, NULL) == 0);
+	arm64_hyperv_set_vp(hv, 0, kick, &kicks);
+	arm64_hyperv_set_vp(hv, 1, kick, &kicks);
+	assert(fast(hv, false, false, 0, 0x200, 0, x) == UINT64_C(1) << 32);
+	assert((x[6] & 14) == 14 && (x[7] & (1u << 13)));
+	uint64_t now = get(hv, 0, 0x90004);
+	usleep(1000);
+	assert(get(hv, 1, 0x90004) > now);
+	/* Auto-enabled one-shot, using Windows' direct SGI4 configuration. */
+	set(hv, 1, 0xb0000, 0x1048);
+	set(hv, 1, 0xb0001, get(hv, 1, 0x90004) + 20000);
+	wait_irq(hv, 1, 1u << 4);
+	assert(!(get(hv, 1, 0xb0000) & 1));
+	assert(!take_irqs(hv, 0));
+	/* Periodic mode remains enabled and count=0 cancels future delivery. */
+	set(hv, 0, 0xb0000, 0x105a);
+	set(hv, 0, 0xb0001, 20000);
+	wait_irq(hv, 0, 1u << 5);
+	wait_irq(hv, 0, 1u << 5);
+	set(hv, 0, 0xb0001, 0);
+	take_irqs(hv, 0);
+	usleep(5000);
+	assert(!take_irqs(hv, 0));
+	/* A busy message slot defers delivery until EOM without overwriting it. */
+	memset(ram + 4096, 0, 4096);
+	put32(4096 + 3 * 256, 0x1234);
+	set(hv, 0, 0xa0013, 4097);
+	set(hv, 0, 0xa0003, 6);
+	set(hv, 0, 0xb0002, (3u << 16) | 8);
+	set(hv, 0, 0xb0003, 1); /* Already expired. */
+	usleep(10000);
+	assert(!take_irqs(hv, 0));
+	uint32_t *type = (uint32_t *)(ram + 4096 + 3 * 256);
+	assert(__atomic_load_n(type, __ATOMIC_ACQUIRE) == 0x1234);
+	assert(__atomic_load_n((unsigned char *)type + 5, __ATOMIC_ACQUIRE) & 1);
+	__atomic_store_n(type, 0, __ATOMIC_RELEASE);
+	set(hv, 0, 0xa0014, 0);
+	wait_irq(hv, 0, 1u << 6);
+	assert(__atomic_load_n(type, __ATOMIC_ACQUIRE) == 0x80000010);
+	assert(((unsigned char *)type)[4] == 24);
+	assert(type[4] == 1); /* Timer index. */
+	assert(fast(hv, true, true, 0, 0xb0000, 1u << 9, x) == 5);
+	assert(fast(hv, true, true, 0, 0xa0013, 8193, x) == 5);
+    /* Expiration only marks pending: no guest memory access until vCPU runs. */
+    memset(ram + 4096, 0, 4096);
+    set(hv, 0, 0xb0002, (3u << 16) | 8);
+    set(hv, 0, 0xb0003, 1);
+    usleep(10000);
+    assert(*type == 0);
+    wait_irq(hv, 0, 1u << 6);
+    assert(*type == 0x80000010);
+    /* Backend failure retains a one-shot; cancellation removes pending work. */
+    set(hv, 1, 0xb0000, 0x1168);
+    set(hv, 1, 0xb0001, 1);
+    usleep(10000);
+    assert(arm64_hyperv_process_timers(hv, 1, reject_irq, NULL) == -1);
+    assert(get(hv, 1, 0xb0000) & 1);
+    wait_irq(hv, 1, 1u << 22);
+    assert(!(get(hv, 1, 0xb0000) & 1));
+    set(hv, 1, 0xb0001, 1);
+    usleep(10000);
+    set(hv, 1, 0xb0001, 0);
+    assert(!take_irqs(hv, 1));
+    /* Reset value zero and periodic-only count writes must not auto-enable. */
+    set(hv, 1, 0xb0000, 2);
+    set(hv, 1, 0xb0001, 1);
+    assert(get(hv, 1, 0xb0000) == 2);
+    set(hv, 1, 0xb0000, 9);
+    assert(get(hv, 1, 0xb0000) == 8); /* SINT0 disables enabled indirect. */
+    set(hv, 1, 0xb0001, 1);
+    assert(get(hv, 1, 0xb0000) == 8);
+	/* Reset cancels armed timers and pending interrupts on all CPUs. */
+	set(hv, 1, 0xb0000, 0x104a);
+	set(hv, 1, 0xb0001, 200000);
+	arm64_hyperv_reset(hv);
+	usleep(30000);
+	assert(!get(hv, 1, 0xb0000));
+	assert(!take_irqs(hv, 1));
+	/* Unregister excludes subsequent callbacks even while a timer expires. */
+	arm64_hyperv_set_vp(hv, 0, NULL, NULL);
+	arm64_hyperv_set_vp(hv, 1, NULL, NULL);
+	unsigned saved = atomic_load(&kicks);
+	set(hv, 0, 0xb0000, 0x1048);
+	set(hv, 0, 0xb0001, 1);
+	usleep(5000);
+	assert(atomic_load(&kicks) == saved);
+}
 int main(void)
 {
 	struct arm64_hyperv hv, other;
@@ -39,6 +170,12 @@ int main(void)
 	assert(dup2(fileno(log), STDERR_FILENO) >= 0);
 	assert(arm64_hyperv_init(&hv) == 0);
 	assert(arm64_hyperv_init(&other) == 0);
+	/* Default Hyper-V discovery must not start or expose synthetic timers. */
+	assert(!hv.timers_enabled && !hv.worker_started);
+	assert(fast(&hv, false, true, 0, 0xb0002, 0, x) == 5);
+	assert(fast(&hv, true, true, 0, 0xb0003, 10000, x) == 5);
+	assert(fast(&hv, false, true, 0, 0x90004, 0, x) == 5);
+	assert(!hv.timers_enabled && !hv.worker_started);
 	/* Unrelated PSCI calls are left for the existing dispatcher. */
 	x[0] = 0x84000000; memcpy(saved, x, sizeof(x));
 	assert(!arm64_hyperv_call(&hv, 0, x, 0, 4, map, NULL));
@@ -132,12 +269,13 @@ int main(void)
 	assert(fast(&hv, false, true, 2, 0x40400, 0, x) == UINT64_C(1) << 32 && x[15] == 0);
 	assert(fast(&hv, false, false, 0, 0x210, 0, x) == UINT64_C(1) << 32 && x[6] == 0);
 	assert(fast(&hv, false, false, 0, 0x90002, 0, x) == UINT64_C(1) << 32 && x[6] == 0);
+	test_timers(&hv);
 	arm64_hyperv_destroy(&hv); arm64_hyperv_destroy(&other);
 	fflush(stderr); assert(dup2(old_stderr, STDERR_FILENO) >= 0); close(old_stderr);
 	rewind(log); char text[4096] = {0}; fread(text, 1, sizeof(text)-1, log); fclose(log);
 	assert(strstr(text, "Hyper-V guest crash: vcpu=2 guestOsId=0x0000000000001234"));
 	assert(strstr(text, "P0=0x00000000000000a0"));
 	assert(strstr(text, "P4=0x00000000000000a4"));
-	puts("ARM64 Hyper-V crash notification tests passed");
+	puts("ARM64 Hyper-V register, crash and timer tests passed");
 	return 0;
 }
