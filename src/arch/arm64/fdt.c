@@ -68,7 +68,7 @@
 
 static void *fdtroot;
 static bool guest_el2_enabled;
-static bool guest_profile_timer_enabled;
+static bool guest_stimers_enabled;
 static uint32_t gic_phandle = 0;
 static uint32_t apb_pclk_phandle;
 
@@ -141,7 +141,7 @@ fdt_init(struct vmctx *ctx, int ncpu, void *fdtaddr, vm_size_t fdtsize)
 		return (EFAULT);
 
 	guest_el2_enabled = vm_el2_enabled(ctx);
-	guest_profile_timer_enabled = vm_profile_timer_enabled(ctx);
+	guest_stimers_enabled = vm_hyperv_stimers_enabled(ctx);
 	fdt_create(fdt, (int)fdtsize);
 
 	/* Add the memory reserve map (needed even if none is reserved) */
@@ -394,7 +394,7 @@ fdt_add_timer(void)
 	/* The virtual architectural timer continues across guest CPU idle.
 	 * EDK2 carries this into GTDT's Always-on Capability flag.
 	 */
-	if (guest_profile_timer_enabled)
+	if (guest_stimers_enabled)
 		fdt_property(fdt, "always-on", NULL, 0);
 	fdt_property_u32(fdt, "interrupt-parent", gic_phandle);
 	fdt_property_placeholder(fdt, "interrupts", 12 * sizeof(uint32_t),
@@ -407,7 +407,7 @@ fdt_add_timer(void)
 	fdt_end_node(fdt);
 
 	/* The same opt-in gates host timer startup and firmware discovery. */
-	if (guest_profile_timer_enabled) {
+	if (guest_stimers_enabled) {
 		uint32_t irq[] = { cpu_to_fdt32(GIC_PPI), cpu_to_fdt32(22 - 16),
 		    cpu_to_fdt32(1) }; /* Edge rising. */
 

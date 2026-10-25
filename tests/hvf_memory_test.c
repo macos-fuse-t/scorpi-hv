@@ -21,7 +21,7 @@ const char *get_config_value(const char *path)
 
 bool get_config_bool_default(const char *path, bool fallback)
 {
-	if (strcmp(path, "cpu.profile-timer") == 0 && test_profile_timer >= 0)
+	if (strcmp(path, "cpu.hyperv.stimers") == 0 && test_profile_timer >= 0)
 		return (test_profile_timer != 0);
 	return (fallback);
 }
@@ -109,7 +109,7 @@ check_profile_fdt(bool el2, bool hyperv, int profile)
 	ctx.el2_enabled = el2;
 	ctx.hyperv_enabled = hyperv;
 	test_profile_timer = profile;
-	assert(vm_profile_timer_enabled(&ctx) == enabled);
+	assert(vm_hyperv_stimers_enabled(&ctx) == enabled);
 	assert(fdt_init(&ctx, guest_ncpus, fdt, sizeof(fdt)) == 0);
 	fdt_add_gic(0x2f000000, 0x10000, 0x30000000, 0x20000, 0, 0, 0);
 	fdt_add_timer();

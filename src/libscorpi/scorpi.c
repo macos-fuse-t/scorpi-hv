@@ -883,6 +883,12 @@ scorpi_parse_bool_string(const char *value, bool *out_value)
 	return (false);
 }
 
+/* Shared inventory for nested YAML parsing and CLI config-tree imports. */
+static const char *const scorpi_hyperv_options[] = {
+	"cpu.hyperv.crash",
+	"cpu.hyperv.stimers",
+};
+
 static bool
 scorpi_parse_u64_string(const char *value, uint64_t *out_value)
 {
@@ -1276,18 +1282,19 @@ scorpi_import_vm_scalars(const nvlist_t *config, scorpi_vm_t vm)
 			if (error != SCORPI_OK)
 				return (error);
 		}
-		value = scorpi_config_get_value(cpu, "hyperv");
-		if (value != NULL) {
-			error = scorpi_vm_set_inferred_prop(vm, "cpu.hyperv", value);
-			if (error != SCORPI_OK)
-				return (error);
-		}
-		value = scorpi_config_get_value(cpu, "profile-timer");
-		if (value != NULL) {
-			error = scorpi_vm_set_inferred_prop(vm,
-			    "cpu.profile-timer", value);
-			if (error != SCORPI_OK)
-				return (error);
+		for (size_t i = 0; i < sizeof(scorpi_hyperv_options) /
+		    sizeof(scorpi_hyperv_options[0]); i++) {
+			value = scorpi_config_get_value(config, scorpi_hyperv_options[i]);
+			if (value != NULL) {
+				bool enabled;
+
+				if (!scorpi_parse_bool_string(value, &enabled))
+					return (SCORPI_ERR_VALIDATION);
+				error = scorpi_vm_set_prop_bool(vm,
+				    scorpi_hyperv_options[i], enabled);
+				if (error != SCORPI_OK)
+					return (error);
+			}
 		}
 	}
 
@@ -2666,6 +2673,43 @@ scorpi_yaml_load_devices(scorpi_vm_t vm, yaml_document_t *document,
 }
 
 static scorpi_error_t
+scorpi_yaml_load_hyperv(scorpi_vm_t vm, yaml_document_t *document,
+    yaml_node_t *node)
+{
+	yaml_node_pair_t *pair;
+
+	if (node == NULL || node->type != YAML_MAPPING_NODE)
+		return (SCORPI_ERR_VALIDATION);
+	for (pair = node->data.mapping.pairs.start;
+	    pair < node->data.mapping.pairs.top; pair++) {
+		yaml_node_t *key = yaml_document_get_node(document, pair->key);
+		yaml_node_t *value = yaml_document_get_node(document, pair->value);
+		bool enabled, found = false;
+
+		if (key == NULL || key->type != YAML_SCALAR_NODE ||
+		    value == NULL || value->type != YAML_SCALAR_NODE ||
+		    !scorpi_parse_bool_string((const char *)value->data.scalar.value,
+		    &enabled))
+			return (SCORPI_ERR_VALIDATION);
+		for (size_t i = 0; i < sizeof(scorpi_hyperv_options) /
+		    sizeof(scorpi_hyperv_options[0]); i++) {
+			const char *name = scorpi_hyperv_options[i];
+
+			if (scorpi_yaml_scalar_equals(key, strrchr(name, '.') + 1)) {
+				scorpi_error_t error = scorpi_vm_set_prop_bool(vm, name, enabled);
+				if (error != SCORPI_OK)
+					return (error);
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+			return (SCORPI_ERR_VALIDATION);
+	}
+	return (SCORPI_OK);
+}
+
+static scorpi_error_t
 scorpi_yaml_load_root_mapping(scorpi_vm_t vm, yaml_document_t *document,
     yaml_node_t *root)
 {
@@ -2707,15 +2751,7 @@ scorpi_yaml_load_root_mapping(scorpi_vm_t vm, yaml_document_t *document,
 				size_node = scorpi_yaml_mapping_lookup(document,
 				    value_node, "hyperv");
 				if (size_node != NULL)
-					error = scorpi_yaml_set_vm_scalar_prop(vm,
-					    "cpu.hyperv", size_node);
-				if (error != SCORPI_OK)
-					return (error);
-				size_node = scorpi_yaml_mapping_lookup(document,
-				    value_node, "profile-timer");
-				if (size_node != NULL)
-					error = scorpi_yaml_set_vm_scalar_prop(vm,
-					    "cpu.profile-timer", size_node);
+					error = scorpi_yaml_load_hyperv(vm, document, size_node);
 			} else {
 				return (SCORPI_ERR_VALIDATION);
 			}

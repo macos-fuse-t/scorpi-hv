@@ -321,7 +321,7 @@ int vm_set_memory_segment_visible(struct vmctx *ctx, vm_paddr_t gpa,
 
 /* Effective ARM guest features, after backend capability checks. */
 bool vm_el2_enabled(struct vmctx *ctx);
-bool vm_profile_timer_enabled(struct vmctx *ctx);
+bool vm_hyperv_stimers_enabled(struct vmctx *ctx);
 
 int vm_get_spi_interrupt_range(uint32_t *spi_intid_base, uint32_t *spi_intid_count);
 

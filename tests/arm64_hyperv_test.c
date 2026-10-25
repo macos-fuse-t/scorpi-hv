@@ -79,6 +79,7 @@ static void test_timers(struct arm64_hyperv *hv)
 	arm64_hyperv_set_vp(hv, 1, kick, &kicks);
 	assert(fast(hv, false, false, 0, 0x200, 0, x) == UINT64_C(1) << 32);
 	assert((x[6] & 14) == 14 && (x[7] & (1u << 13)));
+	assert(!(x[7] & (1u << 8))); /* Timers do not re-enable crash reporting. */
 	uint64_t now = get(hv, 0, 0x90004);
 	usleep(1000);
 	assert(get(hv, 1, 0x90004) > now);
@@ -170,6 +171,7 @@ int main(void)
 	assert(dup2(fileno(log), STDERR_FILENO) >= 0);
 	assert(arm64_hyperv_init(&hv) == 0);
 	assert(arm64_hyperv_init(&other) == 0);
+	assert(hv.crash_enabled);
 	/* Default Hyper-V discovery must not start or expose synthetic timers. */
 	assert(!hv.timers_enabled && !hv.worker_started);
 	assert(fast(&hv, false, true, 0, 0xb0002, 0, x) == 5);
@@ -269,7 +271,18 @@ int main(void)
 	assert(fast(&hv, false, true, 2, 0x40400, 0, x) == UINT64_C(1) << 32 && x[15] == 0);
 	assert(fast(&hv, false, false, 0, 0x210, 0, x) == UINT64_C(1) << 32 && x[6] == 0);
 	assert(fast(&hv, false, false, 0, 0x90002, 0, x) == UINT64_C(1) << 32 && x[6] == 0);
+	/* Crash notification can be disabled while timer services stay usable. */
+	hv.crash_enabled = false;
+	assert(fast(&hv, false, false, 0, 0x200, 0, x) == UINT64_C(1) << 32);
+	assert(x[6] == (1u << 6) && x[7] == 0);
+	for (uint32_t reg = 0x210; reg <= 0x215; reg++) {
+		assert(fast(&hv, false, true, 0, reg, 0, x) == 5);
+		assert(fast(&hv, true, true, 0, reg, 0, x) == 5);
+	}
+	assert(fast(&hv, false, true, 3, 0x90003, 0, x) == UINT64_C(1) << 32);
+	assert(x[15] == 3);
 	test_timers(&hv);
+	assert(!hv.crash_enabled); /* Feature selection survives guest reset. */
 	arm64_hyperv_destroy(&hv); arm64_hyperv_destroy(&other);
 	fflush(stderr); assert(dup2(old_stderr, STDERR_FILENO) >= 0); close(old_stderr);
 	rewind(log); char text[4096] = {0}; fread(text, 1, sizeof(text)-1, log); fclose(log);

@@ -23,6 +23,9 @@ new HID descriptor. No device configuration change is needed. Native checks:
 
 Currently, Scorpi runs on Linux/KVM X86/ARM64 and on Mac ARM64 using Apple's Hypervisor Framework.
 
+The ARM64 HVF backend supports a configurable subset of Hyper-V interfaces.
+See the [feature inventory and YAML settings](docs/arm64-hyperv-features.md).
+
 ## Available Bootloaders
 
 1. **U-Boot** (ARM only) - Fast and compact but lacks some advanced features such as ACPI and graphics. Best used for headless VMs that require fast start.\

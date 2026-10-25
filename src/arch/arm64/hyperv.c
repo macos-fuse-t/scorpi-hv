@@ -29,6 +29,16 @@
 #define HV_VP_SELF UINT32_C(0xfffffffe)
 #define HV_PAGE_SIZE 4096
 
+/* ARM64 Hyper-V register IDs. These values are part of the guest ABI. */
+enum {
+	HV_REGISTER_CRASH_P0 = 0x210,
+	HV_REGISTER_CRASH_P1 = 0x211,
+	HV_REGISTER_CRASH_P2 = 0x212,
+	HV_REGISTER_CRASH_P3 = 0x213,
+	HV_REGISTER_CRASH_P4 = 0x214,
+	HV_REGISTER_CRASH_CTL = 0x215,
+};
+
 struct hv_value { uint64_t low, high; };
 struct hv_header { uint64_t partition; uint32_t vp, vtl_reserved; };
 struct hv_set_element { uint32_t name, reserved[3]; struct hv_value value; };
@@ -213,6 +223,7 @@ int
 arm64_hyperv_init(struct arm64_hyperv *hv)
 {
 	memset(hv, 0, sizeof(*hv));
+	hv->crash_enabled = true;
 	int error = pthread_mutex_init(&hv->lock, NULL);
 	if (error) return error;
 	error = pthread_cond_init(&hv->changed, NULL);
@@ -263,6 +274,9 @@ read_register(struct arm64_hyperv *hv, uint32_t name, struct hv_value *v,
     unsigned int cpu, unsigned int cpu_count)
 {
 	*v = (struct hv_value){0, 0};
+	if (name >= HV_REGISTER_CRASH_P0 && name <= HV_REGISTER_CRASH_CTL &&
+	    !hv->crash_enabled)
+		return HV_INVALID_PARAMETER;
 	if (hv->timers_enabled) {
 		struct arm64_hyperv_vp *vp = &hv->vp[cpu];
 		if (name == 0x90004) { v->low = reference_now(hv); return HV_SUCCESS; }
@@ -285,10 +299,11 @@ read_register(struct arm64_hyperv *hv, uint32_t name, struct hv_value *v,
 		v->low = UINT64_C(10) << 48;
 		break;
 	case 0x200: /* HvRegisterPrivilegesAndFeaturesInfo */
-		/* AccessVpIndex; no SynIC, timers, VMBus, or enlightened TLB/IPI. */
+		/* AccessVpIndex is core; optional feature bits are added below. */
 		v->low = UINT64_C(1) << 6;
 		/* ARM64 crash capability is bit 72, not the x64 EDX bit 10. */
-		v->high = UINT64_C(1) << 8;
+		if (hv->crash_enabled)
+			v->high |= UINT64_C(1) << 8;
 		if (hv->timers_enabled) {
 			v->low |= (UINT64_C(1) << 1) | (UINT64_C(1) << 2) | (UINT64_C(1) << 3);
 			v->high |= UINT64_C(1) << 13; /* ARM64 direct synthetic timers */
@@ -309,10 +324,12 @@ read_register(struct arm64_hyperv *hv, uint32_t name, struct hv_value *v,
 	case 0x208: /* IptFeaturesInfo */
 	case 0x209: /* IsolationConfiguration: no VSM/isolation support */
 		break;
-	case 0x210: case 0x211: case 0x212: case 0x213: case 0x214:
-		v->low = hv->crash_params[name - 0x210];
+	case HV_REGISTER_CRASH_P0: case HV_REGISTER_CRASH_P1:
+	case HV_REGISTER_CRASH_P2: case HV_REGISTER_CRASH_P3:
+	case HV_REGISTER_CRASH_P4:
+		v->low = hv->crash_params[name - HV_REGISTER_CRASH_P0];
 		break;
-	case 0x215: /* GuestCrashCtl: only CrashNotify is supported. */
+	case HV_REGISTER_CRASH_CTL: /* Only CrashNotify is supported. */
 		v->low = HV_NOTIFY;
 		break;
 	case 0x90002: /* GuestOsId */
@@ -344,6 +361,9 @@ write_register(struct arm64_hyperv *hv, uint32_t name, struct hv_value v,
     unsigned int cpu, arm64_hyperv_map_fn map, void *arg)
 {
 	if (v.high != 0)
+		return HV_INVALID_PARAMETER;
+	if (name >= HV_REGISTER_CRASH_P0 && name <= HV_REGISTER_CRASH_CTL &&
+	    !hv->crash_enabled)
 		return HV_INVALID_PARAMETER;
 	if (hv->timers_enabled) {
 		struct arm64_hyperv_vp *vp = &hv->vp[cpu];
@@ -394,8 +414,8 @@ write_register(struct arm64_hyperv *hv, uint32_t name, struct hv_value v,
 			return HV_SUCCESS;
 		}
 	}
-	if (name >= 0x210 && name <= 0x214) {
-		hv->crash_params[name - 0x210] = v.low;
+	if (name >= HV_REGISTER_CRASH_P0 && name <= HV_REGISTER_CRASH_P4) {
+		hv->crash_params[name - HV_REGISTER_CRASH_P0] = v.low;
 		return HV_SUCCESS;
 	}
 	if (name == 0x90002) {
@@ -441,7 +461,7 @@ write_register(struct arm64_hyperv *hv, uint32_t name, struct hv_value v,
 		hv->partition_info_page = v.low;
 		return HV_SUCCESS;
 	}
-	if (name != 0x215)
+	if (name != HV_REGISTER_CRASH_CTL)
 		return HV_INVALID_PARAMETER;
 	/* Accept PreOSId and NoCrashDump metadata, but not CrashMessage. */
 	if (v.low & ((UINT64_C(1) << 62) | ((UINT64_C(1) << 58) - 1)))

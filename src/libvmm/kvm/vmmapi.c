@@ -919,7 +919,7 @@ vm_el2_enabled(struct vmctx *ctx __unused)
 }
 
 bool
-vm_profile_timer_enabled(struct vmctx *ctx __unused)
+vm_hyperv_stimers_enabled(struct vmctx *ctx __unused)
 {
 	return (false);
 }

@@ -86,16 +86,25 @@ test_invalid_yaml_file(void)
 }
 
 static void
-test_cpu_timer_options(void)
+test_hyperv_options(void)
 {
 	static const char *const yaml[] = {
-	    "cpu:\n  cores: 4\n  hyperv: true\n  profile-timer: true\n"
+	    "cpu:\n  cores: 4\n  hyperv:\n    crash: true\n    stimers: true\n"
 	    "  nested-virt: false\nmemory: 4G\n",
-	    "cpu:\n  cores: 4\n  hyperv: false\n  profile-timer: false\n"
+	    "cpu:\n  cores: 4\n  hyperv:\n    crash: false\n    stimers: false\n"
 	    "  nested-virt: false\nmemory: 4G\n",
 	    "cpu:\n  cores: 4\nmemory: 4G\n",
+	    "cpu:\n  cores: 4\n  hyperv:\n    stimers: true\nmemory: 4G\n",
+	    "cpu:\n  cores: 4\n  hyperv:\n    crash: false\n    stimers: true\n"
+	    "memory: 4G\n",
+	    "cpu:\n  cores: 4\n  hyperv: {}\nmemory: 4G\n",
 	};
-	static const char *const expected[] = {"true", "false", NULL};
+	static const char *const expected_crash[] = {
+	    "true", "false", NULL, NULL, "false", NULL,
+	};
+	static const char *const expected_stimers[] = {
+	    "true", "false", NULL, "true", "true", NULL,
+	};
 
 	for (size_t i = 0; i < sizeof(yaml) / sizeof(yaml[0]); i++) {
 		struct scorpi_normalized_vm *normalized, *roundtrip;
@@ -105,14 +114,16 @@ test_cpu_timer_options(void)
 		assert(scorpi_load_vm_from_yaml(yaml[i], &vm) == SCORPI_OK);
 		assert(scorpi_vm_normalize(vm, &normalized) == SCORPI_OK);
 		assert(scorpi_vm_to_config(normalized, &config) == SCORPI_OK);
-		const char *hyperv = scorpi_config_get_value(config, "cpu.hyperv");
-		const char *timer = scorpi_config_get_value(config, "cpu.profile-timer");
-		if (expected[i] == NULL) {
-			assert(hyperv == NULL && timer == NULL);
-		} else {
-			assert(hyperv != NULL && strcmp(hyperv, expected[i]) == 0);
-			assert(timer != NULL && strcmp(timer, expected[i]) == 0);
-		}
+		const char *hyperv = scorpi_config_get_value(config, "cpu.hyperv.crash");
+		const char *timer = scorpi_config_get_value(config, "cpu.hyperv.stimers");
+		if (expected_crash[i] == NULL)
+			assert(hyperv == NULL);
+		else
+			assert(hyperv != NULL && strcmp(hyperv, expected_crash[i]) == 0);
+		if (expected_stimers[i] == NULL)
+			assert(timer == NULL);
+		else
+			assert(timer != NULL && strcmp(timer, expected_stimers[i]) == 0);
 		/* CLI imports must preserve both explicit true and explicit false. */
 		assert(scorpi_load_vm_from_config_tree(config, &from_config) == SCORPI_OK);
 		assert(scorpi_vm_normalize(from_config, &roundtrip) == SCORPI_OK);
@@ -122,6 +133,26 @@ test_cpu_timer_options(void)
 		scorpi_config_destroy(config);
 		scorpi_normalized_vm_destroy(normalized);
 		scorpi_destroy_vm(vm);
+	}
+}
+
+static void
+test_invalid_hyperv_options(void)
+{
+	static const char *const yaml[] = {
+	    "cpu:\n  cores: 4\n  hyperv: true\n",
+	    "cpu:\n  cores: 4\n  hyperv:\n    enabled: true\n",
+	    "cpu:\n  cores: 4\n  hyperv:\n    stimers: invalid\n",
+	    "cpu:\n  cores: 4\n  hyperv:\n    stimers: 1\n",
+	    "cpu:\n  cores: 4\n  hyperv:\n    crash: []\n",
+	    "cpu:\n  cores: 4\n  hyperv:\n    stimer: true\n",
+	};
+
+	for (size_t i = 0; i < sizeof(yaml) / sizeof(yaml[0]); i++) {
+		scorpi_vm_t vm;
+
+		assert(scorpi_load_vm_from_yaml(yaml[i], &vm) == SCORPI_ERR_VALIDATION);
+		assert(vm == NULL);
 	}
 }
 
@@ -139,7 +170,8 @@ int
 main(void)
 {
 	test_yaml_file_parity();
-	test_cpu_timer_options();
+	test_hyperv_options();
+	test_invalid_hyperv_options();
 	test_invalid_yaml_file();
 	test_missing_yaml_file();
 	return (0);

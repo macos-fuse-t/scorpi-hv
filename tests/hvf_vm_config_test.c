@@ -8,13 +8,15 @@
 static hv_vm_config_t expected_config;
 static hv_return_t query_result, set_result, create_result;
 static unsigned int queries, sets, creates;
-static int cpu_hyperv = -1;
+static int cpu_crash = -1, cpu_stimers = -1;
 
 bool
 get_config_bool_default(const char *path, bool fallback)
 {
-	if (strcmp(path, "cpu.hyperv") == 0 && cpu_hyperv >= 0)
-		return (cpu_hyperv != 0);
+	if (strcmp(path, "cpu.hyperv.crash") == 0 && cpu_crash >= 0)
+		return (cpu_crash != 0);
+	if (strcmp(path, "cpu.hyperv.stimers") == 0 && cpu_stimers >= 0)
+		return (cpu_stimers != 0);
 	return (fallback);
 }
 
@@ -67,9 +69,12 @@ main(void)
 	    HV_BAD_ARGUMENT, 1, 0);
 	check_create(HV_SUCCESS, HV_SUCCESS, HV_NO_RESOURCES,
 	    HV_NO_RESOURCES, 1, 1);
-	for (cpu_hyperv = -1; cpu_hyperv <= 1; cpu_hyperv++) {
-		assert(hyperv_config_enabled(false) == (cpu_hyperv != 0));
-		assert(!hyperv_config_enabled(true));
+	for (cpu_crash = -1; cpu_crash <= 1; cpu_crash++) {
+		for (cpu_stimers = -1; cpu_stimers <= 1; cpu_stimers++) {
+			assert(hyperv_config_enabled(false) ==
+			    (cpu_crash != 0 || cpu_stimers == 1));
+			assert(!hyperv_config_enabled(true));
+		}
 	}
 	puts("HVF maximum IPA configuration and error propagation passed");
 	return (0);

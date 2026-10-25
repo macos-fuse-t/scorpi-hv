@@ -34,7 +34,7 @@ struct arm64_hyperv {
 	uint64_t synthetic_vectors[64];
 	uint64_t crash_params[5];
 	bool discovered;
-	bool timers_enabled, stopping, worker_started;
+	bool crash_enabled, timers_enabled, stopping, worker_started;
 	uint64_t reference_epoch;
 	pthread_cond_t changed;
 	pthread_t worker;

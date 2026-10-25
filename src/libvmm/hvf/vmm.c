@@ -124,7 +124,8 @@ vm_create_with_max_ipa(hv_vm_config_t config)
 static bool
 hyperv_config_enabled(bool el2_enabled)
 {
-	return (!el2_enabled && get_config_bool_default("cpu.hyperv", true));
+	return (!el2_enabled && (get_config_bool_default("cpu.hyperv.crash", true) ||
+	    get_config_bool_default("cpu.hyperv.stimers", false)));
 }
 
 struct vmctx *
@@ -200,6 +201,7 @@ vm_openf(const char *name, int flags)
 		hv_vm_destroy();
 		return NULL;
 	}
+	ctx->hyperv.crash_enabled = get_config_bool_default("cpu.hyperv.crash", true);
 
 	return ctx;
 }

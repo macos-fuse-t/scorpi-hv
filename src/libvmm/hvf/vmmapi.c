@@ -434,10 +434,10 @@ vm_el2_enabled(struct vmctx *ctx)
 }
 
 bool
-vm_profile_timer_enabled(struct vmctx *ctx)
+vm_hyperv_stimers_enabled(struct vmctx *ctx)
 {
 	return (ctx->hyperv_enabled && !ctx->el2_enabled &&
-	    get_config_bool_default("cpu.profile-timer", false));
+	    get_config_bool_default("cpu.hyperv.stimers", false));
 }
 
 static void
@@ -507,7 +507,7 @@ vm_vcpu_init(struct vcpu *vcpu)
 		return (-1);
 	}
 
-	if (vm_profile_timer_enabled(vcpu->ctx)) {
+	if (vm_hyperv_stimers_enabled(vcpu->ctx)) {
 		/* CPU 0 initializes the partition before secondary CPUs are started. */
 		if (vcpu->vcpuid == 0 && !vcpu->ctx->hyperv.worker_started &&
 		    arm64_hyperv_enable_timers(&vcpu->ctx->hyperv,
