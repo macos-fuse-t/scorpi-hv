@@ -30,6 +30,10 @@ scorpi_kit_dep = declare_dependency(
   link_with: scorpi_kit,
 )
 
+scorpi_protocol_dep = declare_dependency(
+  include_directories: include_directories('../../include'),
+)
+
 install_headers('../../include/scorpi.h')
 install_headers(
   '../../include/support/endian.h',
@@ -61,5 +65,6 @@ pkg.generate(
   name: 'scorpi-protocol',
   filebase: 'scorpi-protocol',
   description: 'Scorpi public protocol headers',
+  libraries: scorpi_protocol_dep,
   subdirs: '',
 )
