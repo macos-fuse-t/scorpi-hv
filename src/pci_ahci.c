@@ -2497,6 +2497,14 @@ pci_ahci_init(struct pci_devinst *pi, nvlist_t *nvl)
 	slots = 32;
 	last_port = 0;
 
+	/* Guests may probe register blocks for ports without an attached drive. */
+	for (p = 0; p < MAX_PORTS; p++) {
+		sc->port[p].pr_sc = sc;
+		sc->port[p].port = p;
+		STAILQ_INIT(&sc->port[p].iofhd);
+		TAILQ_INIT(&sc->port[p].iobhd);
+	}
+
 	ports_nvl = find_relative_config_node(nvl, "port");
 	for (p = 0; ports_nvl != NULL && p < MAX_PORTS; p++) {
 		struct ata_params *ata_ident = &sc->port[p].ata_ident;
@@ -2546,8 +2554,6 @@ pci_ahci_init(struct pci_devinst *pi, nvlist_t *nvl)
 		}
 
 		sc->port[p].bctx = bctxt;
-		sc->port[p].pr_sc = sc;
-		sc->port[p].port = p;
 		sc->port[p].atapi = atapi;
 
 		/*
