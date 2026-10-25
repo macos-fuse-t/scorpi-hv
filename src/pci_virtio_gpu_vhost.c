@@ -88,6 +88,7 @@ struct pci_vhost_softc {
 	uint32_t start_resx;
 	uint32_t start_resy;
 	bool hdpi_enabled;
+	bool hardware_mouse_enabled;
 	struct vqueue_info queues[VHOST_GPU_QUEUE_CAPACITY];
 	int reset_fds[2];
 	struct mevent *reset_event;
@@ -203,7 +204,11 @@ pci_vhost_device_features(void *opaque, uint64_t device_features)
 	sc->vsc_consts.vc_hv_caps = VHOST_GPU_TRANSPORT_FEATURES |
 	    (device_features & (VHOST_GPU_DEVICE_FEATURES |
 	        (1ULL << VIRTIO_GPU_F_SCORPI_USER_SUBMISSION) |
+	        (1ULL << VIRTIO_GPU_F_SCORPI_HOST_CURSOR) |
 	        (1ULL << VHOST_GPU_F_RING_RESET)));
+	if (!sc->hardware_mouse_enabled)
+		sc->vsc_consts.vc_hv_caps &=
+		    ~(1ULL << VIRTIO_GPU_F_SCORPI_HOST_CURSOR);
 	/* Keep the four-queue interface until the backend implements the full
 	 * user-submission contract. Notify vectors can be shared by user queues;
 	 * their native completions still use the existing kernel event queue. */
@@ -258,7 +263,8 @@ pci_vhost_backend_event(void *opaque, const struct scorpi_vhost_msg *msg)
 			    &msg->payload.dirty_rect);
 		break;
 	case SCORPI_VHOST_MSG_CURSOR:
-		pci_vhost_apply_renderer_cursor(&msg->payload.cursor);
+		if (sc->hardware_mouse_enabled)
+			pci_vhost_apply_renderer_cursor(&msg->payload.cursor);
 		break;
 	default:
 		break;
@@ -403,8 +409,9 @@ pci_vhost_apply_renderer_dirty_rect(const struct scorpi_vhost_dirty_rect *rect)
 static void
 pci_vhost_apply_renderer_cursor(const struct scorpi_vhost_cursor *cursor)
 {
+	console_set_hardware_mouse(true);
 	if ((cursor->flags & SCORPI_VHOST_CURSOR_F_MOVE) != 0) {
-		console_move_cursor(cursor->x, cursor->y);
+		console_move_cursor((int32_t)cursor->x, (int32_t)cursor->y);
 		return;
 	}
 	if ((cursor->flags & SCORPI_VHOST_CURSOR_F_VISIBLE) == 0) {
@@ -414,6 +421,7 @@ pci_vhost_apply_renderer_cursor(const struct scorpi_vhost_cursor *cursor)
 	if (cursor->width == 0 || cursor->height == 0 || cursor->stride == 0 ||
 	    cursor->shm_name[0] == '\0')
 		return;
+	console_move_cursor((int32_t)cursor->x, (int32_t)cursor->y);
 	console_set_mouse_scanout(true, cursor->width, cursor->height,
 	    cursor->stride, cursor->format, cursor->hot_x, cursor->hot_y,
 	    cursor->shm_name);
@@ -1008,6 +1016,13 @@ pci_vhost_init(struct pci_devinst *pi, nvlist_t *nvl)
 	sc->gpu_config.num_scanouts = 1;
 	sc->gpu_config.num_capsets = 0;
 	sc->legacy_fb_shm_fd = -1;
+	sc->hardware_mouse_enabled = true;
+	value = get_config_value_node(nvl, "hardware_mouse");
+	if (pci_vhost_parse_bool("hardware_mouse", value,
+	    &sc->hardware_mouse_enabled) != 0) {
+		free(sc);
+		return (-1);
+	}
 
 	value = get_config_value_node(nvl, "hdpi");
 	if (pci_vhost_parse_bool("hdpi", value, &sc->hdpi_enabled) != 0) {

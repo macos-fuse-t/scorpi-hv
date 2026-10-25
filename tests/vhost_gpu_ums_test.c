@@ -108,6 +108,18 @@ main(void)
 	    (1ULL << VIRTIO_GPU_F_SCORPI_USER_SUBMISSION) |
 	    (1ULL << VHOST_GPU_F_RING_RESET));
 	assert(sc.vhost.queue_count == 68 && sc.vsc_consts.vc_nvq == 68);
+	/* Cursor capability follows configuration, independently of UMS. */
+	const uint64_t cursor = 1ULL << VIRTIO_GPU_F_SCORPI_HOST_CURSOR;
+	const uint64_t offered = VHOST_GPU_DEVICE_FEATURES | cursor |
+	    (1ULL << VIRTIO_GPU_F_SCORPI_USER_SUBMISSION);
+	pci_vhost_device_features(&sc, offered);
+	assert(!(sc.vsc_consts.vc_hv_caps & cursor));
+	sc.hardware_mouse_enabled = true;
+	pci_vhost_device_features(&sc, offered);
+	assert(sc.vsc_consts.vc_hv_caps & cursor);
+	pci_vhost_device_features(&sc, offered & ~cursor);
+	assert(!(sc.vsc_consts.vc_hv_caps & cursor));
+
 	sc.vhost.features_negotiated = true;
 	pci_vhost_device_features(&sc, 0);
 	assert(sc.vhost.queue_count == 68); /* Stable after negotiation. */

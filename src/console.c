@@ -90,6 +90,8 @@ static struct {
 	int mouse_stride;
 	int mouse_hot_x;
 	int mouse_hot_y;
+	int mouse_x;
+	int mouse_y;
 	char mouse_shm_name[CONSOLE_SHM_NAME_MAX];
 	bool mouse_active;
 } console;
@@ -256,6 +258,9 @@ console_move_cursor(int x, int y)
 {
 	char notification[1024];
 
+	console.mouse_x = x;
+	console.mouse_y = y;
+
 	snprintf(notification, sizeof(notification),
 	    "{ \"event\": \"move_cursor\","
 	    "\"data\": {"
@@ -419,6 +424,7 @@ get_framebuffer(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	    "\"redrawOnTimer\": %s"
 	    "},"
 	    "\"mouse_scanout\": {"
+	    "\"x\": %d,\"y\": %d,"
 	    "\"hot_x\": %d,"
 	    "\"hot_y\": %d,"
 	    "\"width\": %d, "
@@ -438,6 +444,7 @@ get_framebuffer(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	    (unsigned long long)console.display_surface_fence_value, console.w,
 	    console.h, console.stride, console.format, console.shm_name,
 	    console.shm_size, console.redrawOnTimer ? "true" : "false",
+	    console.mouse_x, console.mouse_y,
 	    console.mouse_hot_x, console.mouse_hot_y, console.mouse_w,
 	    console.mouse_h, console.mouse_stride, console.mouse_format,
 	    console.mouse_shm_name);

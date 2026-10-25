@@ -75,6 +75,11 @@
  */
 #define VIRTIO_GPU_F_SCORPI_LOGS 11
 
+/* Optional host cursor plane; masked by the VM hardware_mouse setting. */
+#ifndef VIRTIO_GPU_F_SCORPI_HOST_CURSOR
+#define VIRTIO_GPU_F_SCORPI_HOST_CURSOR 13
+#endif
+
 enum virtio_gpu_ctrl_type {
 	VIRTIO_GPU_UNDEFINED = 0,
 
