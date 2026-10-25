@@ -61,6 +61,9 @@ static struct {
 	void *scroll_arg;
 	int scroll_priority;
 
+	relative_event_func_t relative_event_cb;
+	void *relative_arg;
+
 	resize_event_func_t resize_event_cb;
 	void *resize_arg;
 
@@ -352,6 +355,21 @@ console_scroll_event(uint8_t button, int x, int y, int delta)
 }
 
 void
+console_relative_register(relative_event_func_t event_cb, void *arg)
+{
+	console.relative_event_cb = event_cb;
+	console.relative_arg = arg;
+}
+
+void
+console_relative_event(uint8_t button, int dx, int dy, int scroll)
+{
+	if (console.relative_event_cb)
+		console.relative_event_cb(button, dx, dy, scroll,
+		    console.relative_arg);
+}
+
+void
 console_key_event(int down, uint32_t keysym, uint32_t keycode)
 {
 	if (console.kbd_event_cb)
@@ -381,6 +399,7 @@ get_framebuffer(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	    "{"
 	    "\"hardware_mouse\": %s, "
 	    "\"hdpi\": %s, "
+	    "\"relative_mouse\": %s, "
 	    "\"display_surface\": {"
 	    "\"active\": %s, "
 	    "\"width\": %d, "
@@ -411,16 +430,17 @@ get_framebuffer(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	    "}",
 	    console.hardware_mouse ? "true" : "false",
 	    console.hdpi ? "true" : "false",
-	    console.display_surface_active ? "true" : "false",
-	    console.w, console.h, console.display_surface_format,
+	    console.relative_event_cb ? "true" : "false",
+	    console.display_surface_active ? "true" : "false", console.w,
+	    console.h, console.display_surface_format,
 	    console.display_surface_handle_type,
 	    (unsigned long long)console.display_surface_id,
-	    (unsigned long long)console.display_surface_fence_value,
-	    console.w, console.h,
-	    console.stride, console.format, console.shm_name, console.shm_size,
-	    console.redrawOnTimer ? "true" : "false", console.mouse_hot_x,
-	    console.mouse_hot_y, console.mouse_w, console.mouse_h,
-	    console.mouse_stride, console.mouse_format, console.mouse_shm_name);
+	    (unsigned long long)console.display_surface_fence_value, console.w,
+	    console.h, console.stride, console.format, console.shm_name,
+	    console.shm_size, console.redrawOnTimer ? "true" : "false",
+	    console.mouse_hot_x, console.mouse_hot_y, console.mouse_w,
+	    console.mouse_h, console.mouse_stride, console.mouse_format,
+	    console.mouse_shm_name);
 	cnc_send_response(c, req_id, rsp);
 }
 
@@ -461,22 +481,44 @@ kbd_event(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
 	}
 }
 
-static void
-scroll_event(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
+static bool
+parse_pointer_args(int argc, char *argv[], int values[4])
 {
-	long values[4];
 	char *end;
 
 	if (argc != 4)
-		return;
+		return (false);
 	for (int i = 0; i < 4; i++) {
 		errno = 0;
-		values[i] = strtol(argv[i], &end, 10);
+		long value = strtol(argv[i], &end, 10);
 		if (errno || end == argv[i] || *end != '\0' ||
-		    values[i] < INT_MIN || values[i] > INT_MAX)
-			return;
+		    value < INT_MIN || value > INT_MAX)
+			return (false);
+		values[i] = value;
 	}
-	console_scroll_event(values[0], values[1], values[2], values[3]);
+	return (true);
+}
+
+static void
+scroll_event(cnc_conn_t c, int req_id, int argc, char *argv[], void *param)
+{
+	int values[4];
+
+	if (parse_pointer_args(argc, argv, values))
+		console_scroll_event(values[0], values[1], values[2],
+		    values[3]);
+}
+
+static void
+relative_mouse_event(cnc_conn_t c, int req_id, int argc, char *argv[],
+    void *param)
+{
+	int values[4];
+
+	if (parse_pointer_args(argc, argv, values) && values[0] >= 0 &&
+	    values[0] <= 7)
+		console_relative_event(values[0], values[1], values[2],
+		    values[3]);
 }
 
 void
@@ -490,6 +532,8 @@ console_init()
 		    NULL);
 		cnc_register_command("mouse_event", mouse_event, NULL);
 		cnc_register_command("scroll_event", scroll_event, NULL);
+		cnc_register_command("relative_mouse_event",
+		    relative_mouse_event, NULL);
 		cnc_register_command("key_event", kbd_event, NULL);
 	}
 	once = 1;

@@ -11,6 +11,14 @@ Scorpi is a modern, lightweight, general-purpose hypervisor designed to be an al
 - **General-Purpose**: Supports headless and graphical VMs, EFI boot loader, and ACPI. Can run  Linux and Windows VMs.
 - **Modular**: Designed to be used as an API in other applications and services. Graphics, UI and user input are separate modules, and networking can be modularized as well.
 
+The USB `tablet` device exposes both an absolute pointing collection and a
+relative mouse collection. Viewer capture uses `relative_mouse_event` with
+button state, signed X/Y deltas and scroll units (120 per detent); ordinary
+pointing continues to use `mouse_event`. `get_framebuffer` advertises this through
+`relative_mouse`. Restart an existing VM after updating so the guest reads the
+new HID descriptor. No device configuration change is needed. Native checks:
+`meson test -C build-macos-arm64 usb_mouse_test console_relative_mouse_test`.
+
 ## Platform Support
 
 Currently, Scorpi runs on Linux/KVM X86/ARM64 and on Mac ARM64 using Apple's Hypervisor Framework.

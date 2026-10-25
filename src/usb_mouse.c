@@ -105,58 +105,108 @@ struct umouse_config_desc {
 #define MOUSE_MAX_X 0x8000
 #define MOUSE_MAX_Y 0x8000
 
+#define UMOUSE_ABSOLUTE_REPORT 1
+#define UMOUSE_RELATIVE_REPORT 2
+#define UMOUSE_RELATIVE_QUEUE  128
+
+/* Each top-level collection is a separate standard HID pointing device. */
+/* clang-format off: keep HID items and their operands together. */
+#define UMOUSE_BUTTONS                                                        \
+	0x05, 0x09, 0x19, 0x01, 0x29, 0x03, /* three buttons */               \
+	    0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x03, 0x81, 0x02, 0x75, \
+	    0x05, 0x95, 0x01, 0x81, 0x03 /* byte padding */
+
+#define UMOUSE_WHEEL                                                        \
+	0x05, 0x01, 0x09, 0x38, 0xa1, 0x02,	/* wheel collection */      \
+	    0x09, 0x48, 0x15, 0x00, 0x25, 0x01, /* resolution multiplier */ \
+	    0x35, 0x01, 0x45, CONSOLE_SCROLL_UNITS, 0x75, 0x08, 0x95, 0x01, \
+	    0xb1, 0x02, 0x09, 0x38, 0x35, 0x00, 0x45,                       \
+	    0x00, /* relative wheel */                                      \
+	    0x15, 0x81, 0x25, 0x7f, 0x75, 0x08, 0x95, 0x01, 0x81, 0x06, 0xc0
+
 static const uint8_t umouse_report_desc[] = {
-	0x05, 0x01,	  /* USAGE_PAGE (Generic Desktop)		*/
-	0x09, 0x02,	  /* USAGE (Mouse)			*/
-	0xa1, 0x01,	  /* COLLECTION (Application) 		*/
-	0x09, 0x01,	  /*   USAGE (Pointer)			*/
-	0xa1, 0x00,	  /*   COLLECTION (Physical)		*/
-	0x05, 0x09,	  /*     USAGE_PAGE (Button)		*/
-	0x19, 0x01,	  /*     USAGE_MINIMUM (Button 1)		*/
-	0x29, 0x03,	  /*     USAGE_MAXIMUM (Button 3)		*/
-	0x15, 0x00,	  /*     LOGICAL_MINIMUM (0)		*/
-	0x25, 0x01,	  /*     LOGICAL_MAXIMUM (1)		*/
-	0x75, 0x01,	  /*     REPORT_SIZE (1)			*/
-	0x95, 0x03,	  /*     REPORT_COUNT (3)			*/
-	0x81, 0x02,	  /*     INPUT (Data,Var,Abs); 3 buttons	*/
-	0x75, 0x05,	  /*     REPORT_SIZE (5)			*/
-	0x95, 0x01,	  /*     REPORT_COUNT (1)			*/
-	0x81, 0x03,	  /*     INPUT (Cnst,Var,Abs); padding	*/
-	0x05, 0x01,	  /*     USAGE_PAGE (Generic Desktop)	*/
-	0x09, 0x30,	  /*     USAGE (X)			*/
-	0x09, 0x31,	  /*     USAGE (Y)			*/
-	0x35, 0x00,	  /*     PHYSICAL_MINIMUM (0)		*/
-	0x46, 0xff, 0x7f, /*     PHYSICAL_MAXIMUM (0x7fff)	*/
-	0x15, 0x00,	  /*     LOGICAL_MINIMUM (0)		*/
-	0x26, 0xff, 0x7f, /*     LOGICAL_MAXIMUM (0x7fff)		*/
-	0x75, 0x10,	  /*     REPORT_SIZE (16)			*/
-	0x95, 0x02,	  /*     REPORT_COUNT (2)			*/
-	0x81, 0x02,	  /*     INPUT (Data,Var,Abs)		*/
-	0x09, 0x38,	  /*     USAGE (Wheel)			*/
-	0xa1, 0x02,	  /*     COLLECTION (Logical); wheel only */
-	0x09, 0x48,	  /*       USAGE (Resolution Multiplier) */
-	0x15, 0x00,	  /*       LOGICAL_MINIMUM (0)		*/
-	0x25, 0x01,	  /*       LOGICAL_MAXIMUM (1)		*/
-	0x35, 0x01,	  /*       PHYSICAL_MINIMUM (1)		*/
-	0x45, CONSOLE_SCROLL_UNITS, /* PHYSICAL_MAXIMUM (120)	*/
-	0x75, 0x08,	  /*       REPORT_SIZE (8)		*/
-	0x95, 0x01,	  /*       REPORT_COUNT (1)		*/
-	0xb1, 0x02,	  /*       FEATURE (Data,Var,Abs)	*/
-	0x05, 0x01,	  /*     USAGE Page (Generic Desktop)	*/
-	0x09, 0x38,	  /*     USAGE (Wheel)			*/
-	0x35, 0x00,	  /*     PHYSICAL_MINIMUM (0)		*/
-	0x45, 0x00,	  /*     PHYSICAL_MAXIMUM (0)		*/
-	0x15, 0x81,	  /*     LOGICAL_MINIMUM (-127)		*/
-	0x25, 0x7f,	  /*     LOGICAL_MAXIMUM (127)		*/
-	0x75, 0x08,	  /*     REPORT_SIZE (8)			*/
-	0x95, 0x01,	  /*     REPORT_COUNT (1)			*/
-	0x81, 0x06,	  /*     INPUT (Data,Var,Rel)		*/
-	0xc0,		  /*     END_COLLECTION (Logical)	*/
-	0xc0,		  /*   END_COLLECTION			*/
-	0xc0		  /* END_COLLECTION			*/
+	0x05,
+	0x01,
+	0x09,
+	0x02,
+	0xa1,
+	0x01, /* Mouse application */
+	0x85,
+	UMOUSE_ABSOLUTE_REPORT,
+	0x09,
+	0x01,
+	0xa1,
+	0x00, /* Pointer */
+	UMOUSE_BUTTONS,
+	0x05,
+	0x01,
+	0x09,
+	0x30,
+	0x09,
+	0x31, /* X, Y */
+	0x35,
+	0x00,
+	0x46,
+	0xff,
+	0x7f, /* physical 0..32767 */
+	0x15,
+	0x00,
+	0x26,
+	0xff,
+	0x7f, /* logical 0..32767 */
+	0x75,
+	0x10,
+	0x95,
+	0x02,
+	0x81,
+	0x02, /* 16-bit absolute */
+	UMOUSE_WHEEL,
+	0xc0,
+	0xc0,
+
+	0x05,
+	0x01,
+	0x09,
+	0x02,
+	0xa1,
+	0x01, /* Mouse application */
+	0x85,
+	UMOUSE_RELATIVE_REPORT,
+	0x09,
+	0x01,
+	0xa1,
+	0x00, /* Pointer */
+	UMOUSE_BUTTONS,
+	0x05,
+	0x01,
+	0x09,
+	0x30,
+	0x09,
+	0x31, /* X, Y */
+	0x35,
+	0x00,
+	0x45,
+	0x00, /* no physical scaling */
+	0x16,
+	0x01,
+	0x80,
+	0x26,
+	0xff,
+	0x7f, /* logical -32767..32767 */
+	0x75,
+	0x10,
+	0x95,
+	0x02,
+	0x81,
+	0x06, /* 16-bit relative */
+	UMOUSE_WHEEL,
+	0xc0,
+	0xc0,
 };
+/* clang-format on */
 
 struct umouse_report {
+	uint8_t report_id;
 	uint8_t buttons; /* bits: 0 left, 1 right, 2 middle */
 	int16_t x;	 /* x position */
 	int16_t y;	 /* y position */
@@ -172,7 +222,7 @@ static struct usb_device_descriptor umouse_dev_desc = {
 	.bMaxPacketSize = 9,	   /* max pkt size, 2^9 = 512 */
 	MSETW(.idVendor, 0xFB5D),  /* vendor */
 	MSETW(.idProduct, 0x0001), /* product */
-	MSETW(.bcdDevice, 0),	   /* device version */
+	MSETW(.bcdDevice, 0x0100), /* device version */
 	.iManufacturer = UMSTR_MANUFACTURER,
 	.iProduct = UMSTR_PRODUCT,
 	.iSerialNumber = UMSTR_SERIAL,
@@ -195,8 +245,8 @@ static struct umouse_config_desc umouse_confd = {
 		.bDescriptorType = UDESC_INTERFACE,
 		.bNumEndpoints = 1,
 		.bInterfaceClass = UICLASS_HID,
-		.bInterfaceSubClass = UISUBCLASS_BOOT,
-		.bInterfaceProtocol = UIPROTO_MOUSE,
+		.bInterfaceSubClass = 0,
+		.bInterfaceProtocol = 0,
 	},
 	.hidd = {
 		.bLength = sizeof(umouse_confd.hidd),
@@ -205,7 +255,8 @@ static struct umouse_config_desc umouse_confd = {
 		.bCountryCode = 0,
 		.bNumDescriptors = 1,
 		.bReportDescriptorType = UMOUSE_REPORT_DESC_TYPE,
-		.wItemLength = { sizeof(umouse_report_desc), 0 },
+		.wItemLength = { sizeof(umouse_report_desc) & 0xff,
+		    sizeof(umouse_report_desc) >> 8 },
 	},
 	.endpd = {
 		.bLength = sizeof(umouse_confd.endpd),
@@ -248,12 +299,23 @@ static struct umouse_bos_desc umouse_bosd = {
 	}
 };
 
+struct umouse_relative_event {
+	uint8_t buttons;
+	int64_t x, y, scroll;
+};
+
 struct umouse_softc {
 	struct usb_hci *hci;
 
 	struct umouse_report um_report;
 	int newdata;
 	int64_t pending_scroll;
+	struct umouse_relative_event relative[UMOUSE_RELATIVE_QUEUE];
+	unsigned relative_head, relative_count;
+	uint8_t relative_buttons, relative_feature;
+	int64_t relative_scroll_remainder;
+	bool relative_mode, absolute_release_pending;
+	uint8_t absolute_sent_buttons, relative_sent_buttons;
 	struct {
 		uint8_t idle;
 		uint8_t protocol;
@@ -281,7 +343,20 @@ umouse_scroll_event(uint8_t button, int x, int y, int delta, void *arg)
 	sc = arg;
 
 	pthread_mutex_lock(&sc->mtx);
+	if (sc->relative_mode) {
+		/* Cancel old motion, but release the relative device before the
+		 * next absolute report if the guest has a button held there. */
+		sc->relative_head = sc->relative_count = 0;
+		sc->relative_scroll_remainder = 0;
+		sc->relative_buttons = 0;
+		if (sc->relative_sent_buttons) {
+			memset(&sc->relative[0], 0, sizeof(sc->relative[0]));
+			sc->relative_count = 1;
+		}
+		sc->relative_mode = false;
+	}
 
+	sc->um_report.report_id = UMOUSE_ABSOLUTE_REPORT;
 	sc->um_report.buttons = 0;
 	sc->um_report.z = 0;
 	/* Keep sub-detent movement even when the guest uses legacy scrolling. */
@@ -322,7 +397,7 @@ umouse_event(uint8_t button, int x, int y, void *arg)
 	umouse_scroll_event(button, x, y, delta, arg);
 }
 
-/* Caller holds sc->mtx. The input report remains six bytes in both modes. */
+/* Caller holds sc->mtx. Wheel negotiation is independent for each report. */
 static int
 umouse_scroll_count(struct umouse_softc *sc)
 {
@@ -330,6 +405,84 @@ umouse_scroll_count(struct umouse_softc *sc)
 	    (sc->hid.feature ? 1 : CONSOLE_SCROLL_UNITS);
 
 	return (count > 127 ? 127 : count < -127 ? -127 : (int)count);
+}
+
+static int64_t
+umouse_accumulate(int64_t pending, int delta)
+{
+	pending += delta;
+	return (pending > INT_MAX  ? INT_MAX :
+		pending < -INT_MAX ? -INT_MAX :
+				     pending);
+}
+
+static void
+umouse_relative_event(uint8_t buttons, int dx, int dy, int scroll, void *arg)
+{
+	struct umouse_softc *sc = arg;
+	struct umouse_relative_event *event = NULL;
+
+	pthread_mutex_lock(&sc->mtx);
+	if (!sc->relative_mode) {
+		sc->relative_mode = true;
+		sc->pending_scroll = 0;
+		sc->um_report.buttons = 0;
+		sc->absolute_release_pending = sc->absolute_sent_buttons != 0;
+		sc->newdata = sc->absolute_release_pending;
+	}
+	/* Coalesce motion, but keep every button transition in order. */
+	if (sc->relative_count) {
+		unsigned tail = (sc->relative_head + sc->relative_count - 1) %
+		    UMOUSE_RELATIVE_QUEUE;
+		if (sc->relative[tail].buttons == (buttons & 7))
+			event = &sc->relative[tail];
+	}
+	if (!event) {
+		if (sc->relative_count == UMOUSE_RELATIVE_QUEUE) {
+			sc->relative_head = (sc->relative_head + 1) %
+			    UMOUSE_RELATIVE_QUEUE;
+			sc->relative_count--;
+		}
+		unsigned tail = (sc->relative_head + sc->relative_count++) %
+		    UMOUSE_RELATIVE_QUEUE;
+		event = &sc->relative[tail];
+		memset(event, 0, sizeof(*event));
+		event->buttons = buttons & 7;
+	}
+	sc->relative_buttons = buttons & 7;
+	event->x = umouse_accumulate(event->x, dx);
+	event->y = umouse_accumulate(event->y, dy);
+	event->scroll = umouse_accumulate(event->scroll +
+		sc->relative_scroll_remainder,
+	    scroll);
+	sc->relative_scroll_remainder = 0;
+	pthread_mutex_unlock(&sc->mtx);
+	sc->hci->hci_intr(sc->hci, UE_DIR_IN | UMOUSE_INTR_ENDPT);
+}
+
+/* Snapshot without consuming; used by both GET_REPORT and interrupt reads. */
+static struct umouse_report
+umouse_relative_report(struct umouse_softc *sc)
+{
+	struct umouse_report report = {
+		.report_id = UMOUSE_RELATIVE_REPORT,
+		.buttons = sc->relative_buttons,
+	};
+	if (sc->relative_count) {
+		struct umouse_relative_event *event =
+		    &sc->relative[sc->relative_head];
+		report.buttons = event->buttons;
+		report.x = event->x > 32767 ? 32767 :
+		    event->x < -32767	    ? -32767 :
+					      event->x;
+		report.y = event->y > 32767 ? 32767 :
+		    event->y < -32767	    ? -32767 :
+					      event->y;
+		int64_t wheel = event->scroll /
+		    (sc->relative_feature ? 1 : CONSOLE_SCROLL_UNITS);
+		report.z = wheel > 127 ? 127 : wheel < -127 ? -127 : wheel;
+	}
+	return (report);
 }
 
 static void *
@@ -346,6 +499,7 @@ umouse_init(struct usb_hci *hci, nvlist_t *nvl __unused)
 
 	console_ptr_register(umouse_event, sc, 10);
 	console_scroll_register(umouse_scroll_event, sc, 10);
+	console_relative_register(umouse_relative_event, sc);
 
 	return (sc);
 }
@@ -644,26 +798,36 @@ umouse_request(void *scarg, struct usb_data_xfer *xfer)
 		    (value >> 8)));
 		if (!data)
 			break;
-		if (value == 0x0300 && len >= 1 && data->blen >= 1) {
+		uint8_t report_id = value & 0xff;
+		if (index != 0 ||
+		    (report_id != UMOUSE_ABSOLUTE_REPORT &&
+			report_id != UMOUSE_RELATIVE_REPORT)) {
+			err = USB_ERR_STALLED;
+			goto done;
+		}
+		if ((value >> 8) == 3 && len >= 2 && data->blen >= 2) {
 			pthread_mutex_lock(&sc->mtx);
-			*udata = sc->hid.feature;
+			udata[0] = report_id;
+			udata[1] = report_id == UMOUSE_RELATIVE_REPORT ?
+			    sc->relative_feature :
+			    sc->hid.feature;
 			pthread_mutex_unlock(&sc->mtx);
-			data->blen -= 1;
-			data->bdone += 1;
-		} else if (value == 0x0100 && len >= sizeof(sc->um_report) &&
+			data->blen -= 2;
+			data->bdone += 2;
+		} else if ((value >> 8) == 1 && len >= sizeof(sc->um_report) &&
 		    data->blen >= sizeof(sc->um_report)) {
-			if (len > sizeof(sc->um_report)) {
-				data->blen = len - sizeof(sc->um_report);
-				len = sizeof(sc->um_report);
-			} else
-				data->blen = 0;
-
 			pthread_mutex_lock(&sc->mtx);
-			struct umouse_report report = sc->um_report;
-			report.z = umouse_scroll_count(sc);
-			memcpy(data->buf, &report, len);
+			struct umouse_report report = report_id ==
+				UMOUSE_RELATIVE_REPORT ?
+			    umouse_relative_report(sc) :
+			    sc->um_report;
+			report.report_id = report_id;
+			if (report_id == UMOUSE_ABSOLUTE_REPORT)
+				report.z = umouse_scroll_count(sc);
+			memcpy(data->buf, &report, sizeof(report));
 			pthread_mutex_unlock(&sc->mtx);
-			data->bdone += len;
+			data->blen -= sizeof(report);
+			data->bdone += sizeof(report);
 		} else {
 			err = USB_ERR_STALLED;
 			goto done;
@@ -693,15 +857,19 @@ umouse_request(void *scarg, struct usb_data_xfer *xfer)
 		break;
 
 	case UREQ(UMOUSE_SET_REPORT, UT_WRITE_CLASS_INTERFACE):
-		if (value != 0x0300 || len != 1 || !data ||
-		    data->blen < 1 || *udata > 1) {
+		if (index != 0 || (value != 0x0301 && value != 0x0302) ||
+		    len != 2 || !data || data->blen < 2 ||
+		    udata[0] != (value & 0xff) || udata[1] > 1) {
 			err = USB_ERR_STALLED;
 			break;
 		}
 		pthread_mutex_lock(&sc->mtx);
-		sc->hid.feature = *udata;
+		if ((value & 0xff) == UMOUSE_RELATIVE_REPORT)
+			sc->relative_feature = udata[1];
+		else
+			sc->hid.feature = udata[1];
 		pthread_mutex_unlock(&sc->mtx);
-		data->bdone += 1;
+		data->bdone += 2;
 		break;
 
 	case UREQ(UMOUSE_SET_IDLE, UT_WRITE_CLASS_INTERFACE):
@@ -783,7 +951,8 @@ umouse_data_handler(void *scarg, struct usb_data_xfer *xfer, int dir, int epctx)
 	if (dir) {
 		pthread_mutex_lock(&sc->mtx);
 
-		if (!sc->newdata && umouse_scroll_count(sc) == 0) {
+		if (!sc->relative_count && !sc->newdata &&
+		    umouse_scroll_count(sc) == 0) {
 			err = USB_ERR_CANCELLED;
 			USB_DATA_SET_ERRCODE(&xfer->data[xfer->head], USB_NAK);
 			pthread_mutex_unlock(&sc->mtx);
@@ -799,11 +968,53 @@ umouse_data_handler(void *scarg, struct usb_data_xfer *xfer, int dir, int epctx)
 		sc->polling = 1;
 
 		if (len >= sizeof(sc->um_report)) {
-			struct umouse_report report = sc->um_report;
-			report.z = umouse_scroll_count(sc);
-			sc->newdata = 0;
-			sc->pending_scroll -= (int)report.z *
-			    (sc->hid.feature ? 1 : CONSOLE_SCROLL_UNITS);
+			struct umouse_report report;
+			if (sc->relative_count &&
+			    !sc->absolute_release_pending) {
+				struct umouse_relative_event *event =
+				    &sc->relative[sc->relative_head];
+				report = umouse_relative_report(sc);
+				sc->relative_sent_buttons = report.buttons;
+				event->x -= report.x;
+				event->y -= report.y;
+				event->scroll -= (int)report.z *
+				    (sc->relative_feature ?
+					    1 :
+					    CONSOLE_SCROLL_UNITS);
+				/* Keep fractional wheel units for the next
+				 * relative event. */
+				if (!event->x && !event->y &&
+				    event->scroll /
+					    (sc->relative_feature ?
+						    1 :
+						    CONSOLE_SCROLL_UNITS) ==
+					0) {
+					sc->relative_head = (sc->relative_head +
+								1) %
+					    UMOUSE_RELATIVE_QUEUE;
+					sc->relative_count--;
+					if (event->scroll) {
+						if (sc->relative_count)
+							sc->relative
+							    [sc->relative_head]
+								.scroll +=
+							    event->scroll;
+						else
+							sc->relative_scroll_remainder =
+							    event->scroll;
+					}
+				}
+			} else {
+				report = sc->um_report;
+				report.report_id = UMOUSE_ABSOLUTE_REPORT;
+				report.z = umouse_scroll_count(sc);
+				sc->newdata = 0;
+				sc->absolute_release_pending = false;
+				sc->absolute_sent_buttons = report.buttons;
+				sc->pending_scroll -= (int)report.z *
+				    (sc->hid.feature ? 1 :
+						       CONSOLE_SCROLL_UNITS);
+			}
 
 			data->processed = 1;
 			data->bdone += sizeof(report);
@@ -837,9 +1048,15 @@ umouse_reset(void *scarg)
 
 	pthread_mutex_lock(&sc->mtx);
 	sc->newdata = 0;
+	sc->relative_head = sc->relative_count = 0;
+	sc->relative_mode = sc->absolute_release_pending = false;
+	sc->relative_sent_buttons = sc->absolute_sent_buttons = 0;
+	sc->relative_buttons = sc->relative_feature = 0;
+	sc->relative_scroll_remainder = 0;
 	sc->pending_scroll = 0;
 	sc->hid.feature = 0;
-	sc->um_report.z = 0;
+	memset(&sc->um_report, 0, sizeof(sc->um_report));
+	sc->um_report.report_id = UMOUSE_ABSOLUTE_REPORT;
 	pthread_mutex_unlock(&sc->mtx);
 
 	return (0);
@@ -869,6 +1086,16 @@ umouse_snapshot(void *scarg, struct vm_snapshot_meta *meta)
 	SNAPSHOT_VAR_OR_LEAVE(sc->um_report, meta, ret, done);
 	SNAPSHOT_VAR_OR_LEAVE(sc->newdata, meta, ret, done);
 	SNAPSHOT_VAR_OR_LEAVE(sc->pending_scroll, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(sc->relative, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(sc->relative_head, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(sc->relative_count, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(sc->relative_buttons, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(sc->relative_feature, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(sc->relative_scroll_remainder, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(sc->relative_mode, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(sc->absolute_release_pending, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(sc->absolute_sent_buttons, meta, ret, done);
+	SNAPSHOT_VAR_OR_LEAVE(sc->relative_sent_buttons, meta, ret, done);
 	SNAPSHOT_VAR_OR_LEAVE(sc->hid.idle, meta, ret, done);
 	SNAPSHOT_VAR_OR_LEAVE(sc->hid.protocol, meta, ret, done);
 	SNAPSHOT_VAR_OR_LEAVE(sc->hid.feature, meta, ret, done);

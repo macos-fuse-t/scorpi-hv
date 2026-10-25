@@ -43,6 +43,8 @@ typedef void (*ptr_event_func_t)(uint8_t mask, int x, int y, void *arg);
 #define CONSOLE_SCROLL_UNITS 120
 typedef void (*scroll_event_func_t)(uint8_t mask, int x, int y, int delta,
     void *arg);
+typedef void (*relative_event_func_t)(uint8_t mask, int dx, int dy, int scroll,
+    void *arg);
 typedef void (*resize_event_func_t)(int x, int y, void *arg);
 
 void console_init();
@@ -81,6 +83,8 @@ void console_ptr_register(ptr_event_func_t event_cb, void *arg, int pri);
 void console_ptr_event(uint8_t button, int x, int y);
 void console_scroll_register(scroll_event_func_t event_cb, void *arg, int pri);
 void console_scroll_event(uint8_t button, int x, int y, int delta);
+void console_relative_register(relative_event_func_t event_cb, void *arg);
+void console_relative_event(uint8_t button, int dx, int dy, int scroll);
 void console_resize_register(resize_event_func_t event_cb, void *arg);
 
 #endif /* _CONSOLE_H_ */
