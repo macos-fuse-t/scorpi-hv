@@ -10,6 +10,23 @@ int raw_stdio;
 static unsigned bindings, kicks;
 static uint8_t ram[65536];
 
+/* Queue operations must not update the display. */
+void
+console_set_scanout(bool active, int w, int h, int stride, uint32_t format,
+    const char *name, size_t size, bool legacy)
+{
+	(void)active; (void)w; (void)h; (void)stride; (void)format;
+	(void)name; (void)size; (void)legacy;
+	assert(false);
+}
+
+void
+console_update_scanout_rect(int x, int y, int w, int h)
+{
+	(void)x; (void)y; (void)w; (void)h;
+	assert(false);
+}
+
 bool
 pci_vhost_features_negotiated(const struct pci_vhost_state *state)
 {
