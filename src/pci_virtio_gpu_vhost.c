@@ -337,13 +337,18 @@ pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
 
 	if ((scanout->flags & SCORPI_VHOST_SCANOUT_F_ENABLED) == 0 ||
 	    scanout->width == 0 || scanout->height == 0) {
+		const bool was_active = sc->renderer_scanout_active;
 		sc->renderer_scanout_active = false;
 		if (sc->renderer_surface_active)
 			return;
-		pci_vhost_blank_legacy_fb(sc);
+		if (was_active)
+			pci_vhost_blank_legacy_fb(sc);
 		pci_vhost_set_legacy_scanout(sc);
 		return;
 	}
+	/* Backend completions from before reset must not cover firmware output. */
+	if (!(sc->vsc_vs.vs_status & VIRTIO_CONFIG_STATUS_DRIVER_OK))
+		return;
 	if (scanout->shm_name[0] == '\0' || scanout->shm_size == 0)
 		return;
 
@@ -358,13 +363,14 @@ pci_vhost_apply_renderer_scanout(struct pci_vhost_softc *sc,
 	    sc->renderer_scanout_shm_name, scanout->width, scanout->height,
 	    scanout->backing_width, scanout->backing_height, stride,
 	    sc->renderer_scanout_shm_size);
+	/* Viewer accepts shared-memory scanouts only after IOSurface release. */
+	sc->renderer_scanout_active = true;
+	sc->renderer_surface_active = false;
+	console_set_display_surface(false, 0, 0, 0, 0, 0, 0, 0);
 	console_set_scanout(true, scanout->width, scanout->height, stride,
 	    format, sc->renderer_scanout_shm_name,
 	    sc->renderer_scanout_shm_size, false);
 	console_update_scanout_rect(0, 0, scanout->width, scanout->height);
-	sc->renderer_scanout_active = true;
-	sc->renderer_surface_active = false;
-	console_set_display_surface(false, 0, 0, 0, 0, 0, 0, 0);
 }
 
 static void
@@ -377,15 +383,19 @@ pci_vhost_apply_renderer_display_surface(struct pci_vhost_softc *sc,
 	if ((surface->flags & SCORPI_VHOST_DISPLAY_SURFACE_F_ENABLED) == 0 ||
 	    surface->width == 0 || surface->height == 0 ||
 	    surface->surface_id == 0) {
+		const bool was_active = sc->renderer_surface_active;
 		sc->renderer_surface_active = false;
 		console_set_display_surface(false, 0, 0, 0, 0, 0, 0,
 		    diagnostic_sequence);
 		if (!sc->renderer_scanout_active) {
-			pci_vhost_blank_legacy_fb(sc);
+			if (was_active)
+				pci_vhost_blank_legacy_fb(sc);
 			pci_vhost_set_legacy_scanout(sc);
 		}
 		return;
 	}
+	if (!(sc->vsc_vs.vs_status & VIRTIO_CONFIG_STATUS_DRIVER_OK))
+		return;
 
 	if (diagnostic_sequence != 0) {
 		EPRINTLN(
@@ -803,6 +813,9 @@ pci_vhost_reset(void *vsc)
 	pci_vhost_clear_features(&sc->vhost);
 	pci_vhost_advance_reset_generation(&sc->vhost);
 	sc->renderer_scanout_active = false;
+	sc->renderer_surface_active = false;
+	/* Firmware takes over immediately; backend reset completion is async. */
+	console_set_display_surface(false, 0, 0, 0, 0, 0, 0, 0);
 	pci_vhost_blank_legacy_fb(sc);
 	pci_vhost_set_legacy_scanout(sc);
 	vi_reset_dev(&sc->vsc_vs);
