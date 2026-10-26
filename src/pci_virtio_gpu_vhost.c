@@ -192,10 +192,33 @@ static struct virtio_consts vhost_consts = {
 };
 
 static void
+pci_vhost_send_display_hint(struct pci_vhost_softc *sc)
+{
+	char backend_id[SCORPI_VIRTIO_VHOST_NAME_MAX];
+	uint32_t width, height;
+	bool hdpi;
+
+	pthread_mutex_lock(&sc->vsc_mtx);
+	width = sc->resx;
+	height = sc->resy;
+	hdpi = sc->hdpi_enabled;
+	snprintf(backend_id, sizeof(backend_id), "%s", sc->vhost.backend_id);
+	pthread_mutex_unlock(&sc->vsc_mtx);
+	if (virtio_vhost_transport_notify_display_hint(backend_id, width, height,
+		hdpi) != 0)
+		EPRINTLN("virtio-gpu-vhost: failed to send initial display hint %ux%u",
+		    width, height);
+}
+
+static void
 pci_vhost_device_features(void *opaque, uint64_t device_features)
 {
 	struct pci_vhost_softc *sc = opaque;
 
+	/* This callback runs before backend setup is made available to guest
+	 * queues, and again on reconnect. Synchronize the authored display
+	 * policy now rather than waiting for a Viewer resize. */
+	pci_vhost_send_display_hint(sc);
 	pthread_mutex_lock(&sc->vsc_mtx);
 	if (pci_vhost_features_negotiated(&sc->vhost)) {
 		pthread_mutex_unlock(&sc->vsc_mtx);

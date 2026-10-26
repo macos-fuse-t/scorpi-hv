@@ -8,6 +8,22 @@
 uuid_t vm_uuid;
 int raw_stdio;
 static unsigned bindings, kicks;
+static uint32_t hinted_width, hinted_height;
+static bool hinted_hdpi;
+static unsigned hints;
+
+int
+virtio_vhost_transport_notify_display_hint(const char *backend_id,
+    uint32_t width, uint32_t height, bool hdpi)
+{
+	assert(!strcmp(backend_id, "gpu-test"));
+	hinted_width = width;
+	hinted_height = height;
+	hinted_hdpi = hdpi;
+	hints++;
+	return (0);
+}
+
 static uint8_t ram[65536];
 
 /* Queue operations must not update the display. */
@@ -116,6 +132,9 @@ main(void)
 	sc.vsc_vs.vs_mtx = &sc.vsc_mtx;
 	sc.vsc_vs.vs_status = VIRTIO_CONFIG_STATUS_DRIVER_OK;
 	pi.pi_arg = &sc;
+	snprintf(sc.vhost.backend_id, sizeof(sc.vhost.backend_id), "gpu-test");
+	sc.resx = 1024;
+	sc.resy = 768;
 	assert(pipe(sc.reset_fds) == 0);
 	assert(fcntl(sc.reset_fds[0], F_SETFL, O_NONBLOCK) == 0);
 	assert(fcntl(sc.reset_fds[1], F_SETFL, O_NONBLOCK) == 0);
@@ -137,8 +156,13 @@ main(void)
 	pci_vhost_device_features(&sc, offered & ~cursor);
 	assert(!(sc.vsc_consts.vc_hv_caps & cursor));
 
+	assert(hints > 0 && hinted_width == 1024 && hinted_height == 768 && !hinted_hdpi);
+	sc.hdpi_enabled = true;
+	sc.resx = 2048;
+	sc.resy = 1536;
 	sc.vhost.features_negotiated = true;
 	pci_vhost_device_features(&sc, 0);
+	assert(hinted_width == 2048 && hinted_height == 1536 && hinted_hdpi);
 	assert(sc.vhost.queue_count == 68); /* Stable after negotiation. */
 
 	/* Extend only this frontend's common capability, preserving neighbours. */
